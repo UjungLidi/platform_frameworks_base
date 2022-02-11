@@ -83,7 +83,7 @@ public class DozeTestDream extends DreamService {
         filter.addAction(intent.getAction());
         registerReceiver(mAlarmReceiver, filter);
         mAlarmIntent = PendingIntent.getBroadcast(this, 0, intent,
-                PendingIntent.FLAG_CANCEL_CURRENT);
+                PendingIntent.FLAG_CANCEL_CURRENT | PendingIntent.FLAG_MUTABLE_UNAUDITED);
 
         setDozeScreenState(DISPLAY_STATE_WHEN_DOZING);
     }
@@ -100,7 +100,6 @@ public class DozeTestDream extends DreamService {
     public void onAttachedToWindow() {
         super.onAttachedToWindow();
         setInteractive(false);
-        setLowProfile(true);
         setFullscreen(true);
         setContentView(R.layout.dream);
         setScreenBright(false);

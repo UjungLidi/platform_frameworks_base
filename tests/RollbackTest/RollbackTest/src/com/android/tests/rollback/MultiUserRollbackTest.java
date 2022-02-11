@@ -22,6 +22,7 @@ import static com.google.common.truth.Truth.assertThat;
 
 import android.Manifest;
 import android.content.rollback.RollbackInfo;
+import android.content.rollback.RollbackManager;
 
 import com.android.cts.install.lib.Install;
 import com.android.cts.install.lib.InstallUtils;
@@ -54,8 +55,24 @@ public class MultiUserRollbackTest {
     }
 
     @Test
+    public void cleanUp() {
+        RollbackManager rm = RollbackUtils.getRollbackManager();
+        rm.getAvailableRollbacks().stream().flatMap(info -> info.getPackages().stream())
+                .map(info -> info.getPackageName()).forEach(rm::expireRollbackForPackage);
+        rm.getRecentlyCommittedRollbacks().stream().flatMap(info -> info.getPackages().stream())
+                .map(info -> info.getPackageName()).forEach(rm::expireRollbackForPackage);
+        assertThat(rm.getAvailableRollbacks()).isEmpty();
+        assertThat(rm.getRecentlyCommittedRollbacks()).isEmpty();
+    }
+
+    @Test
     public void testBasic() throws Exception {
         new RollbackTest().testBasic();
+    }
+
+    @Test
+    public void testBadUpdateRollback() throws Exception {
+        new RollbackTest().testBadUpdateRollback();
     }
 
     /**
@@ -102,5 +119,33 @@ public class MultiUserRollbackTest {
     public void testMultipleUsersVerifyUserdataRollback() {
         assertThat(InstallUtils.getInstalledVersion(TestApp.A)).isEqualTo(1);
         InstallUtils.processUserData(TestApp.A);
+    }
+
+    @Test
+    public void testStagedRollback_Phase1() throws Exception {
+        assertThat(InstallUtils.getInstalledVersion(TestApp.A)).isEqualTo(-1);
+        Install.single(TestApp.A1).setStaged().commit();
+        assertThat(InstallUtils.getInstalledVersion(TestApp.A)).isEqualTo(-1);
+    }
+
+    @Test
+    public void testStagedRollback_Phase2() throws Exception {
+        assertThat(InstallUtils.getInstalledVersion(TestApp.A)).isEqualTo(1);
+        Install.single(TestApp.A2).setStaged().setEnableRollback().commit();
+        assertThat(InstallUtils.getInstalledVersion(TestApp.A)).isEqualTo(1);
+    }
+
+    @Test
+    public void testStagedRollback_Phase3() throws Exception {
+        assertThat(InstallUtils.getInstalledVersion(TestApp.A)).isEqualTo(2);
+        RollbackInfo rollback = RollbackUtils.waitForAvailableRollback(TestApp.A);
+        assertThat(rollback).packagesContainsExactly(Rollback.from(TestApp.A2).to(TestApp.A1));
+        RollbackUtils.rollback(rollback.getRollbackId());
+        assertThat(InstallUtils.getInstalledVersion(TestApp.A)).isEqualTo(2);
+    }
+
+    @Test
+    public void testStagedRollback_Phase4() {
+        assertThat(InstallUtils.getInstalledVersion(TestApp.A)).isEqualTo(1);
     }
 }

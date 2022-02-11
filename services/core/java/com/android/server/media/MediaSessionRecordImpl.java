@@ -20,7 +20,7 @@ import android.media.AudioManager;
 import android.os.ResultReceiver;
 import android.view.KeyEvent;
 
-import com.android.server.media.SessionPolicyProvider.SessionPolicy;
+import com.android.server.media.MediaSessionPolicyProvider.SessionPolicy;
 
 import java.io.PrintWriter;
 
@@ -129,6 +129,13 @@ public interface MediaSessionRecordImpl extends AutoCloseable {
      */
     boolean sendMediaButton(String packageName, int pid, int uid, boolean asSystemService,
             KeyEvent ke, int sequenceId, ResultReceiver cb);
+
+    /**
+     * Returns whether the media session can handle volume key events.
+     *
+     * @return True if this media session can handle volume key events, false otherwise.
+     */
+    boolean canHandleVolumeKey();
 
     /**
      * Get session policies from custom policy provider set when MediaSessionRecord is instantiated.

@@ -22,11 +22,12 @@
 #include "Lighting.h"
 #include "SwapBehavior.h"
 #include "hwui/Bitmap.h"
+#include "ColorMode.h"
 
 #include <SkRect.h>
 #include <utils/RefBase.h>
 
-class GrContext;
+class GrDirectContext;
 
 struct ANativeWindow;
 
@@ -42,16 +43,6 @@ namespace renderthread {
 
 enum class MakeCurrentResult { AlreadyCurrent, Failed, Succeeded };
 
-enum class ColorMode {
-    // SRGB means HWUI will produce buffer in SRGB color space.
-    SRGB,
-    // WideColorGamut means HWUI would support rendering scRGB non-linear into
-    // a signed buffer with enough range to support the wide color gamut of the
-    // display.
-    WideColorGamut,
-    // Hdr
-};
-
 class Frame;
 
 class IRenderPipeline {
@@ -66,8 +57,7 @@ public:
     virtual bool swapBuffers(const Frame& frame, bool drew, const SkRect& screenDirty,
                              FrameInfo* currentFrameInfo, bool* requireSwap) = 0;
     virtual DeferredLayerUpdater* createTextureLayer() = 0;
-    virtual bool setSurface(ANativeWindow* window, SwapBehavior swapBehavior,
-                            uint32_t extraBuffers) = 0;
+    virtual bool setSurface(ANativeWindow* window, SwapBehavior swapBehavior) = 0;
     virtual void onStop() = 0;
     virtual bool isSurfaceReady() = 0;
     virtual bool isContextReady() = 0;

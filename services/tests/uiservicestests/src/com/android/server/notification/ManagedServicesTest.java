@@ -54,9 +54,10 @@ import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.IntArray;
 import android.util.SparseArray;
+import android.util.TypedXmlPullParser;
+import android.util.TypedXmlSerializer;
 import android.util.Xml;
 
-import com.android.internal.util.FastXmlSerializer;
 import com.android.internal.util.XmlUtils;
 import com.android.server.UiServiceTestCase;
 
@@ -64,12 +65,11 @@ import com.google.android.collect.Lists;
 
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
-import org.xmlpull.v1.XmlPullParser;
-import org.xmlpull.v1.XmlSerializer;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -77,6 +77,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -96,6 +97,11 @@ public class ManagedServicesTest extends UiServiceTestCase {
 
     UserInfo mZero = new UserInfo(0, "zero", 0);
     UserInfo mTen = new UserInfo(10, "ten", 0);
+    private String mDefaultsString;
+    private String mVersionString;
+    private final Set<ComponentName> mDefaults = new ArraySet();
+    private ManagedServices mService;
+    private String mUserSetString;
 
     private static final String SETTING = "setting";
     private static final String SECONDARY_SETTING = "secondary_setting";
@@ -106,8 +112,8 @@ public class ManagedServicesTest extends UiServiceTestCase {
     private ArrayMap<Integer, String> mExpectedSecondaryComponentNames;
 
     // type : user : list of approved
-    private ArrayMap<Integer, ArrayMap<Integer, String>> mExpectedPrimary = new ArrayMap<>();
-    private ArrayMap<Integer, ArrayMap<Integer, String>> mExpectedSecondary = new ArrayMap<>();
+    private ArrayMap<Integer, ArrayMap<Integer, String>> mExpectedPrimary;
+    private ArrayMap<Integer, ArrayMap<Integer, String>> mExpectedSecondary;
 
     @Before
     public void setUp() throws Exception {
@@ -121,6 +127,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
         users.add(mTen);
         users.add(new UserInfo(11, "11", 0));
         users.add(new UserInfo(12, "12", 0));
+        users.add(new UserInfo(13, "13", 0));
         for (UserInfo user : users) {
             when(mUm.getUserInfo(eq(user.id))).thenReturn(user);
         }
@@ -130,18 +137,24 @@ public class ManagedServicesTest extends UiServiceTestCase {
         profileIds.add(11);
         profileIds.add(10);
         profileIds.add(12);
+        profileIds.add(13);
         when(mUserProfiles.getCurrentProfileIds()).thenReturn(profileIds);
 
+        mVersionString = "4";
+        mExpectedPrimary = new ArrayMap<>();
+        mExpectedSecondary = new ArrayMap<>();
         mExpectedPrimaryPackages = new ArrayMap<>();
         mExpectedPrimaryPackages.put(0, "this.is.a.package.name:another.package");
         mExpectedPrimaryPackages.put(10, "this.is.another.package");
         mExpectedPrimaryPackages.put(11, "");
         mExpectedPrimaryPackages.put(12, "bananas!");
+        mExpectedPrimaryPackages.put(13, "non.user.set.package");
         mExpectedPrimaryComponentNames = new ArrayMap<>();
         mExpectedPrimaryComponentNames.put(0, "this.is.a.package.name/Ba:another.package/B1");
         mExpectedPrimaryComponentNames.put(10, "this.is.another.package/M1");
         mExpectedPrimaryComponentNames.put(11, "");
         mExpectedPrimaryComponentNames.put(12, "bananas!/Bananas!");
+        mExpectedPrimaryComponentNames.put(13, "non.user.set.package/M1");
         mExpectedPrimary.put(APPROVAL_BY_PACKAGE, mExpectedPrimaryPackages);
         mExpectedPrimary.put(APPROVAL_BY_COMPONENT, mExpectedPrimaryComponentNames);
 
@@ -155,6 +168,8 @@ public class ManagedServicesTest extends UiServiceTestCase {
                 "this.is.another.package:component:package");
         mExpectedSecondary.put(APPROVAL_BY_PACKAGE, mExpectedSecondaryPackages);
         mExpectedSecondary.put(APPROVAL_BY_COMPONENT, mExpectedSecondaryComponentNames);
+        mService = new TestManagedServices(getContext(), mLock, mUserProfiles,
+                mIpm, APPROVAL_BY_COMPONENT);
     }
 
     @Test
@@ -233,13 +248,13 @@ public class ManagedServicesTest extends UiServiceTestCase {
                         backupPrimary.get(approvalLevel).get(userId),
                         Build.VERSION_CODES.N_MR1, userId);
             }
-            verifyExpectedApprovedEntries(service, true);
 
             for (int userId : backupSecondary.get(approvalLevel).keySet()) {
                 service.onSettingRestored(service.getConfig().secondarySettingName,
                         backupSecondary.get(approvalLevel).get(userId),
                         Build.VERSION_CODES.N_MR1, userId);
             }
+            // both sets of approved entries should be allowed
             verifyExpectedApprovedEntries(service);
             verifyExpectedApprovedEntries(service, backupPrimary.get(approvalLevel));
             verifyExpectedApprovedEntries(service, backupSecondary.get(approvalLevel));
@@ -253,7 +268,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
                     mIpm, approvalLevel);
 
             // approved services aren't in xml
-            XmlPullParser parser = Xml.newPullParser();
+            TypedXmlPullParser parser = Xml.newFastPullParser();
             parser.setInput(new BufferedInputStream(new ByteArrayInputStream(new byte[]{})),
                     null);
             writeExpectedValuesToSettings(approvalLevel);
@@ -261,6 +276,36 @@ public class ManagedServicesTest extends UiServiceTestCase {
             service.migrateToXml();
 
             verifyExpectedApprovedEntries(service);
+        }
+    }
+
+    @Test
+    public void testReadXml_noLongerMigrateFromSettings() throws Exception {
+        for (int approvalLevel : new int[] {APPROVAL_BY_COMPONENT, APPROVAL_BY_PACKAGE}) {
+            ManagedServices service = new TestManagedServicesNoSettings(getContext(), mLock,
+                    mUserProfiles, mIpm, approvalLevel);
+
+            // approved services aren't in xml
+            TypedXmlPullParser parser = Xml.newFastPullParser();
+            parser.setInput(new BufferedInputStream(new ByteArrayInputStream(new byte[]{})),
+                    null);
+            writeExpectedValuesToSettings(approvalLevel);
+
+            service.migrateToXml();
+            // No crash? success
+
+            ArrayMap<Integer, String> verifyMap = approvalLevel == APPROVAL_BY_COMPONENT
+                    ? mExpectedPrimary.get(service.mApprovalLevel)
+                    : mExpectedSecondary.get(service.mApprovalLevel);
+            for (int userId : verifyMap.keySet()) {
+                for (String verifyValue : verifyMap.get(userId).split(":")) {
+                    if (!TextUtils.isEmpty(verifyValue)) {
+                        assertFalse("service type " + service.mApprovalLevel + ":"
+                                        + verifyValue + " is allowed for user " + userId,
+                                service.isPackageOrComponentAllowed(verifyValue, userId));
+                    }
+                }
+            }
         }
     }
 
@@ -321,13 +366,42 @@ public class ManagedServicesTest extends UiServiceTestCase {
             String testComponent = "user.test.component/C1";
             String resolvedValue =
                     (approvalLevel == APPROVAL_BY_COMPONENT) ? testComponent : testPackage;
-            XmlPullParser parser =
+            TypedXmlPullParser parser =
                     getParserWithEntries(service, getXmlEntry(resolvedValue, 0, true));
 
             service.readXml(parser, null, true, 10);
 
             assertFalse(service.isPackageOrComponentAllowed(resolvedValue, 0));
             assertTrue(service.isPackageOrComponentAllowed(resolvedValue, 10));
+        }
+    }
+
+    /** Test that restore correctly parses the user_set attribute. */
+    @Test
+    public void testReadXml_restoresUserSet() throws Exception {
+        for (int approvalLevel : new int[] {APPROVAL_BY_COMPONENT, APPROVAL_BY_PACKAGE}) {
+            ManagedServices service =
+                    new TestManagedServices(
+                            getContext(), mLock, mUserProfiles, mIpm, approvalLevel);
+            String testPackage = "user.test.package";
+            String testComponent = "user.test.component/C1";
+            String resolvedValue =
+                    (approvalLevel == APPROVAL_BY_COMPONENT) ? testComponent : testPackage;
+            String xmlEntry = getXmlEntry(resolvedValue, 0, true, false);
+            TypedXmlPullParser parser = getParserWithEntries(service, xmlEntry);
+
+            service.readXml(parser, null, true, 0);
+
+            assertFalse("Failed while parsing xml:\n" + xmlEntry,
+                    service.isPackageOrComponentUserSet(resolvedValue, 0));
+
+            xmlEntry = getXmlEntry(resolvedValue, 0, true, true);
+            parser = getParserWithEntries(service, xmlEntry);
+
+            service.readXml(parser, null, true, 0);
+
+            assertTrue("Failed while parsing xml:\n" + xmlEntry,
+                    service.isPackageOrComponentUserSet(resolvedValue, 0));
         }
     }
 
@@ -341,7 +415,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
         ManagedServices service2 =
                 new TestManagedServices(
                         getContext(), mLock, mUserProfiles, mIpm, APPROVAL_BY_COMPONENT);
-        XmlSerializer serializer = new FastXmlSerializer();
+        TypedXmlSerializer serializer = Xml.newFastSerializer();
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         BufferedOutputStream outStream = new BufferedOutputStream(baos);
         serializer.setOutput(outStream, "utf-8");
@@ -353,7 +427,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
         serializer.endDocument();
         outStream.flush();
 
-        final XmlPullParser parser = Xml.newPullParser();
+        final TypedXmlPullParser parser = Xml.newFastPullParser();
         BufferedInputStream input = new BufferedInputStream(
                 new ByteArrayInputStream(baos.toByteArray()));
 
@@ -364,7 +438,6 @@ public class ManagedServicesTest extends UiServiceTestCase {
 
         assertEquals(1, defaults.size());
         assertEquals(new ComponentName("package", "class"), defaults.valueAt(0));
-
     }
 
     @Test
@@ -472,6 +545,20 @@ public class ManagedServicesTest extends UiServiceTestCase {
         assertTrue(components.contains(new ComponentName("package", "default")));
     }
 
+    @Test
+    public void resetPackage_clearsUserSet() {
+        // setup
+        ManagedServices service =
+                new TestManagedServices(
+                        getContext(), mLock, mUserProfiles, mIpm, APPROVAL_BY_COMPONENT);
+        String componentName = "package/user-allowed";
+        service.addApprovedList(componentName, 0, true);
+
+        service.resetComponents("package", 0);
+
+        assertFalse(service.isPackageOrComponentUserSet(componentName, 0));
+    }
+
     /** Test that backup only writes packages/components that belong to the target user. */
     @Test
     public void testWriteXml_onlyBackupsForTargetUser() throws Exception {
@@ -494,7 +581,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
                     service,
                     Collections.singletonList(service.getPackageName(resolvedValue10)),
                     10);
-            XmlPullParser parser =
+            TypedXmlPullParser parser =
                     getParserWithEntries(
                             service,
                             getXmlEntry(resolvedValue0, 0, true),
@@ -502,7 +589,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
             service.readXml(parser, null, false, UserHandle.USER_ALL);
 
             // Write backup.
-            XmlSerializer serializer = new FastXmlSerializer();
+            TypedXmlSerializer serializer = Xml.newFastSerializer();
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             serializer.setOutput(new BufferedOutputStream(baos), "utf-8");
             serializer.startDocument(null, true);
@@ -515,7 +602,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
             service.setPackageOrComponentEnabled(resolvedValue10, 10, true, false);
 
             // Parse backup via restore.
-            XmlPullParser restoreParser = Xml.newPullParser();
+            TypedXmlPullParser restoreParser = Xml.newFastPullParser();
             restoreParser.setInput(
                     new BufferedInputStream(new ByteArrayInputStream(baos.toByteArray())), null);
             restoreParser.nextTag();
@@ -566,7 +653,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
                 addExpectedServices(service, entriesExpectedToHaveServices, userInfo.id);
             }
 
-            XmlSerializer serializer = new FastXmlSerializer();
+            TypedXmlSerializer serializer = Xml.newFastSerializer();
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             serializer.setOutput(new BufferedOutputStream(baos), "utf-8");
             serializer.startDocument(null, true);
@@ -576,7 +663,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
             serializer.endDocument();
             serializer.flush();
 
-            XmlPullParser parser = Xml.newPullParser();
+            TypedXmlPullParser parser = Xml.newFastPullParser();
             parser.setInput(new BufferedInputStream(
                     new ByteArrayInputStream(baos.toByteArray())), null);
             parser.nextTag();
@@ -594,11 +681,11 @@ public class ManagedServicesTest extends UiServiceTestCase {
     @Test
     public void testWriteXml_writesSetting() throws Exception {
         for (int approvalLevel : new int[] {APPROVAL_BY_COMPONENT, APPROVAL_BY_PACKAGE}) {
-            ManagedServices service = new TestManagedServices(getContext(), mLock, mUserProfiles,
-                    mIpm, approvalLevel);
+            ManagedServices service = new TestManagedServicesSettings(getContext(), mLock,
+                    mUserProfiles, mIpm, approvalLevel);
             loadXml(service);
 
-            XmlSerializer serializer = new FastXmlSerializer();
+            TypedXmlSerializer serializer = Xml.newFastSerializer();
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             serializer.setOutput(new BufferedOutputStream(baos), "utf-8");
             serializer.startDocument(null, true);
@@ -613,6 +700,77 @@ public class ManagedServicesTest extends UiServiceTestCase {
                         getContext().getContentResolver(),
                         service.getConfig().secureSettingName, userId));
                 assertContentsInAnyOrder(actual, expected);
+            }
+        }
+    }
+
+    @Test
+    public void testWriteXml_doesNotWriteSetting() throws Exception {
+        for (int approvalLevel : new int[] {APPROVAL_BY_COMPONENT, APPROVAL_BY_PACKAGE}) {
+            ManagedServices service = new TestManagedServices(getContext(), mLock, mUserProfiles,
+                    mIpm, approvalLevel);
+
+            for (int userId : mUserProfiles.getCurrentProfileIds().toArray()) {
+                Settings.Secure.putStringForUser(
+                        getContext().getContentResolver(),
+                        service.getConfig().secureSettingName, null, userId);
+            }
+            loadXml(service);
+
+            TypedXmlSerializer serializer = Xml.newFastSerializer();
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            serializer.setOutput(new BufferedOutputStream(baos), "utf-8");
+            serializer.startDocument(null, true);
+            service.writeXml(serializer, false, UserHandle.USER_ALL);
+            serializer.endDocument();
+            serializer.flush();
+
+            for (int userId : mUserProfiles.getCurrentProfileIds().toArray()) {
+                String actual = Settings.Secure.getStringForUser(
+                        getContext().getContentResolver(),
+                        service.getConfig().secureSettingName, userId);
+                assertTrue(TextUtils.isEmpty(actual));
+            }
+        }
+    }
+
+    @Test
+    public void testWriteXml_writesUserSet() throws Exception {
+        for (int approvalLevel : new int[] {APPROVAL_BY_COMPONENT, APPROVAL_BY_PACKAGE}) {
+            ManagedServices service = new TestManagedServices(getContext(), mLock, mUserProfiles,
+                    mIpm, approvalLevel);
+            loadXml(service);
+
+            TypedXmlSerializer serializer = Xml.newFastSerializer();
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            serializer.setOutput(new BufferedOutputStream(baos), "utf-8");
+            serializer.startDocument(null, true);
+            service.writeXml(serializer, false, UserHandle.USER_ALL);
+            serializer.endDocument();
+            serializer.flush();
+
+            TypedXmlPullParser parser = Xml.newFastPullParser();
+            byte[] rawOutput = baos.toByteArray();
+            parser.setInput(new BufferedInputStream(
+                    new ByteArrayInputStream(rawOutput)), null);
+            parser.nextTag();
+            for (UserInfo userInfo : mUm.getUsers()) {
+                service.readXml(parser, null, true, userInfo.id);
+            }
+
+            String resolvedUserSetComponent = approvalLevel == APPROVAL_BY_PACKAGE
+                    ? mExpectedPrimaryPackages.get(10)
+                    : mExpectedPrimaryComponentNames.get(10);
+            String resolvedNonUserSetComponent = approvalLevel == APPROVAL_BY_PACKAGE
+                    ? mExpectedPrimaryPackages.get(13)
+                    : mExpectedPrimaryComponentNames.get(13);
+
+            try {
+                assertFalse(service.isPackageOrComponentUserSet(resolvedNonUserSetComponent, 13));
+                assertTrue(service.isPackageOrComponentUserSet(resolvedUserSetComponent, 10));
+            } catch (AssertionError e) {
+                throw new AssertionError(
+                        "Assertion failed while parsing xml:\n" + new String(rawOutput), e);
             }
         }
     }
@@ -677,6 +835,39 @@ public class ManagedServicesTest extends UiServiceTestCase {
         // verify the 3 components per package are enabled (bound)
         verifyExpectedBoundEntries(service, true);
         verifyExpectedBoundEntries(service, false);
+    }
+
+    @Test
+    public void unbindOtherUserServices() throws PackageManager.NameNotFoundException {
+        Context context = mock(Context.class);
+        PackageManager pm = mock(PackageManager.class);
+        ApplicationInfo ai = new ApplicationInfo();
+        ai.targetSdkVersion = Build.VERSION_CODES.CUR_DEVELOPMENT;
+
+        when(context.getPackageName()).thenReturn(mContext.getPackageName());
+        when(context.getUserId()).thenReturn(mContext.getUserId());
+        when(context.getPackageManager()).thenReturn(pm);
+        when(pm.getApplicationInfo(anyString(), anyInt())).thenReturn(ai);
+
+        ManagedServices service = new TestManagedServices(context, mLock, mUserProfiles, mIpm,
+                APPROVAL_BY_COMPONENT);
+        ComponentName cn = ComponentName.unflattenFromString("a/a");
+
+        when(context.bindServiceAsUser(any(), any(), anyInt(), any())).thenAnswer(invocation -> {
+            Object[] args = invocation.getArguments();
+            ServiceConnection sc = (ServiceConnection) args[1];
+            sc.onServiceConnected(cn, mock(IBinder.class));
+            return true;
+        });
+
+        service.registerService(cn, 0);
+        service.registerService(cn, 10);
+        service.registerService(cn, 11);
+        service.unbindOtherUserServices(11);
+
+        assertFalse(service.isBound(cn, 0));
+        assertFalse(service.isBound(cn, 10));
+        assertTrue(service.isBound(cn, 11));
     }
 
     @Test
@@ -922,6 +1113,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
         allowedPackages.add("package");
         allowedPackages.add("component");
         allowedPackages.add("bananas!");
+        allowedPackages.add("non.user.set.package");
 
         Set<String> actual = service.getAllowedPackages();
         assertEquals(allowedPackages.size(), actual.size());
@@ -962,12 +1154,13 @@ public class ManagedServicesTest extends UiServiceTestCase {
         when(service.asBinder()).thenReturn(mock(IBinder.class));
         ManagedServices services = new TestManagedServices(getContext(), mLock, mUserProfiles,
                 mIpm, APPROVAL_BY_PACKAGE);
-        services.registerService(service, null, 10);
+        services.registerSystemService(service, null, 10, 1000);
         ManagedServices.ManagedServiceInfo info = services.checkServiceTokenLocked(service);
         info.isSystem = true;
 
         assertFalse(services.isSameUser(service, 0));
         assertTrue(services.isSameUser(service, 10));
+        assertTrue(services.isSameUser(service, UserHandle.USER_ALL));
     }
 
     @Test
@@ -993,6 +1186,9 @@ public class ManagedServicesTest extends UiServiceTestCase {
         expected12.add(ComponentName.unflattenFromString("bananas!/Bananas!"));
         expected.put(12, expected12);
         expected.put(11, new ArraySet<>());
+        ArraySet<ComponentName> expected13 = new ArraySet<>();
+        expected13.add(ComponentName.unflattenFromString("non.user.set.package/M1"));
+        expected.put(13, expected13);
 
         SparseArray<ArraySet<ComponentName>> actual =
                 service.getAllowedComponents(mUserProfiles.getCurrentProfileIds());
@@ -1010,10 +1206,10 @@ public class ManagedServicesTest extends UiServiceTestCase {
 
         ManagedServices.ManagedServiceInfo service0 = service.new ManagedServiceInfo(
                 iInterface, ComponentName.unflattenFromString("a/a"), 0, false,
-                mock(ServiceConnection.class), 26);
+                mock(ServiceConnection.class), 26, 34);
         ManagedServices.ManagedServiceInfo service10 = service.new ManagedServiceInfo(
                 iInterface, ComponentName.unflattenFromString("b/b"), 10, false,
-                mock(ServiceConnection.class), 26);
+                mock(ServiceConnection.class), 26, 345);
         Set<ManagedServices.ManagedServiceInfo> removableBoundServices = new ArraySet<>();
         removableBoundServices.add(service0);
         removableBoundServices.add(service10);
@@ -1046,13 +1242,13 @@ public class ManagedServicesTest extends UiServiceTestCase {
 
         ManagedServices.ManagedServiceInfo service0 = service.new ManagedServiceInfo(
                 iInterface, ComponentName.unflattenFromString("a/a"), 0, false,
-                mock(ServiceConnection.class), 26);
+                mock(ServiceConnection.class), 26, 345);
         ManagedServices.ManagedServiceInfo service0a = service.new ManagedServiceInfo(
                 iInterface, ComponentName.unflattenFromString("c/c"), 0, false,
-                mock(ServiceConnection.class), 26);
+                mock(ServiceConnection.class), 26, 3456);
         ManagedServices.ManagedServiceInfo service10 = service.new ManagedServiceInfo(
                 iInterface, ComponentName.unflattenFromString("b/b"), 10, false,
-                mock(ServiceConnection.class), 26);
+                mock(ServiceConnection.class), 26, 34567);
         Set<ManagedServices.ManagedServiceInfo> removableBoundServices = new ArraySet<>();
         removableBoundServices.add(service0);
         removableBoundServices.add(service0a);
@@ -1125,16 +1321,15 @@ public class ManagedServicesTest extends UiServiceTestCase {
                 APPROVAL_BY_COMPONENT);
         ComponentName cn = ComponentName.unflattenFromString("a/a");
 
-        service.registerSystemService(cn, 0);
-        when(context.bindServiceAsUser(any(), any(), anyInt(), any())).thenAnswer(invocation -> {
-            Object[] args = invocation.getArguments();
-            ServiceConnection sc = (ServiceConnection) args[1];
-            sc.onNullBinding(cn);
-            return true;
-        });
+        ArgumentCaptor<ServiceConnection> captor = ArgumentCaptor.forClass(ServiceConnection.class);
+        when(context.bindServiceAsUser(any(), captor.capture(), anyInt(), any()))
+                .thenAnswer(invocation -> {
+                    captor.getValue().onNullBinding(cn);
+                    return true;
+                });
 
         service.registerSystemService(cn, 0);
-        assertFalse(service.isBound(cn, 0));
+        verify(context).unbindService(captor.getValue());
     }
 
     @Test
@@ -1178,12 +1373,147 @@ public class ManagedServicesTest extends UiServiceTestCase {
         }
     }
 
+    @Test
+    public void loadDefaults_noVersionNoDefaults() throws Exception {
+        resetComponentsAndPackages();
+        loadXml(mService);
+        assertEquals(mService.getDefaultComponents().size(), 0);
+    }
+
+    @Test
+    public void loadDefaults_noVersionNoDefaultsOneActive() throws Exception {
+        resetComponentsAndPackages();
+        mService.addDefaultComponentOrPackage("package/class");
+        loadXml(mService);
+        assertEquals(1, mService.getDefaultComponents().size());
+        assertTrue(mService.getDefaultComponents()
+                .contains(ComponentName.unflattenFromString("package/class")));
+    }
+
+    @Test
+    public void loadDefaults_noVersionWithDefaults() throws Exception {
+        resetComponentsAndPackages();
+        mDefaults.add(new ComponentName("default", "class"));
+        mVersionString = null;
+        loadXml(mService);
+        assertEquals(mService.getDefaultComponents(), mDefaults);
+    }
+
+    @Test
+    public void loadDefaults_versionOneWithDefaultsWithActive() throws Exception {
+        resetComponentsAndPackages();
+        mDefaults.add(new ComponentName("default", "class"));
+        mExpectedPrimaryComponentNames.put(0, "package/class");
+        mVersionString = "1";
+        loadXml(mService);
+        assertEquals(mService.getDefaultComponents(),
+                new ArraySet(Arrays.asList(new ComponentName("package", "class"))));
+    }
+
+    @Test
+    public void loadDefaults_versionTwoWithDefaultsWithActive() throws Exception {
+        resetComponentsAndPackages();
+        mDefaults.add(new ComponentName("default", "class"));
+        mDefaultsString = "default/class";
+        mExpectedPrimaryComponentNames.put(0, "package/class");
+        mVersionString = "2";
+        loadXml(mService);
+        assertEquals(1, mService.getDefaultComponents().size());
+        mDefaults.forEach(pkg -> {
+            assertTrue(mService.getDefaultComponents().contains(pkg));
+        });
+    }
+
+    @Test
+    public void loadDefaults_versionOneWithXMLDefaultsWithActive() throws Exception {
+        resetComponentsAndPackages();
+        mDefaults.add(new ComponentName("default", "class"));
+        mDefaultsString = "xml/class";
+        mExpectedPrimaryComponentNames.put(0, "package/class");
+        mVersionString = "1";
+        loadXml(mService);
+        assertEquals(mService.getDefaultComponents(),
+                new ArraySet(Arrays.asList(new ComponentName("xml", "class"))));
+    }
+
+    @Test
+    public void loadDefaults_versionTwoWithXMLDefaultsWithActive() throws Exception {
+        resetComponentsAndPackages();
+        mDefaults.add(new ComponentName("default", "class"));
+        mDefaultsString = "xml/class";
+        mExpectedPrimaryComponentNames.put(0, "package/class");
+        mVersionString = "2";
+        loadXml(mService);
+        assertEquals(mService.getDefaultComponents(),
+                new ArraySet(Arrays.asList(new ComponentName("xml", "class"))));
+    }
+
+    @Test
+    public void loadDefaults_versionLatest_NoLoadDefaults() throws Exception {
+        resetComponentsAndPackages();
+        mDefaults.add(new ComponentName("default", "class"));
+        mDefaultsString = "xml/class";
+        loadXml(mService);
+        assertEquals(mService.getDefaultComponents(),
+                new ArraySet(Arrays.asList(new ComponentName("xml", "class"))));
+    }
+
+    @Test
+    public void upgradeUserSet_versionThree() throws Exception {
+        resetComponentsAndPackages();
+
+        List<UserInfo> users = new ArrayList<>();
+        users.add(new UserInfo(98, "98", 0));
+        users.add(new UserInfo(99, "99", 0));
+        for (UserInfo user : users) {
+            when(mUm.getUserInfo(eq(user.id))).thenReturn(user);
+        }
+
+        mDefaultsString = "xml/class";
+        mVersionString = "3";
+        mUserSetString = "xml/class";
+        loadXml(mService);
+
+        //Test services without overriding upgradeUserSet() remain unchanged
+        assertEquals(new ArraySet(Arrays.asList(mUserSetString)),
+                mService.mUserSetServices.get(98));
+        assertEquals(new ArraySet(Arrays.asList(mUserSetString)),
+                mService.mUserSetServices.get(99));
+        assertEquals(new ArrayMap(), mService.mIsUserChanged);
+    }
+
+    private void resetComponentsAndPackages() {
+        ArrayMap<Integer, ArrayMap<Integer, String>> empty = new ArrayMap(1);
+        ArrayMap<Integer, String> emptyPkgs = new ArrayMap(0);
+        empty.append(mService.mApprovalLevel, emptyPkgs);
+        mExpectedPrimary = empty;
+        mExpectedPrimaryComponentNames = emptyPkgs;
+        mExpectedPrimaryPackages = emptyPkgs;
+        mExpectedSecondary = empty;
+        mExpectedSecondaryComponentNames = emptyPkgs;
+        mExpectedSecondaryPackages = emptyPkgs;
+    }
+
     private void loadXml(ManagedServices service) throws Exception {
+        String xmlString = createXml(service);
+        TypedXmlPullParser parser = Xml.newFastPullParser();
+        parser.setInput(new BufferedInputStream(
+                new ByteArrayInputStream(xmlString.getBytes())), null);
+        parser.nextTag();
+        service.readXml(parser, null, false, UserHandle.USER_ALL);
+    }
+
+    private String createXml(ManagedServices service) {
         final StringBuffer xml = new StringBuffer();
-        xml.append("<" + service.getConfig().xmlTag + ">\n");
+        String xmlTag = service.getConfig().xmlTag;
+        xml.append("<" + xmlTag
+                + (mDefaultsString != null ? " defaults=\"" + mDefaultsString + "\" " : "")
+                + (mVersionString != null ? " version=\"" + mVersionString + "\" " : "")
+                + ">\n");
         for (int userId : mExpectedPrimary.get(service.mApprovalLevel).keySet()) {
+            String pkgOrCmp = mExpectedPrimary.get(service.mApprovalLevel).get(userId);
             xml.append(getXmlEntry(
-                    mExpectedPrimary.get(service.mApprovalLevel).get(userId), userId, true));
+                    pkgOrCmp, userId, true, !(pkgOrCmp.startsWith("non.user.set.package"))));
         }
         for (int userId : mExpectedSecondary.get(service.mApprovalLevel).keySet()) {
             xml.append(getXmlEntry(
@@ -1192,21 +1522,23 @@ public class ManagedServicesTest extends UiServiceTestCase {
         xml.append("<" + ManagedServices.TAG_MANAGED_SERVICES + " "
                         + ManagedServices.ATT_USER_ID + "=\"99\" "
                         + ManagedServices.ATT_IS_PRIMARY + "=\"true\" "
-                        + ManagedServices.ATT_APPROVED_LIST + "=\"99\" />\n");
+                        + ManagedServices.ATT_APPROVED_LIST + "=\"990\" "
+                        + (mUserSetString != null ? ManagedServices.ATT_USER_SET + "=\""
+                        + mUserSetString + "\" " : "")
+                        + "/>\n");
         xml.append("<" + ManagedServices.TAG_MANAGED_SERVICES + " "
                 + ManagedServices.ATT_USER_ID + "=\"98\" "
                 + ManagedServices.ATT_IS_PRIMARY + "=\"false\" "
-                + ManagedServices.ATT_APPROVED_LIST + "=\"98\" />\n");
-        xml.append("</" + service.getConfig().xmlTag + ">");
+                + ManagedServices.ATT_APPROVED_LIST + "=\"981\" "
+                + (mUserSetString != null ? ManagedServices.ATT_USER_SET + "=\""
+                + mUserSetString + "\" " : "")
+                + " />\n");
+        xml.append("</" + xmlTag + ">");
 
-        XmlPullParser parser = Xml.newPullParser();
-        parser.setInput(new BufferedInputStream(
-                new ByteArrayInputStream(xml.toString().getBytes())), null);
-        parser.nextTag();
-        service.readXml(parser, null, false, UserHandle.USER_ALL);
+        return xml.toString();
     }
 
-    private XmlPullParser getParserWithEntries(ManagedServices service, String... xmlEntries)
+    private TypedXmlPullParser getParserWithEntries(ManagedServices service, String... xmlEntries)
             throws Exception {
         final StringBuffer xml = new StringBuffer();
         xml.append("<" + service.getConfig().xmlTag + ">\n");
@@ -1215,7 +1547,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
         }
         xml.append("</" + service.getConfig().xmlTag + ">");
 
-        XmlPullParser parser = Xml.newPullParser();
+        TypedXmlPullParser parser = Xml.newFastPullParser();
         parser.setInput(new BufferedInputStream(
                 new ByteArrayInputStream(xml.toString().getBytes())), null);
         parser.nextTag();
@@ -1224,6 +1556,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
 
     private void addExpectedServices(final ManagedServices service, final List<String> packages,
             int userId) {
+        ManagedServices.Config config = service.getConfig();
         when(mPm.queryIntentServicesAsUser(any(), anyInt(), eq(userId))).
                 thenAnswer(new Answer<List<ResolveInfo>>() {
                     @Override
@@ -1233,7 +1566,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
                         Intent invocationIntent = (Intent) args[0];
                         if (invocationIntent != null) {
                             if (invocationIntent.getAction().equals(
-                                    service.getConfig().serviceInterface)
+                                    config.serviceInterface)
                                     && packages.contains(invocationIntent.getPackage())) {
                                 List<ResolveInfo> dummyServices = new ArrayList<>();
                                 for (int i = 1; i <= 3; i ++) {
@@ -1263,7 +1596,7 @@ public class ManagedServicesTest extends UiServiceTestCase {
 
     private void assertContentsInAnyOrder(Collection<?> expected, Collection<?> actual) {
         assertNotNull(actual);
-        assertEquals(expected.size(), actual.size());
+        assertEquals(expected + " : " + actual, expected.size(), actual.size());
 
         for (Object o : expected) {
             assertTrue("Actual missing " + o, actual.contains(o));
@@ -1389,10 +1722,15 @@ public class ManagedServicesTest extends UiServiceTestCase {
     }
 
     private String getXmlEntry(String approved, int userId, boolean isPrimary) {
+        return getXmlEntry(approved, userId, isPrimary, true);
+    }
+
+    private String getXmlEntry(String approved, int userId, boolean isPrimary, boolean userSet) {
         return "<" + ManagedServices.TAG_MANAGED_SERVICES + " "
                 + ManagedServices.ATT_USER_ID + "=\"" + userId +"\" "
                 + ManagedServices.ATT_IS_PRIMARY + "=\"" + isPrimary +"\" "
                 + ManagedServices.ATT_APPROVED_LIST + "=\"" + approved +"\" "
+                + ManagedServices.ATT_USER_SET + "=\"" + (userSet ? approved : "") + "\" "
                 + "/>\n";
     }
 
@@ -1431,8 +1769,52 @@ public class ManagedServicesTest extends UiServiceTestCase {
         }
 
         @Override
+        protected void ensureFilters(ServiceInfo si, int userId) {
+
+        }
+
+        @Override
+        protected void loadDefaultsFromConfig() {
+            mDefaultComponents.addAll(mDefaults);
+        }
+
+        @Override
         protected String getRequiredPermission() {
             return null;
+        }
+    }
+
+    class TestManagedServicesSettings extends TestManagedServices {
+
+        public TestManagedServicesSettings(Context context, Object mutex, UserProfiles userProfiles,
+                IPackageManager pm, int approvedServiceType) {
+            super(context, mutex, userProfiles, pm, approvedServiceType);
+        }
+
+        @Override
+        public boolean shouldReflectToSettings() {
+            return true;
+        }
+    }
+
+    class TestManagedServicesNoSettings extends TestManagedServices {
+
+        public TestManagedServicesNoSettings(Context context, Object mutex, UserProfiles userProfiles,
+                IPackageManager pm, int approvedServiceType) {
+            super(context, mutex, userProfiles, pm, approvedServiceType);
+        }
+
+        @Override
+        protected Config getConfig() {
+            Config c = super.getConfig();
+            c.secureSettingName = null;
+            c.secondarySettingName = null;
+            return c;
+        }
+
+        @Override
+        public boolean shouldReflectToSettings() {
+            return false;
         }
     }
 }

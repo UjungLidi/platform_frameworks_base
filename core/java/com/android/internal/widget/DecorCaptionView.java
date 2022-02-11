@@ -18,9 +18,7 @@ package com.android.internal.widget;
 
 import android.content.Context;
 import android.graphics.Rect;
-import android.os.RemoteException;
 import android.util.AttributeSet;
-import android.util.Log;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.View;
@@ -30,6 +28,7 @@ import android.view.ViewOutlineProvider;
 import android.view.Window;
 
 import com.android.internal.R;
+import com.android.internal.policy.DecorView;
 import com.android.internal.policy.PhoneWindow;
 
 import java.util.ArrayList;
@@ -71,7 +70,6 @@ import java.util.ArrayList;
  */
 public class DecorCaptionView extends ViewGroup implements View.OnTouchListener,
         GestureDetector.OnGestureListener {
-    private final static String TAG = "DecorCaptionView";
     private PhoneWindow mOwner = null;
     private boolean mShow = false;
 
@@ -305,6 +303,8 @@ public class DecorCaptionView extends ViewGroup implements View.OnTouchListener,
             }
         }
 
+        ((DecorView) mOwner.getDecorView()).notifyCaptionHeightChanged();
+
         // This assumes that the caption bar is at the top.
         mOwner.notifyRestrictedCaptionAreaCallback(mMaximize.getLeft(), mMaximize.getTop(),
                 mClose.getRight(), mClose.getBottom());
@@ -324,11 +324,7 @@ public class DecorCaptionView extends ViewGroup implements View.OnTouchListener,
     private void toggleFreeformWindowingMode() {
         Window.WindowControllerCallback callback = mOwner.getWindowControllerCallback();
         if (callback != null) {
-            try {
-                callback.toggleFreeformWindowingMode();
-            } catch (RemoteException ex) {
-                Log.e(TAG, "Cannot change task workspace.");
-            }
+            callback.toggleFreeformWindowingMode();
         }
     }
 

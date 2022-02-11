@@ -27,14 +27,7 @@ import java.util.Set;
  *
  * @hide
  */
-public final class FrontendResource {
-    public static final int INVALID_OWNER_ID = -1;
-
-    /**
-     * Id of the current frontend. Should not be changed and should be aligned with the driver level
-     * implementation.
-     */
-    private final int mId;
+public final class FrontendResource extends TunerResourceBasic {
 
     /**
      * see {@link android.media.tv.tuner.frontend.FrontendSettings.Type}
@@ -47,30 +40,14 @@ public final class FrontendResource {
     private final int mExclusiveGroupId;
 
     /**
-     * An array to save all the FE ids under the same exclisive group.
+     * An array to save all the FE handles under the same exclisive group.
      */
-    private Set<Integer> mExclusiveGroupMemberFeIds = new HashSet<>();
-
-    /**
-     * If the current resource is in use. Once resources under the same exclusive group id is in use
-     * all other resources in the same group would be considered in use.
-     */
-    private boolean mIsInUse;
-
-    /**
-     * The owner client's id if this resource is occupied. Owner of the resource under the same
-     * exclusive group id would be considered as the whole group's owner.
-     */
-    private int mOwnerClientId = INVALID_OWNER_ID;
+    private Set<Integer> mExclusiveGroupMemberHandles = new HashSet<>();
 
     private FrontendResource(Builder builder) {
-        this.mId = builder.mId;
+        super(builder);
         this.mType = builder.mType;
         this.mExclusiveGroupId = builder.mExclusiveGroupId;
-    }
-
-    public int getId() {
-        return mId;
     }
 
     public int getType() {
@@ -81,26 +58,26 @@ public final class FrontendResource {
         return mExclusiveGroupId;
     }
 
-    public Set<Integer> getExclusiveGroupMemberFeIds() {
-        return mExclusiveGroupMemberFeIds;
+    public Set<Integer> getExclusiveGroupMemberFeHandles() {
+        return mExclusiveGroupMemberHandles;
     }
 
     /**
-     * Add one id into the exclusive group member id collection.
+     * Add one handle into the exclusive group member handle collection.
      *
-     * @param id the id to be added.
+     * @param handle the handle to be added.
      */
-    public void addExclusiveGroupMemberFeId(int id) {
-        mExclusiveGroupMemberFeIds.add(id);
+    public void addExclusiveGroupMemberFeHandle(int handle) {
+        mExclusiveGroupMemberHandles.add(handle);
     }
 
     /**
-     * Add one id collection to the exclusive group member id collection.
+     * Add one handle collection to the exclusive group member handle collection.
      *
-     * @param ids the id collection to be added.
+     * @param handles the handle collection to be added.
      */
-    public void addExclusiveGroupMemberFeIds(Collection<Integer> ids) {
-        mExclusiveGroupMemberFeIds.addAll(ids);
+    public void addExclusiveGroupMemberFeHandles(Collection<Integer> handles) {
+        mExclusiveGroupMemberHandles.addAll(handles);
     }
 
     /**
@@ -108,54 +85,27 @@ public final class FrontendResource {
      *
      * @param id the id to be removed.
      */
-    public void removeExclusiveGroupMemberFeId(int id) {
-        mExclusiveGroupMemberFeIds.remove(id);
-    }
-
-    public boolean isInUse() {
-        return mIsInUse;
-    }
-
-    public int getOwnerClientId() {
-        return mOwnerClientId;
-    }
-
-    /**
-     * Set an owner client on the resource.
-     *
-     * @param ownerClientId the id of the owner client.
-     */
-    public void setOwner(int ownerClientId) {
-        mIsInUse = true;
-        mOwnerClientId = ownerClientId;
-    }
-
-    /**
-     * Remove an owner client from the resource.
-     */
-    public void removeOwner() {
-        mIsInUse = false;
-        mOwnerClientId = INVALID_OWNER_ID;
+    public void removeExclusiveGroupMemberFeId(int handle) {
+        mExclusiveGroupMemberHandles.remove(handle);
     }
 
     @Override
     public String toString() {
-        return "FrontendResource[id=" + this.mId + ", type=" + this.mType
-                + ", exclusiveGId=" + this.mExclusiveGroupId + ", exclusiveGMemeberIds="
-                + this.mExclusiveGroupMemberFeIds
+        return "FrontendResource[handle=" + this.mHandle + ", type=" + this.mType
+                + ", exclusiveGId=" + this.mExclusiveGroupId + ", exclusiveGMemeberHandles="
+                + this.mExclusiveGroupMemberHandles
                 + ", isInUse=" + this.mIsInUse + ", ownerClientId=" + this.mOwnerClientId + "]";
     }
 
     /**
      * Builder class for {@link FrontendResource}.
      */
-    public static class Builder {
-        private final int mId;
+    public static class Builder extends TunerResourceBasic.Builder {
         @Type private int mType;
         private int mExclusiveGroupId;
 
-        Builder(int id) {
-            this.mId = id;
+        Builder(int handle) {
+            super(handle);
         }
 
         /**
@@ -183,6 +133,7 @@ public final class FrontendResource {
          *
          * @return {@link FrontendResource}.
          */
+        @Override
         public FrontendResource build() {
             FrontendResource frontendResource = new FrontendResource(this);
             return frontendResource;

@@ -19,17 +19,17 @@ package com.android.server.location.gnss;
 import static com.android.server.location.gnss.GnssManagerService.D;
 import static com.android.server.location.gnss.GnssManagerService.TAG;
 
+import android.app.AppOpsManager;
 import android.location.GnssNavigationMessage;
 import android.location.IGnssNavigationMessageListener;
 import android.location.util.identity.CallerIdentity;
 import android.util.Log;
 
-import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.util.Preconditions;
-import com.android.server.location.AppForegroundHelper;
-import com.android.server.location.AppOpsHelper;
-import com.android.server.location.SettingsHelper;
-import com.android.server.location.UserInfoHelper;
+import com.android.server.location.gnss.hal.GnssNative;
+import com.android.server.location.injector.AppOpsHelper;
+import com.android.server.location.injector.Injector;
+
+import java.util.Collection;
 
 /**
  * An base implementation for GPS navigation messages provider.
@@ -39,23 +39,39 @@ import com.android.server.location.UserInfoHelper;
  * @hide
  */
 public class GnssNavigationMessageProvider extends
-        GnssListenerMultiplexer<Void, IGnssNavigationMessageListener, Void> {
+        GnssListenerMultiplexer<Void, IGnssNavigationMessageListener, Void> implements
+        GnssNative.BaseCallbacks, GnssNative.NavigationMessageCallbacks {
 
-    private final GnssNavigationMessageProviderNative mNative;
+    private class GnssNavigationMessageListenerRegistration extends GnssListenerRegistration {
 
-    public GnssNavigationMessageProvider(UserInfoHelper userInfoHelper,
-            SettingsHelper settingsHelper, AppOpsHelper appOpsHelper,
-            AppForegroundHelper appForegroundHelper) {
-        this(userInfoHelper, settingsHelper, appOpsHelper, appForegroundHelper,
-                new GnssNavigationMessageProviderNative());
+        protected GnssNavigationMessageListenerRegistration(
+                CallerIdentity callerIdentity,
+                IGnssNavigationMessageListener listener) {
+            super(null, callerIdentity, listener);
+        }
+
+        @Override
+        protected void onGnssListenerRegister() {
+            executeOperation(listener -> listener.onStatusChanged(
+                    GnssNavigationMessage.Callback.STATUS_READY));
+        }
     }
 
-    @VisibleForTesting
-    public GnssNavigationMessageProvider(UserInfoHelper userInfoHelper,
-            SettingsHelper settingsHelper, AppOpsHelper appOpsHelper,
-            AppForegroundHelper appForegroundHelper, GnssNavigationMessageProviderNative aNative) {
-        super(userInfoHelper, settingsHelper, appOpsHelper, appForegroundHelper);
-        mNative = aNative;
+    private final AppOpsHelper mAppOpsHelper;
+    private final GnssNative mGnssNative;
+
+    public GnssNavigationMessageProvider(Injector injector, GnssNative gnssNative) {
+        super(injector);
+        mAppOpsHelper = injector.getAppOpsHelper();
+        mGnssNative = gnssNative;
+
+        mGnssNative.addBaseCallbacks(this);
+        mGnssNative.addNavigationMessageCallbacks(this);
+    }
+
+    @Override
+    public boolean isSupported() {
+        return mGnssNative.isNavigationMessageCollectionSupported();
     }
 
     @Override
@@ -64,10 +80,15 @@ public class GnssNavigationMessageProvider extends
     }
 
     @Override
-    protected boolean registerWithService(Void ignored) {
-        Preconditions.checkState(mNative.isNavigationMessageSupported());
+    protected GnssListenerRegistration createRegistration(Void request,
+            CallerIdentity callerIdentity, IGnssNavigationMessageListener listener) {
+        return new GnssNavigationMessageListenerRegistration(callerIdentity, listener);
+    }
 
-        if (mNative.startNavigationMessageCollection()) {
+    @Override
+    protected boolean registerWithService(Void ignored,
+            Collection<GnssListenerRegistration> registrations) {
+        if (mGnssNative.startNavigationMessageCollection()) {
             if (D) {
                 Log.d(TAG, "starting gnss navigation messages");
             }
@@ -80,53 +101,29 @@ public class GnssNavigationMessageProvider extends
 
     @Override
     protected void unregisterWithService() {
-        if (mNative.isNavigationMessageSupported()) {
-            if (mNative.stopNavigationMessageCollection()) {
-                if (D) {
-                    Log.d(TAG, "stopping gnss navigation messages");
-                }
-            } else {
-                Log.e(TAG, "error stopping gnss navigation messages");
+        if (mGnssNative.stopNavigationMessageCollection()) {
+            if (D) {
+                Log.d(TAG, "stopping gnss navigation messages");
             }
+        } else {
+            Log.e(TAG, "error stopping gnss navigation messages");
         }
     }
 
-    /**
-     * Called by GnssLocationProvider.
-     */
-    public void onNavigationMessageAvailable(GnssNavigationMessage event) {
+    @Override
+    public void onHalRestarted() {
+        resetService();
+    }
+
+    @Override
+    public void onReportNavigationMessage(GnssNavigationMessage event) {
         deliverToListeners(registration -> {
-            if (mAppOpsHelper.noteLocationAccess(registration.getIdentity())) {
+            if (mAppOpsHelper.noteOpNoThrow(AppOpsManager.OP_FINE_LOCATION,
+                    registration.getIdentity())) {
                 return listener -> listener.onGnssNavigationMessageReceived(event);
             } else {
                 return null;
             }
         });
     }
-
-    @Override
-    protected boolean isServiceSupported() {
-        return mNative.isNavigationMessageSupported();
-    }
-
-    @VisibleForTesting
-    static class GnssNavigationMessageProviderNative {
-        boolean isNavigationMessageSupported() {
-            return native_is_navigation_message_supported();
-        }
-
-        boolean startNavigationMessageCollection() {
-            return native_start_navigation_message_collection();
-        }
-
-        boolean stopNavigationMessageCollection() {
-            return native_stop_navigation_message_collection();
-        }
-    }
-
-    static native boolean native_is_navigation_message_supported();
-
-    static native boolean native_start_navigation_message_collection();
-
-    static native boolean native_stop_navigation_message_collection();
 }

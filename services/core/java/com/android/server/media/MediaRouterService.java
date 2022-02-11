@@ -438,6 +438,12 @@ public final class MediaRouterService extends IMediaRouterService.Stub
 
     // Binder call
     @Override
+    public void enforceMediaContentControlPermission() {
+        mService2.enforceMediaContentControlPermission();
+    }
+
+    // Binder call
+    @Override
     public List<MediaRoute2Info> getSystemRoutes() {
         return mService2.getSystemRoutes();
     }
@@ -481,8 +487,10 @@ public final class MediaRouterService extends IMediaRouterService.Stub
     // Binder call
     @Override
     public void requestCreateSessionWithRouter2(IMediaRouter2 router, int requestId,
+            long managerRequestId, RoutingSessionInfo oldSession,
             MediaRoute2Info route, Bundle sessionHints) {
-        mService2.requestCreateSessionWithRouter2(router, requestId, route, sessionHints);
+        mService2.requestCreateSessionWithRouter2(router, requestId, managerRequestId,
+                oldSession, route, sessionHints);
     }
 
     // Binder call
@@ -542,6 +550,18 @@ public final class MediaRouterService extends IMediaRouterService.Stub
 
     // Binder call
     @Override
+    public void startScan(IMediaRouter2Manager manager) {
+        mService2.startScan(manager);
+    }
+
+    // Binder call
+    @Override
+    public void stopScan(IMediaRouter2Manager manager) {
+        mService2.stopScan(manager);
+    }
+
+    // Binder call
+    @Override
     public void setRouteVolumeWithManager(IMediaRouter2Manager manager, int requestId,
             MediaRoute2Info route, int volume) {
         mService2.setRouteVolumeWithManager(manager, requestId, route, volume);
@@ -550,8 +570,8 @@ public final class MediaRouterService extends IMediaRouterService.Stub
     // Binder call
     @Override
     public void requestCreateSessionWithManager(IMediaRouter2Manager manager,
-            int requestId, String packageName, MediaRoute2Info route) {
-        mService2.requestCreateSessionWithManager(manager, requestId, packageName, route);
+            int requestId, RoutingSessionInfo oldSession, MediaRoute2Info route) {
+        mService2.requestCreateSessionWithManager(manager, requestId, oldSession, route);
     }
 
     // Binder call
@@ -708,7 +728,7 @@ public final class MediaRouterService extends IMediaRouterService.Stub
         clientRecord.mGroupId = groupId;
         if (groupId != null) {
             userRecord.addToGroup(groupId, clientRecord);
-            userRecord.mHandler.obtainMessage(UserHandler.MSG_UPDATE_SELECTED_ROUTE, groupId)
+            userRecord.mHandler.obtainMessage(UserHandler.MSG_NOTIFY_GROUP_ROUTE_SELECTED, groupId)
                 .sendToTarget();
         }
     }
@@ -789,7 +809,7 @@ public final class MediaRouterService extends IMediaRouterService.Stub
                         if (group != null) {
                             group.mSelectedRouteId = routeId;
                             clientRecord.mUserRecord.mHandler.obtainMessage(
-                                UserHandler.MSG_UPDATE_SELECTED_ROUTE, clientRecord.mGroupId)
+                                UserHandler.MSG_NOTIFY_GROUP_ROUTE_SELECTED, clientRecord.mGroupId)
                                 .sendToTarget();
                         }
                     }
@@ -1043,7 +1063,7 @@ public final class MediaRouterService extends IMediaRouterService.Stub
         public static final int MSG_REQUEST_UPDATE_VOLUME = 7;
         private static final int MSG_UPDATE_CLIENT_STATE = 8;
         private static final int MSG_CONNECTION_TIMED_OUT = 9;
-        private static final int MSG_UPDATE_SELECTED_ROUTE = 10;
+        private static final int MSG_NOTIFY_GROUP_ROUTE_SELECTED = 10;
 
         private static final int TIMEOUT_REASON_NOT_AVAILABLE = 1;
         private static final int TIMEOUT_REASON_CONNECTION_LOST = 2;
@@ -1120,8 +1140,8 @@ public final class MediaRouterService extends IMediaRouterService.Stub
                     connectionTimedOut();
                     break;
                 }
-                case MSG_UPDATE_SELECTED_ROUTE: {
-                    updateSelectedRoute((String) msg.obj);
+                case MSG_NOTIFY_GROUP_ROUTE_SELECTED: {
+                    notifyGroupRouteSelected((String) msg.obj);
                     break;
                 }
             }
@@ -1447,9 +1467,9 @@ public final class MediaRouterService extends IMediaRouterService.Stub
             }
         }
 
-        private void updateSelectedRoute(String groupId) {
+        private void notifyGroupRouteSelected(String groupId) {
             try {
-                String selectedRouteId = null;
+                String selectedRouteId;
                 synchronized (mService.mLock) {
                     ClientGroup group = mUserRecord.mClientGroupMap.get(groupId);
                     if (group == null) {
@@ -1468,7 +1488,7 @@ public final class MediaRouterService extends IMediaRouterService.Stub
                 final int count = mTempClients.size();
                 for (int i = 0; i < count; i++) {
                     try {
-                        mTempClients.get(i).onSelectedRouteChanged(selectedRouteId);
+                        mTempClients.get(i).onGroupRouteSelected(selectedRouteId);
                     } catch (RemoteException ex) {
                         Slog.w(TAG, "Failed to call onSelectedRouteChanged. Client probably died.");
                     }

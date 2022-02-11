@@ -36,6 +36,8 @@ import android.content.pm.PackageManager;
 import android.content.pm.VersionedPackage;
 import android.content.rollback.PackageRollbackInfo;
 import android.content.rollback.RollbackInfo;
+import android.os.SystemProperties;
+import android.text.TextUtils;
 import android.util.ArraySet;
 import android.util.Slog;
 
@@ -43,7 +45,6 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.FrameworkStatsLog;
 import com.android.server.PackageWatchdog;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -115,7 +116,7 @@ public final class WatchdogRollbackLogger {
     }
 
 
-    static void logRollbackStatusOnBoot(Context context, int rollbackId,
+    static void logRollbackStatusOnBoot(Context context, int rollbackId, String logPackageName,
             List<RollbackInfo> recentlyCommittedRollbacks) {
         PackageInstaller packageInstaller = context.getPackageManager().getPackageInstaller();
 
@@ -132,23 +133,15 @@ public final class WatchdogRollbackLogger {
             return;
         }
 
-        // Identify the logging parent for this rollback. When all configurations are correct,
-        // each package in the rollback has a logging parent set in metadata.
-        final Set<String> loggingPackageNames = new ArraySet<>();
-        for (PackageRollbackInfo packageRollback : rollback.getPackages()) {
-            final String loggingParentName = getLoggingParentName(context,
-                    packageRollback.getPackageName());
-            if (loggingParentName != null) {
-                loggingPackageNames.add(loggingParentName);
-            }
-        }
-
         // Use the version of the logging parent that was installed before
         // we rolled back for logging purposes.
-        final List<VersionedPackage> oldLoggingPackages = new ArrayList<>();
-        for (PackageRollbackInfo packageRollback : rollback.getPackages()) {
-            if (loggingPackageNames.contains(packageRollback.getPackageName())) {
-                oldLoggingPackages.add(packageRollback.getVersionRolledBackFrom());
+        VersionedPackage oldLoggingPackage = null;
+        if (!TextUtils.isEmpty(logPackageName)) {
+            for (PackageRollbackInfo packageRollback : rollback.getPackages()) {
+                if (logPackageName.equals(packageRollback.getPackageName())) {
+                    oldLoggingPackage = packageRollback.getVersionRolledBackFrom();
+                    break;
+                }
             }
         }
 
@@ -159,22 +152,14 @@ public final class WatchdogRollbackLogger {
             return;
         }
 
-        // If no logging packages are found, use a null package to ensure the rollback status
-        // is still logged.
-        if (oldLoggingPackages.isEmpty()) {
-            oldLoggingPackages.add(null);
-        }
-
-        for (VersionedPackage oldLoggingPackage : oldLoggingPackages) {
-            if (sessionInfo.isStagedSessionApplied()) {
-                logEvent(oldLoggingPackage,
-                        WATCHDOG_ROLLBACK_OCCURRED__ROLLBACK_TYPE__ROLLBACK_SUCCESS,
-                        WATCHDOG_ROLLBACK_OCCURRED__ROLLBACK_REASON__REASON_UNKNOWN, "");
-            } else if (sessionInfo.isStagedSessionFailed()) {
-                logEvent(oldLoggingPackage,
-                        WATCHDOG_ROLLBACK_OCCURRED__ROLLBACK_TYPE__ROLLBACK_FAILURE,
-                        WATCHDOG_ROLLBACK_OCCURRED__ROLLBACK_REASON__REASON_UNKNOWN, "");
-            }
+        if (sessionInfo.isStagedSessionApplied()) {
+            logEvent(oldLoggingPackage,
+                    WATCHDOG_ROLLBACK_OCCURRED__ROLLBACK_TYPE__ROLLBACK_SUCCESS,
+                    WATCHDOG_ROLLBACK_OCCURRED__ROLLBACK_REASON__REASON_UNKNOWN, "");
+        } else if (sessionInfo.isStagedSessionFailed()) {
+            logEvent(oldLoggingPackage,
+                    WATCHDOG_ROLLBACK_OCCURRED__ROLLBACK_TYPE__ROLLBACK_FAILURE,
+                    WATCHDOG_ROLLBACK_OCCURRED__ROLLBACK_REASON__REASON_UNKNOWN, "");
         }
     }
 
@@ -232,6 +217,34 @@ public final class WatchdogRollbackLogger {
                     failingPackageName,
                     new byte[]{});
         }
+
+        logTestProperties(logPackage, type, rollbackReason, failingPackageName);
+    }
+
+    /**
+     * Writes properties which will be used by rollback tests to check if particular rollback
+     * events have occurred.
+     *
+     * persist.sys.rollbacktest.enabled: true if rollback tests are running
+     * persist.sys.rollbacktest.EVENT_TYPE: true if a particular rollback event has occurred
+     *   ex: persist.sys.rollbacktest.ROLLBACK_INITIATE is true if ROLLBACK_INITIATE has happened
+     * persist.sys.rollbacktest.EVENT_TYPE.logPackage: the package to associate the rollback with
+     * persist.sys.rollbacktest.EVENT_TYPE.rollbackReason: the reason Watchdog triggered a rollback
+     * persist.sys.rollbacktest.EVENT_TYPE.failedPackageName: the failing package or process which
+     *   triggered the rollback
+     */
+    private static void logTestProperties(@Nullable VersionedPackage logPackage, int type,
+            int rollbackReason, @NonNull String failingPackageName) {
+        // This property should be on only during the tests
+        final String prefix = "persist.sys.rollbacktest.";
+        if (!SystemProperties.getBoolean(prefix + "enabled", false)) {
+            return;
+        }
+        String key = prefix + rollbackTypeToString(type);
+        SystemProperties.set(key, String.valueOf(true));
+        SystemProperties.set(key + ".logPackage", logPackage != null ? logPackage.toString() : "");
+        SystemProperties.set(key + ".rollbackReason", rollbackReasonToString(rollbackReason));
+        SystemProperties.set(key + ".failedPackageName", failingPackageName);
     }
 
     @VisibleForTesting

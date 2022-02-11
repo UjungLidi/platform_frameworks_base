@@ -110,7 +110,7 @@ static void nativeSetTransformAndClip(JNIEnv* env, jclass thiz, jlong documentPt
         jlong transformPtr, jint clipLeft, jint clipTop, jint clipRight, jint clipBottom) {
     FPDF_DOCUMENT document = reinterpret_cast<FPDF_DOCUMENT>(documentPtr);
 
-    FPDF_PAGE* page = (FPDF_PAGE*) FPDF_LoadPage(document, pageIndex);
+    FPDF_PAGE page = FPDF_LoadPage(document, pageIndex);
     if (!page) {
         jniThrowException(env, "java/lang/IllegalStateException",
                 "cannot open page");
@@ -129,8 +129,8 @@ static void nativeSetTransformAndClip(JNIEnv* env, jclass thiz, jlong documentPt
 
     // PDF's coordinate system origin is left-bottom while in graphics it
     // is the top-left. So, translate the PDF coordinates to ours.
-    SkMatrix reflectOnX = SkMatrix::MakeScale(1, -1);
-    SkMatrix moveUp = SkMatrix::MakeTrans(0, FPDF_GetPageHeight(page));
+    SkMatrix reflectOnX = SkMatrix::Scale(1, -1);
+    SkMatrix moveUp = SkMatrix::Translate(0, FPDF_GetPageHeight(page));
     SkMatrix coordinateChange = SkMatrix::Concat(moveUp, reflectOnX);
 
     // Apply the transformation what was created in our coordinates.

@@ -16,24 +16,17 @@
 
 package android.location.util.identity;
 
-import static android.Manifest.permission.ACCESS_COARSE_LOCATION;
-import static android.Manifest.permission.ACCESS_FINE_LOCATION;
-import static android.content.pm.PackageManager.PERMISSION_GRANTED;
-
-import android.annotation.IntDef;
 import android.annotation.Nullable;
-import android.app.AppOpsManager;
 import android.content.Context;
 import android.os.Binder;
 import android.os.Process;
 import android.os.UserHandle;
+import android.os.WorkSource;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.ArrayUtils;
-import com.android.internal.util.Preconditions;
+import com.android.internal.util.HexDump;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
 import java.util.Objects;
 
 /**
@@ -43,40 +36,13 @@ import java.util.Objects;
  */
 public final class CallerIdentity {
 
-    public static final int PERMISSION_NONE = 0;
-    public static final int PERMISSION_COARSE = 1;
-    public static final int PERMISSION_FINE = 2;
-
-    @IntDef({PERMISSION_NONE, PERMISSION_COARSE, PERMISSION_FINE})
-    @Retention(RetentionPolicy.SOURCE)
-    public @interface PermissionLevel {}
-
     /**
-     * Converts the given permission level to the corresponding permission.
+     * Construct a CallerIdentity for test purposes.
      */
-    public static String asPermission(@PermissionLevel int permissionLevel) {
-        switch (permissionLevel) {
-            case PERMISSION_COARSE:
-                return ACCESS_COARSE_LOCATION;
-            case PERMISSION_FINE:
-                return ACCESS_FINE_LOCATION;
-            default:
-                throw new IllegalArgumentException();
-        }
-    }
-
-    /**
-     * Converts the given permission level to the corresponding appop.
-     */
-    public static int asAppOp(@PermissionLevel int permissionLevel) {
-        switch (permissionLevel) {
-            case PERMISSION_COARSE:
-                return AppOpsManager.OP_COARSE_LOCATION;
-            case PERMISSION_FINE:
-                return AppOpsManager.OP_FINE_LOCATION;
-            default:
-                throw new IllegalArgumentException();
-        }
+    @VisibleForTesting
+    public static CallerIdentity forTest(int uid, int pid, String packageName,
+            @Nullable String attributionTag) {
+        return forTest(uid, pid, packageName, attributionTag, null);
     }
 
     /**
@@ -84,19 +50,30 @@ public final class CallerIdentity {
      */
     @VisibleForTesting
     public static CallerIdentity forTest(int uid, int pid, String packageName,
-            @Nullable String attributionTag, @PermissionLevel int permissionLevel) {
+            @Nullable String attributionTag, @Nullable String listenerId) {
+        return new CallerIdentity(uid, pid, packageName, attributionTag, listenerId);
+    }
 
-        return new CallerIdentity(uid, pid, packageName, attributionTag, null,
-                permissionLevel);
+    /**
+     * Returns a CallerIdentity with PID and listener ID information stripped. This is mostly
+     * useful for aggregating information for debug purposes, and should not be used in any API with
+     * security requirements.
+     */
+    public static CallerIdentity forAggregation(CallerIdentity callerIdentity) {
+        if (callerIdentity.getPid() == 0 && callerIdentity.getListenerId() == null) {
+            return callerIdentity;
+        }
+
+        return new CallerIdentity(callerIdentity.getUid(), 0, callerIdentity.getPackageName(),
+                callerIdentity.getAttributionTag(), null);
     }
 
     /**
      * Creates a CallerIdentity for the current process and context.
      */
     public static CallerIdentity fromContext(Context context) {
-        return new CallerIdentity(Process.myUid(), Process.myPid(),
-                context.getPackageName(), context.getAttributionTag(), null,
-                getPermissionLevel(context, Binder.getCallingPid(), Binder.getCallingUid()));
+        return new CallerIdentity(Process.myUid(), Process.myPid(), context.getPackageName(),
+                context.getAttributionTag(), null);
     }
 
     /**
@@ -121,7 +98,7 @@ public final class CallerIdentity {
             throw new SecurityException("invalid package \"" + packageName + "\" for uid " + uid);
         }
 
-        return fromBinderUnsafe(context, packageName, attributionTag, listenerId);
+        return fromBinderUnsafe(packageName, attributionTag, listenerId);
     }
 
     /**
@@ -130,9 +107,9 @@ public final class CallerIdentity {
      * this method should only be used if the package will be validated by some other means, such as
      * an appops call.
      */
-    public static CallerIdentity fromBinderUnsafe(Context context, String packageName,
+    public static CallerIdentity fromBinderUnsafe(String packageName,
             @Nullable String attributionTag) {
-        return fromBinderUnsafe(context, packageName, attributionTag, null);
+        return fromBinderUnsafe(packageName, attributionTag, null);
     }
 
     /**
@@ -141,126 +118,102 @@ public final class CallerIdentity {
      * calling uid - this method should only be used if the package will be validated by some other
      * means, such as an appops call.
      */
-    public static CallerIdentity fromBinderUnsafe(Context context, String packageName,
+    public static CallerIdentity fromBinderUnsafe(String packageName,
             @Nullable String attributionTag, @Nullable String listenerId) {
         return new CallerIdentity(Binder.getCallingUid(), Binder.getCallingPid(),
-                packageName, attributionTag, listenerId,
-                getPermissionLevel(context, Binder.getCallingPid(), Binder.getCallingUid()));
+                packageName, attributionTag, listenerId);
     }
 
-    /**
-     * Throws a security exception if the caller does not hold a location permission.
-     */
-    public static void enforceCallingOrSelfLocationPermission(Context context,
-            @PermissionLevel int desiredPermissionLevel) {
-        enforceLocationPermission(Binder.getCallingUid(),
-                getPermissionLevel(context, Binder.getCallingPid(), Binder.getCallingUid()),
-                desiredPermissionLevel);
-    }
+    private final int mUid;
 
-    /**
-     * Returns false if the caller does not hold a location permission, true otherwise.
-     */
-    public static boolean checkCallingOrSelfLocationPermission(Context context,
-            @PermissionLevel int desiredPermissionLevel) {
-        return checkLocationPermission(
-                getPermissionLevel(context, Binder.getCallingPid(), Binder.getCallingUid()),
-                desiredPermissionLevel);
-    }
+    private final int mPid;
 
-    private static void enforceLocationPermission(int uid, @PermissionLevel int permissionLevel,
-            @PermissionLevel int desiredPermissionLevel) {
-        if (checkLocationPermission(permissionLevel, desiredPermissionLevel)) {
-            return;
-        }
+    private final String mPackageName;
 
-        if (desiredPermissionLevel == PERMISSION_COARSE) {
-            throw new SecurityException("uid " + uid + " does not have " + ACCESS_COARSE_LOCATION
-                    + " or " + ACCESS_FINE_LOCATION + ".");
-        } else if (desiredPermissionLevel == PERMISSION_FINE) {
-            throw new SecurityException("uid " + uid + " does not have " + ACCESS_FINE_LOCATION
-                    + ".");
-        }
-    }
+    private final @Nullable String mAttributionTag;
 
-    private static boolean checkLocationPermission(@PermissionLevel int permissionLevel,
-            @PermissionLevel int desiredPermissionLevel) {
-        return permissionLevel >= desiredPermissionLevel;
-    }
+    private final @Nullable String mListenerId;
 
-    private static @PermissionLevel int getPermissionLevel(Context context, int pid, int uid) {
-        if (context.checkPermission(ACCESS_FINE_LOCATION, pid, uid) == PERMISSION_GRANTED) {
-            return PERMISSION_FINE;
-        }
-        if (context.checkPermission(ACCESS_COARSE_LOCATION, pid, uid) == PERMISSION_GRANTED) {
-            return PERMISSION_COARSE;
-        }
-
-        return PERMISSION_NONE;
+    private CallerIdentity(int uid, int pid, String packageName,
+            @Nullable String attributionTag, @Nullable String listenerId) {
+        this.mUid = uid;
+        this.mPid = pid;
+        this.mPackageName = Objects.requireNonNull(packageName);
+        this.mAttributionTag = attributionTag;
+        this.mListenerId = listenerId;
     }
 
     /** The calling UID. */
-    public final int uid;
+    public int getUid() {
+        return mUid;
+    }
 
     /** The calling PID. */
-    public final int pid;
+    public int getPid() {
+        return mPid;
+    }
 
     /** The calling user. */
-    public final int userId;
+    public int getUserId() {
+        return UserHandle.getUserId(mUid);
+    }
 
     /** The calling package name. */
-    public final String packageName;
+    public String getPackageName() {
+        return mPackageName;
+    }
 
     /** The calling attribution tag. */
-    public final @Nullable String attributionTag;
-
-    /** The calling listener id. */
-    public final @Nullable String listenerId;
-
-    /**
-     * The calling location permission level. This field should only be used for validating
-     * permissions for API access. It should not be used for validating permissions for location
-     * access - that must be done through appops.
-     */
-    public final @PermissionLevel int permissionLevel;
-
-    private CallerIdentity(int uid, int pid, String packageName,
-            @Nullable String attributionTag, @Nullable String listenerId,
-            @PermissionLevel int permissionLevel) {
-        this.uid = uid;
-        this.pid = pid;
-        this.userId = UserHandle.getUserId(uid);
-        this.packageName = Objects.requireNonNull(packageName);
-        this.attributionTag = attributionTag;
-        this.listenerId = listenerId;
-        this.permissionLevel = Preconditions.checkArgumentInRange(permissionLevel, PERMISSION_NONE,
-                PERMISSION_FINE, "permissionLevel");
+    public String getAttributionTag() {
+        return mAttributionTag;
     }
 
     /**
-     * Throws a security exception if the CallerIdentity does not hold a location permission.
+     * The calling listener id. A null listener id will match any other listener id for the purposes
+     * of {@link #equals(Object)}.
      */
-    public void enforceLocationPermission(@PermissionLevel int desiredPermissionLevel) {
-        enforceLocationPermission(uid, permissionLevel, desiredPermissionLevel);
+    public String getListenerId() {
+        return mListenerId;
+    }
+
+    /** Returns true if this represents a system server identity. */
+    public boolean isSystemServer() {
+        return mUid == Process.SYSTEM_UID;
+    }
+
+    /**
+     * Adds this identity to the worksource supplied, or if not worksource is supplied, creates a
+     * new worksource representing this identity.
+     */
+    public WorkSource addToWorkSource(@Nullable WorkSource workSource) {
+        if (workSource == null) {
+            return new WorkSource(mUid, mPackageName);
+        } else {
+            workSource.add(mUid, mPackageName);
+            return workSource;
+        }
     }
 
     @Override
     public String toString() {
-        int length = 10 + packageName.length();
-        if (attributionTag != null) {
-            length += attributionTag.length();
+        int length = 10 + mPackageName.length();
+        if (mAttributionTag != null) {
+            length += mAttributionTag.length();
         }
 
         StringBuilder builder = new StringBuilder(length);
-        builder.append(pid).append("/").append(packageName);
-        if (attributionTag != null) {
+        builder.append(mUid).append("/").append(mPackageName);
+        if (mAttributionTag != null) {
             builder.append("[");
-            if (attributionTag.startsWith(packageName)) {
-                builder.append(attributionTag.substring(packageName.length()));
+            if (mAttributionTag.startsWith(mPackageName)) {
+                builder.append(mAttributionTag.substring(mPackageName.length()));
             } else {
-                builder.append(attributionTag);
+                builder.append(mAttributionTag);
             }
             builder.append("]");
+        }
+        if (mListenerId != null) {
+            builder.append("/").append(HexDump.toHexString(mListenerId.hashCode()));
         }
         return builder.toString();
     }
@@ -274,14 +227,16 @@ public final class CallerIdentity {
             return false;
         }
         CallerIdentity that = (CallerIdentity) o;
-        return uid == that.uid
-                && pid == that.pid
-                && packageName.equals(that.packageName)
-                && Objects.equals(attributionTag, that.attributionTag);
+        return mUid == that.mUid
+                && mPid == that.mPid
+                && mPackageName.equals(that.mPackageName)
+                && Objects.equals(mAttributionTag, that.mAttributionTag)
+                && (mListenerId == null || that.mListenerId == null || mListenerId.equals(
+                that.mListenerId));
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(uid, pid, packageName, attributionTag);
+        return Objects.hash(mUid, mPid, mPackageName, mAttributionTag);
     }
 }

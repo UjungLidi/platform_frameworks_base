@@ -21,11 +21,11 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <GLES3/gl3.h>
+#include <gui/TraceUtils.h>
 #include <private/hwui/DrawGlInfo.h>
 #include <utils/Color.h>
 #include <utils/GLUtils.h>
 #include <utils/Trace.h>
-#include <utils/TraceUtils.h>
 
 #include <thread>
 
@@ -67,7 +67,7 @@ void VkInteropFunctorDrawable::vkInvokeFunctor(Functor* functor) {
 void VkInteropFunctorDrawable::onDraw(SkCanvas* canvas) {
     ATRACE_CALL();
 
-    if (canvas->getGrContext() == nullptr) {
+    if (canvas->recordingContext() == nullptr) {
         SkDEBUGF(("Attempting to draw VkInteropFunctor into an unsupported surface"));
         return;
     }
@@ -155,11 +155,7 @@ void VkInteropFunctorDrawable::onDraw(SkCanvas* canvas) {
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        if (mAnyFunctor.index() == 0) {
-            std::get<0>(mAnyFunctor).handle->drawGl(info);
-        } else {
-            (*(std::get<1>(mAnyFunctor).functor))(DrawGlInfo::kModeDraw, &info);
-        }
+        mWebViewHandle->drawGl(info);
 
         EGLSyncKHR glDrawFinishedFence =
                 eglCreateSyncKHR(eglGetCurrentDisplay(), EGL_SYNC_FENCE_KHR, NULL);
@@ -186,17 +182,8 @@ void VkInteropFunctorDrawable::onDraw(SkCanvas* canvas) {
     auto functorImage = SkImage::MakeFromAHardwareBuffer(mFrameBuffer.get(), kPremul_SkAlphaType,
                                                          canvas->imageInfo().refColorSpace(),
                                                          kBottomLeft_GrSurfaceOrigin);
-    canvas->drawImage(functorImage, 0, 0, &paint);
+    canvas->drawImage(functorImage, 0, 0, SkSamplingOptions(), &paint);
     canvas->restore();
-}
-
-VkInteropFunctorDrawable::~VkInteropFunctorDrawable() {
-    if (auto lp = std::get_if<LegacyFunctor>(&mAnyFunctor)) {
-        if (lp->listener) {
-            ScopedDrawRequest _drawRequest{};
-            lp->listener->onGlFunctorReleased(lp->functor);
-        }
-    }
 }
 
 void VkInteropFunctorDrawable::syncFunctor(const WebViewSyncData& data) const {

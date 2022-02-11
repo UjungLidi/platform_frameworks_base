@@ -18,6 +18,7 @@ package com.android.server.pm;
 
 import static com.android.server.pm.InstructionSets.getAppDexInstructionSets;
 import static com.android.server.pm.InstructionSets.getDexCodeInstructionSets;
+import static com.android.server.pm.PackageManagerService.PLATFORM_PACKAGE_NAME;
 
 import android.annotation.Nullable;
 import android.content.Context;
@@ -42,10 +43,9 @@ import java.io.FileDescriptor;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 
 /**
  * A service for A/B OTA dexopting.
@@ -123,15 +123,20 @@ public class OtaDexoptService extends IOtaDexopt.Stub {
         }
         final List<PackageSetting> important;
         final List<PackageSetting> others;
+        Predicate<PackageSetting> isPlatformPackage = pkgSetting ->
+                PLATFORM_PACKAGE_NAME.equals(pkgSetting.pkg.getPackageName());
         synchronized (mPackageManagerService.mLock) {
             // Important: the packages we need to run with ab-ota compiler-reason.
             important = PackageManagerServiceUtils.getPackagesForDexopt(
-                    mPackageManagerService.mSettings.mPackages.values(), mPackageManagerService,
-                    DEBUG_DEXOPT);
+                    mPackageManagerService.mSettings.getPackagesLocked().values(),
+                    mPackageManagerService, DEBUG_DEXOPT);
+            // Remove Platform Package from A/B OTA b/160735835.
+            important.removeIf(isPlatformPackage);
             // Others: we should optimize this with the (first-)boot compiler-reason.
-            others = new ArrayList<>(mPackageManagerService.mSettings.mPackages.values());
+            others = new ArrayList<>(mPackageManagerService.mSettings.getPackagesLocked().values());
             others.removeAll(important);
             others.removeIf(PackageManagerServiceUtils.REMOVE_IF_NULL_PKG);
+            others.removeIf(isPlatformPackage);
 
             // Pre-size the array list by over-allocating by a factor of 1.5.
             mDexoptCommands = new ArrayList<>(3 * mPackageManagerService.mPackages.size() / 2);
@@ -147,7 +152,7 @@ public class OtaDexoptService extends IOtaDexopt.Stub {
                 throw new IllegalStateException("Found a core app that's not important");
             }
             mDexoptCommands.addAll(generatePackageDexopts(pkgSetting.pkg, pkgSetting,
-                            PackageManagerService.REASON_FIRST_BOOT));
+                    PackageManagerService.REASON_FIRST_BOOT));
         }
         completeSize = mDexoptCommands.size();
 
@@ -379,17 +384,17 @@ public class OtaDexoptService extends IOtaDexopt.Stub {
             if (!PackageDexOptimizer.canOptimizePackage(pkg)) {
                 continue;
             }
-            if (pkg.getCodePath() == null) {
+            if (pkg.getPath() == null) {
                 Slog.w(TAG, "Package " + pkg + " can be optimized but has null codePath");
                 continue;
             }
 
             // If the path is in /system, /vendor, /product or /system_ext, ignore. It will
             // have been ota-dexopted into /data/ota and moved into the dalvik-cache already.
-            if (pkg.getCodePath().startsWith("/system")
-                    || pkg.getCodePath().startsWith("/vendor")
-                    || pkg.getCodePath().startsWith("/product")
-                    || pkg.getCodePath().startsWith("/system_ext")) {
+            if (pkg.getPath().startsWith("/system")
+                    || pkg.getPath().startsWith("/vendor")
+                    || pkg.getPath().startsWith("/product")
+                    || pkg.getPath().startsWith("/system_ext")) {
                 continue;
             }
 
@@ -403,7 +408,7 @@ public class OtaDexoptService extends IOtaDexopt.Stub {
             for (String dexCodeInstructionSet : dexCodeInstructionSets) {
                 for (String path : paths) {
                     String oatDir = PackageDexOptimizer.getOatDir(
-                            new File(pkg.getCodePath())).getAbsolutePath();
+                            new File(pkg.getPath())).getAbsolutePath();
 
                     // TODO: Check first whether there is an artifact, to save the roundtrip time.
 

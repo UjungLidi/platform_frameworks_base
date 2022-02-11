@@ -16,13 +16,17 @@
 
 package android.content.pm;
 
+import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.util.TypedXmlSerializer;
 
 import com.android.internal.util.ArrayUtils;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.lang.ref.SoftReference;
 import java.security.PublicKey;
@@ -120,6 +124,21 @@ public class Signature implements Parcelable {
         }
 
         mSignature = sig;
+    }
+
+    /**
+     * Copy constructor that creates a new instance from the provided {@code other} Signature.
+     *
+     * @hide
+     */
+    public Signature(Signature other) {
+        mSignature = other.mSignature.clone();
+        Certificate[] otherCertificateChain = other.mCertificateChain;
+        if (otherCertificateChain != null && otherCertificateChain.length > 1) {
+            mCertificateChain = Arrays.copyOfRange(otherCertificateChain, 1,
+                    otherCertificateChain.length);
+        }
+        mFlags = other.mFlags;
     }
 
     /**
@@ -233,10 +252,12 @@ public class Signature implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         try {
             if (obj != null) {
                 Signature other = (Signature)obj;
+                // Note, some classes, such as PackageParser.SigningDetails, rely on equals
+                // only comparing the mSignature arrays without the flags.
                 return this == other || Arrays.equals(mSignature, other.mSignature);
             }
         } catch (ClassCastException e) {
@@ -249,6 +270,8 @@ public class Signature implements Parcelable {
         if (mHaveHashCode) {
             return mHashCode;
         }
+        // Note, similar to equals some classes rely on the hash code not including
+        // the flags for Set membership checks.
         mHashCode = Arrays.hashCode(mSignature);
         mHaveHashCode = true;
         return mHashCode;
@@ -272,6 +295,12 @@ public class Signature implements Parcelable {
             return new Signature[size];
         }
     };
+
+    /** {@hide} */
+    public void writeToXmlAttributeBytesHex(@NonNull TypedXmlSerializer out,
+            @Nullable String namespace, @NonNull String name) throws IOException {
+        out.attributeBytesHex(namespace, name, mSignature);
+    }
 
     private Signature(Parcel source) {
         mSignature = source.createByteArray();

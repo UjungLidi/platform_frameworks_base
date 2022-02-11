@@ -20,10 +20,12 @@
 #include <SkBitmap.h>
 #include <android/native_window.h>
 #include <cutils/compiler.h>
+#include <android/surface_control.h>
 #include <utils/Functor.h>
 
 #include "../FrameMetricsObserver.h"
 #include "../IContextFactory.h"
+#include "ColorMode.h"
 #include "DrawFrameTask.h"
 #include "SwapBehavior.h"
 #include "hwui/Bitmap.h"
@@ -71,18 +73,18 @@ public:
     void setName(const char* name);
 
     void setSurface(ANativeWindow* window, bool enableTimeout = true);
+    void setSurfaceControl(ASurfaceControl* surfaceControl);
     void allocateBuffers();
     bool pause();
     void setStopped(bool stopped);
     void setLightAlpha(uint8_t ambientShadowAlpha, uint8_t spotShadowAlpha);
     void setLightGeometry(const Vector3& lightCenter, float lightRadius);
     void setOpaque(bool opaque);
-    void setWideGamut(bool wideGamut);
+    void setColorMode(ColorMode mode);
     int64_t* frameInfo();
     int syncAndDrawFrame();
     void destroy();
 
-    static void invokeFunctor(Functor* functor, bool waitForCompletion);
     static void destroyFunctor(int functor);
 
     DeferredLayerUpdater* createTextureLayer();
@@ -94,6 +96,7 @@ public:
 
     void destroyHardwareResources();
     static void trimMemory(int level);
+    static void purgeCaches();
     static void overrideProperty(const char* name, const char* value);
 
     void fence();
@@ -105,7 +108,8 @@ public:
     // Not exported, only used for testing
     void resetProfileInfo();
     uint32_t frameTimePercentile(int p);
-    static void dumpGraphicsMemory(int fd);
+    static void dumpGraphicsMemory(int fd, bool includeProfileData = true);
+    static void getMemoryUsage(size_t* cpuUsage, size_t* gpuUsage);
 
     static void rotateProcessStatsBuffer();
     static void setProcessStatsBuffer(int fd);
@@ -116,6 +120,9 @@ public:
     void drawRenderNode(RenderNode* node);
     void setContentDrawBounds(int left, int top, int right, int bottom);
     void setPictureCapturedCallback(const std::function<void(sk_sp<SkPicture>&&)>& callback);
+    void setASurfaceTransactionCallback(
+            const std::function<bool(int64_t, int64_t, int64_t)>& callback);
+    void setPrepareSurfaceControlForWebviewCallback(const std::function<void()>& callback);
     void setFrameCallback(std::function<void(int64_t)>&& callback);
     void setFrameCompleteCallback(std::function<void(int64_t)>&& callback);
 
@@ -123,28 +130,12 @@ public:
     void removeFrameMetricsObserver(FrameMetricsObserver* observer);
     void setForceDark(bool enable);
 
-    /**
-     * Sets a render-ahead depth on the backing renderer. This will increase latency by
-     * <swapInterval> * renderAhead and increase memory usage by (3 + renderAhead) * <resolution>.
-     * In return the renderer will be less susceptible to jitter, resulting in a smoother animation.
-     *
-     * Not recommended to use in response to anything touch driven, but for canned animations
-     * where latency is not a concern careful use may be beneficial.
-     *
-     * Note that when increasing this there will be a frame gap of N frames where N is
-     * renderAhead - <current renderAhead>. When decreasing this if there are any pending
-     * frames they will retain their prior renderAhead value, so it will take a few frames
-     * for the decrease to flush through.
-     *
-     * @param renderAhead How far to render ahead, must be in the range [0..2]
-     */
-    void setRenderAheadDepth(int renderAhead);
-
     static int copySurfaceInto(ANativeWindow* window, int left, int top, int right,
                                            int bottom, SkBitmap* bitmap);
     static void prepareToDraw(Bitmap& bitmap);
 
     static int copyHWBitmapInto(Bitmap* hwBitmap, SkBitmap* bitmap);
+    static int copyImageInto(const sk_sp<SkImage>& image, SkBitmap* bitmap);
 
     static void disableVsync();
 

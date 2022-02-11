@@ -17,23 +17,38 @@
 package com.android.systemui.controls.ui
 
 import android.content.ComponentName
+import android.content.Context
 import android.service.controls.Control
 import android.service.controls.actions.ControlAction
 import android.view.ViewGroup
+import com.android.systemui.controls.controller.StructureInfo
 
 interface ControlsUiController {
-    val available: Boolean
-
     companion object {
         public const val TAG = "ControlsUiController"
+        public const val EXTRA_ANIMATE = "extra_animate"
     }
 
-    fun show(parent: ViewGroup)
+    fun show(parent: ViewGroup, onDismiss: Runnable, activityContext: Context)
     fun hide()
+
+    /**
+     * Request all open dialogs be closed. Set [immediately] to true to dismiss without
+     * animations.
+     */
+    fun closeDialogs(immediately: Boolean)
+
     fun onRefreshState(componentName: ComponentName, controls: List<Control>)
     fun onActionResponse(
         componentName: ComponentName,
         controlId: String,
         @ControlAction.ResponseResult response: Int
     )
+
+    /**
+     * Returns the structure that is currently preferred by the user.
+     *
+     * This structure will be the one that appears when the user first opens the controls activity.
+     */
+    fun getPreferredStructure(structures: List<StructureInfo>): StructureInfo
 }

@@ -19,6 +19,8 @@ package com.android.server.notification;
 import android.app.NotificationChannel;
 import android.app.NotificationChannelGroup;
 
+import com.android.internal.logging.UiEventLogger;
+import com.android.internal.logging.UiEventLoggerImpl;
 import com.android.internal.util.FrameworkStatsLog;
 
 /**
@@ -27,6 +29,8 @@ import com.android.internal.util.FrameworkStatsLog;
  * should live in the interface so it can be tested.
  */
 public class NotificationChannelLoggerImpl implements NotificationChannelLogger {
+    UiEventLogger mUiEventLogger = new UiEventLoggerImpl();
+
     @Override
     public void logNotificationChannel(NotificationChannelEvent event,
             NotificationChannel channel, int uid, String pkg,
@@ -37,7 +41,12 @@ public class NotificationChannelLoggerImpl implements NotificationChannelLogger 
                 /* String package_name */ pkg,
                 /* int32 channel_id_hash */ NotificationChannelLogger.getIdHash(channel),
                 /* int old_importance*/ oldImportance,
-                /* int importance*/ newImportance);
+                /* int importance*/ newImportance,
+                /* bool is_conversation */ channel.isConversation(),
+                /* int32 conversation_id_hash */
+                NotificationChannelLogger.getConversationIdHash(channel),
+                /* bool is_conversation_demoted */ channel.isDemoted(),
+                /* bool is_conversation_priority */ channel.isImportantConversation());
     }
 
     @Override
@@ -49,6 +58,15 @@ public class NotificationChannelLoggerImpl implements NotificationChannelLogger 
                 /* String package_name */ pkg,
                 /* int32 channel_id_hash */ NotificationChannelLogger.getIdHash(channelGroup),
                 /* int old_importance*/ NotificationChannelLogger.getImportance(wasBlocked),
-                /* int importance*/ NotificationChannelLogger.getImportance(channelGroup));
+                /* int importance*/ NotificationChannelLogger.getImportance(channelGroup),
+                /* bool is_conversation */ false,
+                /* int32 conversation_id_hash */ 0,
+                /* bool is_conversation_demoted */ false,
+                /* bool is_conversation_priority */ false);
+    }
+
+    @Override
+    public void logAppEvent(NotificationChannelEvent event, int uid, String pkg) {
+        mUiEventLogger.log(event, uid, pkg);
     }
 }

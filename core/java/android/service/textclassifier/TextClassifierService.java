@@ -22,7 +22,6 @@ import android.annotation.MainThread;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.app.Service;
 import android.content.ComponentName;
 import android.content.Context;
@@ -88,7 +87,6 @@ import java.util.concurrent.Executors;
  * @hide
  */
 @SystemApi
-@TestApi
 public abstract class TextClassifierService extends Service {
 
     private static final String LOG_TAG = "TextClassifierService";
@@ -422,6 +420,11 @@ public abstract class TextClassifierService extends Service {
     /** @hide **/
     public static <T extends Parcelable> T getResponse(Bundle bundle) {
         return bundle.getParcelable(KEY_RESULT);
+    }
+
+    /** @hide **/
+    public static <T extends Parcelable> void putResponse(Bundle bundle, T response) {
+        bundle.putParcelable(KEY_RESULT, response);
     }
 
     /**

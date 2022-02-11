@@ -38,6 +38,7 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Puni se"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Brzo se puni"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Sporo se puni"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="6091488837901216962">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Punjenje je privremeno ograničeno"</string>
     <string name="keyguard_low_battery" msgid="1868012396800230904">"Priključite punjač."</string>
     <string name="keyguard_instructions_when_pattern_disabled" msgid="8448804180089936954">"Pritisnite Meni da biste otključali."</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"Mreža je zaključana"</string>
@@ -104,9 +105,6 @@
     <string name="keyguard_carrier_default" msgid="6359808469637388586">"Mreža nije dostupna."</string>
     <string name="accessibility_ime_switch_button" msgid="9082358310194861329">"Promeni metod unosa"</string>
     <string name="airplane_mode" msgid="2528005343938497866">"Režim rada u avionu"</string>
-    <string name="kg_prompt_reason_prepare_for_update_pin" msgid="8878724145347297575">"PIN je obavezan radi pripreme za ažuriranje"</string>
-    <string name="kg_prompt_reason_prepare_for_update_pattern" msgid="4873394344883271519">"Šablon je obavezan radi pripreme za ažuriranje"</string>
-    <string name="kg_prompt_reason_prepare_for_update_password" msgid="5625446803865598337">"Lozinka je obavezna radi pripreme za ažuriranje"</string>
     <string name="kg_prompt_reason_restart_pattern" msgid="4720554342633852066">"Treba da unesete šablon kada se uređaj ponovo pokrene"</string>
     <string name="kg_prompt_reason_restart_pin" msgid="1587671566498057656">"Treba da unesete PIN kada se uređaj ponovo pokrene"</string>
     <string name="kg_prompt_reason_restart_password" msgid="8061279087240952002">"Treba da unesete lozinku kada se uređaj ponovo pokrene"</string>

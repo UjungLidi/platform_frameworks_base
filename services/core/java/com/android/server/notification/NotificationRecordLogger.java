@@ -20,13 +20,16 @@ import static android.service.notification.NotificationListenerService.REASON_CA
 import static android.service.notification.NotificationListenerService.REASON_CLICK;
 import static android.service.notification.NotificationListenerService.REASON_TIMEOUT;
 
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.Notification;
+import android.app.NotificationChannel;
 import android.app.Person;
 import android.os.Bundle;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.NotificationStats;
 
+import com.android.internal.logging.InstanceId;
 import com.android.internal.logging.UiEvent;
 import com.android.internal.logging.UiEventLogger;
 
@@ -48,10 +51,26 @@ public interface NotificationRecordLogger {
      * @param old The previous NotificationRecord.  Null if there was no previous record.
      * @param position The position at which this notification is ranked.
      * @param buzzBeepBlink Logging code reflecting whether this notification alerted the user.
+     * @param groupId The instance Id of the group summary notification, or null.
      */
     void maybeLogNotificationPosted(@Nullable NotificationRecord r,
             @Nullable NotificationRecord old,
-            int position, int buzzBeepBlink);
+            int position, int buzzBeepBlink,
+            InstanceId groupId);
+
+    /**
+     * Logs a NotificationReported atom reflecting an adjustment to a notification.
+     * Unlike maybeLogNotificationPosted, this method is guaranteed to log a notification update,
+     * so the caller must take responsibility for checking that that logging update is necessary,
+     * and that the notification is meaningfully changed.
+     * @param r The NotificationRecord. If null, no action is taken.
+     * @param position The position at which this notification is ranked.
+     * @param buzzBeepBlink Logging code reflecting whether this notification alerted the user.
+     * @param groupId The instance Id of the group summary notification, or null.
+     */
+    void logNotificationAdjusted(@Nullable NotificationRecord r,
+            int position, int buzzBeepBlink,
+            InstanceId groupId);
 
     /**
      * Logs a notification cancel / dismiss event using UiEventReported (event ids from the
@@ -91,7 +110,9 @@ public interface NotificationRecordLogger {
         @UiEvent(doc = "New notification enqueued to post")
         NOTIFICATION_POSTED(162),
         @UiEvent(doc = "Notification substantially updated, or alerted again.")
-        NOTIFICATION_UPDATED(163);
+        NOTIFICATION_UPDATED(163),
+        @UiEvent(doc = "Notification adjusted by assistant.")
+        NOTIFICATION_ADJUSTED(908);
 
         private final int mId;
         NotificationReportedEvent(int id) {
@@ -226,7 +247,7 @@ public interface NotificationRecordLogger {
         NOTIFICATION_NOT_POSTED_SNOOZED(319),
         @UiEvent(doc = "Notification was clicked.")
         NOTIFICATION_CLICKED(320),
-        @UiEvent(doc = "Notification action was clicked.")
+        @UiEvent(doc = "Notification action was clicked; unexpected position.")
         NOTIFICATION_ACTION_CLICKED(321),
         @UiEvent(doc = "Notification detail was expanded due to non-user action.")
         NOTIFICATION_DETAIL_OPEN_SYSTEM(327),
@@ -242,7 +263,24 @@ public interface NotificationRecordLogger {
         NOTIFICATION_SMART_REPLIED(332),
         @UiEvent(doc = "Notification smart reply action was visible.")
         NOTIFICATION_SMART_REPLY_VISIBLE(333),
-        ;
+        @UiEvent(doc = "App-generated notification action at position 0 was clicked.")
+        NOTIFICATION_ACTION_CLICKED_0(450),
+        @UiEvent(doc = "App-generated notification action at position 1 was clicked.")
+        NOTIFICATION_ACTION_CLICKED_1(451),
+        @UiEvent(doc = "App-generated notification action at position 2 was clicked.")
+        NOTIFICATION_ACTION_CLICKED_2(452),
+        @UiEvent(doc = "Contextual notification action at position 0 was clicked.")
+        NOTIFICATION_CONTEXTUAL_ACTION_CLICKED_0(453),
+        @UiEvent(doc = "Contextual notification action at position 1 was clicked.")
+        NOTIFICATION_CONTEXTUAL_ACTION_CLICKED_1(454),
+        @UiEvent(doc = "Contextual notification action at position 2 was clicked.")
+        NOTIFICATION_CONTEXTUAL_ACTION_CLICKED_2(455),
+        @UiEvent(doc = "Notification assistant generated notification action at 0 was clicked.")
+        NOTIFICATION_ASSIST_ACTION_CLICKED_0(456),
+        @UiEvent(doc = "Notification assistant generated notification action at 1 was clicked.")
+        NOTIFICATION_ASSIST_ACTION_CLICKED_1(457),
+        @UiEvent(doc = "Notification assistant generated notification action at 2 was clicked.")
+        NOTIFICATION_ASSIST_ACTION_CLICKED_2(458);
 
         private final int mId;
         NotificationEvent(int id) {
@@ -260,6 +298,21 @@ public interface NotificationRecordLogger {
                 return expanded ? NOTIFICATION_DETAIL_OPEN_USER : NOTIFICATION_DETAIL_CLOSE_USER;
             }
             return expanded ? NOTIFICATION_DETAIL_OPEN_SYSTEM : NOTIFICATION_DETAIL_CLOSE_SYSTEM;
+        }
+        public static NotificationEvent fromAction(int index, boolean isAssistant,
+                boolean isContextual) {
+            if (index < 0 || index > 2) {
+                return NOTIFICATION_ACTION_CLICKED;
+            }
+            if (isAssistant) {  // Assistant actions are contextual by definition
+                return NotificationEvent.values()[
+                        NOTIFICATION_ASSIST_ACTION_CLICKED_0.ordinal() + index];
+            }
+            if (isContextual) {
+                return NotificationEvent.values()[
+                        NOTIFICATION_CONTEXTUAL_ACTION_CLICKED_0.ordinal() + index];
+            }
+            return NotificationEvent.values()[NOTIFICATION_ACTION_CLICKED_0.ordinal() + index];
         }
     }
 
@@ -311,7 +364,9 @@ public interface NotificationRecordLogger {
                         == old.getSbn().getNotification().isGroupSummary())
                     && Objects.equals(r.getSbn().getNotification().category,
                         old.getSbn().getNotification().category)
-                    && (r.getImportance() == old.getImportance()));
+                    && (r.getImportance() == old.getImportance())
+                    && (getLoggingImportance(r) == getLoggingImportance(old))
+                    && r.rankingScoreMatches(old.getRankingScore()));
         }
 
         /**
@@ -378,5 +433,17 @@ public interface NotificationRecordLogger {
 
     }
 
+    /**
+     * @param r NotificationRecord
+     * @return Logging importance of record, taking important conversation channels into account.
+     */
+    static int getLoggingImportance(@NonNull NotificationRecord r) {
+        final int importance = r.getImportance();
+        final NotificationChannel channel = r.getChannel();
+        if (channel == null) {
+            return importance;
+        }
+        return NotificationChannelLogger.getLoggingImportance(channel, importance);
+    }
 
 }

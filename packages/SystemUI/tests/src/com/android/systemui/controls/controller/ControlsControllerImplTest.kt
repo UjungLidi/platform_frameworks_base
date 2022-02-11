@@ -24,7 +24,6 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.UserHandle
-import android.provider.Settings
 import android.service.controls.Control
 import android.service.controls.DeviceTypes
 import android.service.controls.actions.ControlAction
@@ -38,6 +37,7 @@ import com.android.systemui.controls.ControlsServiceInfo
 import com.android.systemui.controls.management.ControlsListingController
 import com.android.systemui.controls.ui.ControlsUiController
 import com.android.systemui.dump.DumpManager
+import com.android.systemui.settings.UserTracker
 import com.android.systemui.util.concurrency.FakeExecutor
 import com.android.systemui.util.time.FakeSystemClock
 import org.junit.After
@@ -82,6 +82,8 @@ class ControlsControllerImplTest : SysuiTestCase() {
     private lateinit var broadcastDispatcher: BroadcastDispatcher
     @Mock
     private lateinit var listingController: ControlsListingController
+    @Mock(stubOnly = true)
+    private lateinit var userTracker: UserTracker
 
     @Captor
     private lateinit var structureInfoCaptor: ArgumentCaptor<StructureInfo>
@@ -90,6 +92,10 @@ class ControlsControllerImplTest : SysuiTestCase() {
     private lateinit var controlLoadCallbackCaptor:
             ArgumentCaptor<ControlsBindingController.LoadCallback>
     @Captor
+    private lateinit var controlLoadCallbackCaptor2:
+            ArgumentCaptor<ControlsBindingController.LoadCallback>
+
+    @Captor
     private lateinit var broadcastReceiverCaptor: ArgumentCaptor<BroadcastReceiver>
     @Captor
     private lateinit var listingCallbackCaptor:
@@ -97,6 +103,7 @@ class ControlsControllerImplTest : SysuiTestCase() {
 
     private lateinit var delayableExecutor: FakeExecutor
     private lateinit var controller: ControlsControllerImpl
+    private lateinit var canceller: DidRunRunnable
 
     companion object {
         fun <T> capture(argumentCaptor: ArgumentCaptor<T>): T = argumentCaptor.capture()
@@ -133,10 +140,7 @@ class ControlsControllerImplTest : SysuiTestCase() {
     fun setUp() {
         MockitoAnnotations.initMocks(this)
 
-        Settings.Secure.putInt(mContext.contentResolver,
-                ControlsControllerImpl.CONTROLS_AVAILABLE, 1)
-        Settings.Secure.putIntForUser(mContext.contentResolver,
-                ControlsControllerImpl.CONTROLS_AVAILABLE, 1, otherUser)
+        `when`(userTracker.userHandle).thenReturn(UserHandle.of(user))
 
         delayableExecutor = FakeExecutor(FakeSystemClock())
 
@@ -146,6 +150,9 @@ class ControlsControllerImplTest : SysuiTestCase() {
             }
         }
 
+        canceller = DidRunRunnable()
+        `when`(bindingController.bindAndLoad(any(), any())).thenReturn(canceller)
+
         controller = ControlsControllerImpl(
                 wrapper,
                 delayableExecutor,
@@ -154,11 +161,11 @@ class ControlsControllerImplTest : SysuiTestCase() {
                 listingController,
                 broadcastDispatcher,
                 Optional.of(persistenceWrapper),
-                mock(DumpManager::class.java)
+                mock(DumpManager::class.java),
+                userTracker
         )
         controller.auxiliaryPersistenceWrapper = auxiliaryPersistenceWrapper
 
-        assertTrue(controller.available)
         verify(broadcastDispatcher).registerReceiver(
                 capture(broadcastReceiverCaptor), any(), any(), eq(UserHandle.ALL))
 
@@ -209,7 +216,8 @@ class ControlsControllerImplTest : SysuiTestCase() {
                 listingController,
                 broadcastDispatcher,
                 Optional.of(persistenceWrapper),
-                mock(DumpManager::class.java)
+                mock(DumpManager::class.java),
+                userTracker
         )
         assertEquals(listOf(TEST_STRUCTURE_INFO), controller_other.getFavorites())
     }
@@ -266,7 +274,7 @@ class ControlsControllerImplTest : SysuiTestCase() {
 
             assertTrue(favorites.isEmpty())
             assertFalse(data.errorOnLoad)
-        })
+        }, Consumer {})
 
         verify(bindingController).bindAndLoad(eq(TEST_COMPONENT),
                 capture(controlLoadCallbackCaptor))
@@ -301,7 +309,7 @@ class ControlsControllerImplTest : SysuiTestCase() {
             assertEquals(1, favorites.size)
             assertEquals(TEST_CONTROL_ID, favorites[0])
             assertFalse(data.errorOnLoad)
-        })
+        }, Consumer {})
 
         verify(bindingController).bindAndLoad(eq(TEST_COMPONENT),
                 capture(controlLoadCallbackCaptor))
@@ -332,7 +340,7 @@ class ControlsControllerImplTest : SysuiTestCase() {
             assertEquals(1, favorites.size)
             assertEquals(TEST_CONTROL_ID, favorites[0])
             assertFalse(data.errorOnLoad)
-        })
+        }, Consumer {})
 
         verify(bindingController).bindAndLoad(eq(TEST_COMPONENT),
                 capture(controlLoadCallbackCaptor))
@@ -363,7 +371,7 @@ class ControlsControllerImplTest : SysuiTestCase() {
             assertEquals(1, favorites.size)
             assertEquals(TEST_CONTROL_ID, favorites[0])
             assertTrue(data.errorOnLoad)
-        })
+        }, Consumer {})
 
         verify(bindingController).bindAndLoad(eq(TEST_COMPONENT),
                 capture(controlLoadCallbackCaptor))
@@ -377,22 +385,15 @@ class ControlsControllerImplTest : SysuiTestCase() {
 
     @Test
     fun testCancelLoad() {
-        val canceller = object : Runnable {
-            var ran = false
-            override fun run() {
-                ran = true
-            }
-        }
-        `when`(bindingController.bindAndLoad(any(), any())).thenReturn(canceller)
-
         var loaded = false
+        var cancelRunnable: Runnable? = null
         controller.replaceFavoritesForStructure(TEST_STRUCTURE_INFO)
         delayableExecutor.runAllReady()
         controller.loadForComponent(TEST_COMPONENT, Consumer {
             loaded = true
-        })
+        }, Consumer { runnable -> cancelRunnable = runnable })
 
-        controller.cancelLoad()
+        cancelRunnable?.run()
         delayableExecutor.runAllReady()
 
         assertFalse(loaded)
@@ -400,61 +401,47 @@ class ControlsControllerImplTest : SysuiTestCase() {
     }
 
     @Test
-    fun testCancelLoad_noCancelAfterSuccessfulLoad() {
-        val canceller = object : Runnable {
-            var ran = false
-            override fun run() {
-                ran = true
-            }
-        }
-        `when`(bindingController.bindAndLoad(any(), any())).thenReturn(canceller)
-
+    fun testCancelLoad_afterSuccessfulLoad() {
         var loaded = false
+        var cancelRunnable: Runnable? = null
         controller.replaceFavoritesForStructure(TEST_STRUCTURE_INFO)
         delayableExecutor.runAllReady()
         controller.loadForComponent(TEST_COMPONENT, Consumer {
             loaded = true
-        })
+        }, Consumer { runnable -> cancelRunnable = runnable })
 
         verify(bindingController).bindAndLoad(eq(TEST_COMPONENT),
             capture(controlLoadCallbackCaptor))
 
         controlLoadCallbackCaptor.value.accept(emptyList())
 
-        controller.cancelLoad()
+        cancelRunnable?.run()
         delayableExecutor.runAllReady()
 
         assertTrue(loaded)
-        assertFalse(canceller.ran)
+        assertTrue(canceller.ran)
     }
 
     @Test
-    fun testCancelLoad_noCancelAfterErrorLoad() {
-        val canceller = object : Runnable {
-            var ran = false
-            override fun run() {
-                ran = true
-            }
-        }
-        `when`(bindingController.bindAndLoad(any(), any())).thenReturn(canceller)
-
+    fun testCancelLoad_afterErrorLoad() {
         var loaded = false
+        var cancelRunnable: Runnable? = null
         controller.replaceFavoritesForStructure(TEST_STRUCTURE_INFO)
         delayableExecutor.runAllReady()
         controller.loadForComponent(TEST_COMPONENT, Consumer {
             loaded = true
-        })
+        }, Consumer { runnable -> cancelRunnable = runnable })
 
         verify(bindingController).bindAndLoad(eq(TEST_COMPONENT),
             capture(controlLoadCallbackCaptor))
 
         controlLoadCallbackCaptor.value.error("")
 
-        controller.cancelLoad()
+        cancelRunnable?.run()
         delayableExecutor.runAllReady()
 
         assertTrue(loaded)
-        assertFalse(canceller.ran)
+        assertTrue(canceller.ran)
     }
 
     @Test
@@ -465,7 +452,7 @@ class ControlsControllerImplTest : SysuiTestCase() {
         val newControlInfo = TEST_CONTROL_INFO.copy(controlTitle = TEST_CONTROL_TITLE_2)
         val control = statelessBuilderFromInfo(newControlInfo).build()
 
-        controller.loadForComponent(TEST_COMPONENT, Consumer {})
+        controller.loadForComponent(TEST_COMPONENT, Consumer {}, Consumer {})
 
         verify(bindingController).bindAndLoad(eq(TEST_COMPONENT),
                 capture(controlLoadCallbackCaptor))
@@ -533,58 +520,6 @@ class ControlsControllerImplTest : SysuiTestCase() {
         verify(listingController).changeUser(UserHandle.of(otherUser))
         assertTrue(controller.getFavorites().isEmpty())
         assertEquals(otherUser, controller.currentUserId)
-        assertTrue(controller.available)
-    }
-
-    @Test
-    fun testDisableFeature_notAvailable() {
-        Settings.Secure.putIntForUser(mContext.contentResolver,
-                ControlsControllerImpl.CONTROLS_AVAILABLE, 0, user)
-        controller.settingObserver.onChange(false, listOf(ControlsControllerImpl.URI), 0, 0)
-        assertFalse(controller.available)
-    }
-
-    @Test
-    fun testDisableFeature_clearFavorites() {
-        controller.replaceFavoritesForStructure(TEST_STRUCTURE_INFO)
-        delayableExecutor.runAllReady()
-
-        assertFalse(controller.getFavorites().isEmpty())
-
-        Settings.Secure.putIntForUser(mContext.contentResolver,
-                ControlsControllerImpl.CONTROLS_AVAILABLE, 0, user)
-        controller.settingObserver.onChange(false, listOf(ControlsControllerImpl.URI), 0, user)
-        assertTrue(controller.getFavorites().isEmpty())
-    }
-
-    @Test
-    fun testDisableFeature_noChangeForNotCurrentUser() {
-        controller.replaceFavoritesForStructure(TEST_STRUCTURE_INFO)
-        delayableExecutor.runAllReady()
-
-        Settings.Secure.putIntForUser(mContext.contentResolver,
-                ControlsControllerImpl.CONTROLS_AVAILABLE, 0, otherUser)
-        controller.settingObserver.onChange(false, listOf(ControlsControllerImpl.URI), 0, otherUser)
-
-        assertTrue(controller.available)
-        assertFalse(controller.getFavorites().isEmpty())
-    }
-
-    @Test
-    fun testCorrectUserSettingOnUserChange() {
-        Settings.Secure.putIntForUser(mContext.contentResolver,
-                ControlsControllerImpl.CONTROLS_AVAILABLE, 0, otherUser)
-
-        val intent = Intent(Intent.ACTION_USER_SWITCHED).apply {
-            putExtra(Intent.EXTRA_USER_HANDLE, otherUser)
-        }
-        val pendingResult = mock(BroadcastReceiver.PendingResult::class.java)
-        `when`(pendingResult.sendingUserId).thenReturn(otherUser)
-        broadcastReceiverCaptor.value.pendingResult = pendingResult
-
-        broadcastReceiverCaptor.value.onReceive(mContext, intent)
-
-        assertFalse(controller.available)
     }
 
     @Test
@@ -813,51 +748,63 @@ class ControlsControllerImplTest : SysuiTestCase() {
     }
 
     @Test
-    fun testListingCallbackNotListeningWhileReadingFavorites() {
-        val intent = Intent(Intent.ACTION_USER_SWITCHED).apply {
-            putExtra(Intent.EXTRA_USER_HANDLE, otherUser)
+    fun testSeedFavoritesForComponentsWithLimit() {
+        var responses = mutableListOf<SeedResponse>()
+
+        val controls1 = mutableListOf<Control>()
+        for (i in 1..10) {
+            controls1.add(statelessBuilderFromInfo(ControlInfo("id1:$i", TEST_CONTROL_TITLE,
+                TEST_CONTROL_SUBTITLE, TEST_DEVICE_TYPE), "testStructure").build())
         }
-        val pendingResult = mock(BroadcastReceiver.PendingResult::class.java)
-        `when`(pendingResult.sendingUserId).thenReturn(otherUser)
-        broadcastReceiverCaptor.value.pendingResult = pendingResult
-
-        broadcastReceiverCaptor.value.onReceive(mContext, intent)
-
-        val inOrder = inOrder(persistenceWrapper, listingController)
-
-        inOrder.verify(listingController).removeCallback(listingCallbackCaptor.value)
-        inOrder.verify(persistenceWrapper).readFavorites()
-        inOrder.verify(listingController).addCallback(listingCallbackCaptor.value)
-    }
-
-    @Test
-    fun testSeedFavoritesForComponent() {
-        var succeeded = false
-        val control = statelessBuilderFromInfo(TEST_CONTROL_INFO, TEST_STRUCTURE_INFO.structure)
-            .build()
-
-        controller.seedFavoritesForComponent(TEST_COMPONENT, Consumer { accepted ->
-            succeeded = accepted
+        val controls2 = mutableListOf<Control>()
+        for (i in 1..3) {
+            controls2.add(statelessBuilderFromInfo(ControlInfo("id2:$i", TEST_CONTROL_TITLE,
+                TEST_CONTROL_SUBTITLE, TEST_DEVICE_TYPE), "testStructure2").build())
+        }
+        controller.seedFavoritesForComponents(listOf(TEST_COMPONENT, TEST_COMPONENT_2), Consumer {
+            resp -> responses.add(resp)
         })
 
         verify(bindingController).bindAndLoadSuggested(eq(TEST_COMPONENT),
                 capture(controlLoadCallbackCaptor))
-
-        controlLoadCallbackCaptor.value.accept(listOf(control))
-
+        controlLoadCallbackCaptor.value.accept(controls1)
         delayableExecutor.runAllReady()
 
-        assertEquals(listOf(TEST_STRUCTURE_INFO),
-            controller.getFavoritesForComponent(TEST_COMPONENT))
-        assertTrue(succeeded)
+        verify(bindingController).bindAndLoadSuggested(eq(TEST_COMPONENT_2),
+                capture(controlLoadCallbackCaptor2))
+        controlLoadCallbackCaptor2.value.accept(controls2)
+        delayableExecutor.runAllReady()
+
+        // COMPONENT 1
+        val structureInfo = controller.getFavoritesForComponent(TEST_COMPONENT)[0]
+        assertEquals(structureInfo.controls.size,
+            ControlsControllerImpl.SUGGESTED_CONTROLS_PER_STRUCTURE)
+
+        var i = 1
+        structureInfo.controls.forEach {
+            assertEquals(it.controlId, "id1:$i")
+            i++
+        }
+        assertEquals(SeedResponse(TEST_COMPONENT.packageName, true), responses[0])
+
+        // COMPONENT 2
+        val structureInfo2 = controller.getFavoritesForComponent(TEST_COMPONENT_2)[0]
+        assertEquals(structureInfo2.controls.size, 3)
+
+        i = 1
+        structureInfo2.controls.forEach {
+            assertEquals(it.controlId, "id2:$i")
+            i++
+        }
+        assertEquals(SeedResponse(TEST_COMPONENT.packageName, true), responses[1])
     }
 
     @Test
-    fun testSeedFavoritesForComponent_error() {
-        var succeeded = false
+    fun testSeedFavoritesForComponents_error() {
+        var response: SeedResponse? = null
 
-        controller.seedFavoritesForComponent(TEST_COMPONENT, Consumer { accepted ->
-            succeeded = accepted
+        controller.seedFavoritesForComponents(listOf(TEST_COMPONENT), Consumer { resp ->
+            response = resp
         })
 
         verify(bindingController).bindAndLoadSuggested(eq(TEST_COMPONENT),
@@ -868,18 +815,18 @@ class ControlsControllerImplTest : SysuiTestCase() {
         delayableExecutor.runAllReady()
 
         assertEquals(listOf<StructureInfo>(), controller.getFavoritesForComponent(TEST_COMPONENT))
-        assertFalse(succeeded)
+        assertEquals(SeedResponse(TEST_COMPONENT.packageName, false), response)
     }
 
     @Test
-    fun testSeedFavoritesForComponent_inProgressCallback() {
-        var succeeded = false
+    fun testSeedFavoritesForComponents_inProgressCallback() {
+        var response: SeedResponse? = null
         var seeded = false
         val control = statelessBuilderFromInfo(TEST_CONTROL_INFO, TEST_STRUCTURE_INFO.structure)
             .build()
 
-        controller.seedFavoritesForComponent(TEST_COMPONENT, Consumer { accepted ->
-            succeeded = accepted
+        controller.seedFavoritesForComponents(listOf(TEST_COMPONENT), Consumer { resp ->
+            response = resp
         })
 
         verify(bindingController).bindAndLoadSuggested(eq(TEST_COMPONENT),
@@ -894,7 +841,7 @@ class ControlsControllerImplTest : SysuiTestCase() {
 
         assertEquals(listOf(TEST_STRUCTURE_INFO),
             controller.getFavoritesForComponent(TEST_COMPONENT))
-        assertTrue(succeeded)
+        assertEquals(SeedResponse(TEST_COMPONENT.packageName, true), response)
         assertTrue(seeded)
     }
 
@@ -961,5 +908,12 @@ class ControlsControllerImplTest : SysuiTestCase() {
         delayableExecutor.runAllReady()
 
         assertTrue(controller.getFavoritesForStructure(TEST_COMPONENT_2, TEST_STRUCTURE).isEmpty())
+    }
+}
+
+private class DidRunRunnable() : Runnable {
+    var ran = false
+    override fun run() {
+        ran = true
     }
 }

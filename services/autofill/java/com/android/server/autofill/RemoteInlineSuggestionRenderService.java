@@ -47,7 +47,7 @@ public final class RemoteInlineSuggestionRenderService extends
 
     private static final String TAG = "RemoteInlineSuggestionRenderService";
 
-    private final int mIdleUnbindTimeoutMs = 5000;
+    private final long mIdleUnbindTimeoutMs = PERMANENT_BOUND_TIMEOUT_MS;
 
     RemoteInlineSuggestionRenderService(Context context, ComponentName componentName,
             String serviceInterface, int userId, InlineSuggestionRenderCallbacks callback,
@@ -88,18 +88,23 @@ public final class RemoteInlineSuggestionRenderService extends
      */
     public void renderSuggestion(@NonNull IInlineSuggestionUiCallback callback,
             @NonNull InlinePresentation presentation, int width, int height,
-            @Nullable IBinder hostInputToken, int displayId) {
+            @Nullable IBinder hostInputToken, int displayId, int userId, int sessionId) {
         scheduleAsyncRequest((s) -> s.renderSuggestion(callback, presentation, width, height,
-                hostInputToken, displayId));
+                hostInputToken, displayId, userId, sessionId));
     }
 
     /**
      * Gets the inline suggestions renderer info as a {@link Bundle}.
      */
     public void getInlineSuggestionsRendererInfo(@NonNull RemoteCallback callback) {
-        scheduleAsyncRequest((s) -> s.getInlineSuggestionsRendererInfo(new RemoteCallback(
-                (bundle) -> callback.sendResult(bundle)
-        )));
+        scheduleAsyncRequest((s) -> s.getInlineSuggestionsRendererInfo(callback));
+    }
+
+    /**
+     * Destroys the remote inline suggestion views associated with the given user id and session id.
+     */
+    public void destroySuggestionViews(int userId, int sessionId) {
+        scheduleAsyncRequest((s) -> s.destroySuggestionViews(userId, sessionId));
     }
 
     @Nullable

@@ -18,6 +18,7 @@ package android.view.autofill;
 
 import java.util.List;
 
+import android.content.ClipData;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.IntentSender;
@@ -46,6 +47,11 @@ oneway interface IAutoFillManagerClient {
       */
     void autofill(int sessionId, in List<AutofillId> ids, in List<AutofillValue> values,
             boolean hideHighlight);
+
+    /**
+     * Autofills the activity with rich content data (e.g. an image) from a dataset.
+     */
+    void autofillContent(int sessionId, in AutofillId id, in ClipData content);
 
     /**
       * Authenticates a fill response or a data set.
@@ -77,6 +83,18 @@ oneway interface IAutoFillManagerClient {
      * sessionFinishedState != 0).
      */
     void notifyNoFillUi(int sessionId, in AutofillId id, int sessionFinishedState);
+
+    /**
+     * Notifies that the fill UI was shown by the system (e.g. as inline chips in the keyboard).
+     */
+    void notifyFillUiShown(int sessionId, in AutofillId id);
+
+    /**
+     * Notifies that the fill UI previously shown by the system has been hidden by the system.
+     *
+     * @see #notifyFillUiShown
+     */
+    void notifyFillUiHidden(int sessionId, in AutofillId id);
 
     /**
      * Dispatches unhandled keyevent from autofill ui. Autofill ui handles DPAD and ENTER events,

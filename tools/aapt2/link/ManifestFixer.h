@@ -44,6 +44,10 @@ struct ManifestFixerOptions {
   // <instrumentation>.
   Maybe<std::string> rename_instrumentation_target_package;
 
+  // The Android package to use instead of the one defined in 'android:targetPackage' in
+  // <overlay>.
+  Maybe<std::string> rename_overlay_target_package;
+
   // The version name to set if 'android:versionName' is not defined in <manifest> or if
   // replace_version is set.
   Maybe<std::string> version_name_default;
@@ -55,6 +59,10 @@ struct ManifestFixerOptions {
   // The version code to set if 'android:versionCodeMajor' is not defined in <manifest> or if
   // replace_version is set.
   Maybe<std::string> version_code_major_default;
+
+  // The revision code to set if 'android:revisionCode' is not defined in <manifest> or if
+  // replace_version is set.
+  Maybe<std::string> revision_code_default;
 
   // The version of the framework being compiled against to set for 'android:compileSdkVersion' in
   // the <manifest> tag.

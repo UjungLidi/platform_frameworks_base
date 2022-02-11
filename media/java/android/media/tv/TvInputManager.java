@@ -23,6 +23,7 @@ import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
+import android.annotation.TestApi;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Rect;
@@ -898,6 +899,17 @@ public final class TvInputManager {
          */
         public void onTvInputInfoUpdated(TvInputInfo inputInfo) {
         }
+
+        /**
+         * This is called when the information about current tuned information has been updated.
+         *
+         * @param tunedInfos a list of {@link TunedInfo} objects of new tuned information.
+         * @hide
+         */
+        @SystemApi
+        @RequiresPermission(android.Manifest.permission.ACCESS_TUNED_INFO)
+        public void onCurrentTunedInfosUpdated(@NonNull List<TunedInfo> tunedInfos) {
+        }
     }
 
     private static final class TvInputCallbackRecord {
@@ -954,6 +966,15 @@ public final class TvInputManager {
                 @Override
                 public void run() {
                     mCallback.onTvInputInfoUpdated(inputInfo);
+                }
+            });
+        }
+
+        public void postCurrentTunedInfosUpdated(final List<TunedInfo> currentTunedInfos) {
+            mHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    mCallback.onCurrentTunedInfosUpdated(currentTunedInfos);
                 }
             });
         }
@@ -1258,6 +1279,15 @@ public final class TvInputManager {
                 synchronized (mLock) {
                     for (TvInputCallbackRecord record : mCallbackRecords) {
                         record.postTvInputInfoUpdated(inputInfo);
+                    }
+                }
+            }
+
+            @Override
+            public void onCurrentTunedInfosUpdated(List<TunedInfo> currentTunedInfos) {
+                synchronized (mLock) {
+                    for (TvInputCallbackRecord record : mCallbackRecords) {
+                        record.postCurrentTunedInfosUpdated(currentTunedInfos);
                     }
                 }
             }
@@ -1801,11 +1831,45 @@ public final class TvInputManager {
                 executor, callback);
     }
 
+    /**
+     * API to add a hardware device in the TvInputHardwareManager for CTS testing
+     * purpose.
+     *
+     * @param deviceId Id of the adding hardware device.
+     *
+     * @hide
+     */
+    @TestApi
+    public void addHardwareDevice(int deviceId) {
+        try {
+            mService.addHardwareDevice(deviceId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * API to remove a hardware device in the TvInputHardwareManager for CTS testing
+     * purpose.
+     *
+     * @param deviceId Id of the removing hardware device.
+     *
+     * @hide
+     */
+    @TestApi
+    public void removeHardwareDevice(int deviceId) {
+        try {
+            mService.removeHardwareDevice(deviceId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
     private Hardware acquireTvInputHardwareInternal(int deviceId, TvInputInfo info,
             String tvInputSessionId, int priorityHint,
             Executor executor, final HardwareCallback callback) {
         try {
-            return new Hardware(
+            ITvInputHardware hardware =
                     mService.acquireTvInputHardware(deviceId, new ITvInputHardwareCallback.Stub() {
                 @Override
                 public void onReleased() {
@@ -1826,7 +1890,11 @@ public final class TvInputManager {
                                 Binder.restoreCallingIdentity(identity);
                             }
                 }
-                    }, info, mUserId, tvInputSessionId, priorityHint));
+                    }, info, mUserId, tvInputSessionId, priorityHint);
+            if (hardware == null) {
+                return null;
+            }
+            return new Hardware(hardware);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1908,6 +1976,25 @@ public final class TvInputManager {
     public void requestChannelBrowsable(Uri channelUri) {
         try {
             mService.requestChannelBrowsable(channelUri, mUserId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Returns the list of session information for {@link TvInputService.Session} that are
+     * currently in use.
+     * <p> Permission com.android.providers.tv.permission.ACCESS_WATCHED_PROGRAMS is required to get
+     * the channel URIs. If the permission is not granted,
+     * {@link TunedInfo#getChannelUri()} returns {@code null}.
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.ACCESS_TUNED_INFO)
+    @NonNull
+    public List<TunedInfo> getCurrentTunedInfos() {
+        try {
+            return mService.getCurrentTunedInfos(mUserId);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -2431,6 +2518,46 @@ public final class TvInputManager {
             }
             try {
                 mService.stopRecording(mToken, mUserId);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+        }
+
+        /**
+         * Pauses TV program recording in the current recording session.
+         *
+         * @param params Domain-specific data for this request. Keys <em>must</em> be a scoped
+         *            name, i.e. prefixed with a package name you own, so that different developers
+         *            will not create conflicting keys.
+         *        {@link TvRecordingClient#pauseRecording(Bundle)}.
+         */
+        void pauseRecording(@NonNull Bundle params) {
+            if (mToken == null) {
+                Log.w(TAG, "The session has been already released");
+                return;
+            }
+            try {
+                mService.pauseRecording(mToken, params, mUserId);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+        }
+
+        /**
+         * Resumes TV program recording in the current recording session.
+         *
+         * @param params Domain-specific data for this request. Keys <em>must</em> be a scoped
+         *            name, i.e. prefixed with a package name you own, so that different developers
+         *            will not create conflicting keys.
+         *        {@link TvRecordingClient#resumeRecording(Bundle)}.
+         */
+        void resumeRecording(@NonNull Bundle params) {
+            if (mToken == null) {
+                Log.w(TAG, "The session has been already released");
+                return;
+            }
+            try {
+                mService.resumeRecording(mToken, params, mUserId);
             } catch (RemoteException e) {
                 throw e.rethrowFromSystemServer();
             }

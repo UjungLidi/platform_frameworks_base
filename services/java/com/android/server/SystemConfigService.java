@@ -15,9 +15,16 @@
  */
 package com.android.server;
 
+import static java.util.stream.Collectors.toList;
+import static java.util.stream.Collectors.toMap;
+
 import android.Manifest;
 import android.content.Context;
 import android.os.ISystemConfig;
+import android.util.ArraySet;
+import android.util.SparseArray;
+
+import com.android.internal.util.ArrayUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -46,7 +53,36 @@ public class SystemConfigService extends SystemService {
                     "getDisabledUntilUsedPreInstalledCarrierAssociatedApps requires"
                             + " READ_CARRIER_APP_INFO");
             return SystemConfig.getInstance()
+                    .getDisabledUntilUsedPreinstalledCarrierAssociatedApps().entrySet().stream()
+                    .collect(toMap(
+                            Map.Entry::getKey,
+                            e -> e.getValue().stream().map(app -> app.packageName)
+                                    .collect(toList())));
+        }
+
+        @Override
+        public Map getDisabledUntilUsedPreinstalledCarrierAssociatedAppEntries() {
+            mContext.enforceCallingOrSelfPermission(Manifest.permission.READ_CARRIER_APP_INFO,
+                    "getDisabledUntilUsedPreInstalledCarrierAssociatedAppEntries requires"
+                            + " READ_CARRIER_APP_INFO");
+            return SystemConfig.getInstance()
                     .getDisabledUntilUsedPreinstalledCarrierAssociatedApps();
+        }
+
+        @Override
+        public int[] getSystemPermissionUids(String permissionName) {
+            mContext.enforceCallingOrSelfPermission(Manifest.permission.GET_RUNTIME_PERMISSIONS,
+                    "getSystemPermissionUids requires GET_RUNTIME_PERMISSIONS");
+            final List<Integer> uids = new ArrayList<>();
+            final SparseArray<ArraySet<String>> systemPermissions =
+                    SystemConfig.getInstance().getSystemPermissions();
+            for (int i = 0; i < systemPermissions.size(); i++) {
+                final ArraySet<String> permissions = systemPermissions.valueAt(i);
+                if (permissions != null && permissions.contains(permissionName)) {
+                    uids.add(systemPermissions.keyAt(i));
+                }
+            }
+            return ArrayUtils.convertToIntArray(uids);
         }
     };
 

@@ -47,7 +47,7 @@ public class PackagePartitions {
     public static final int PARTITION_PRODUCT = 4;
     public static final int PARTITION_SYSTEM_EXT = 5;
 
-    @IntDef(flag = true, prefix = { "PARTITION_" }, value = {
+    @IntDef(prefix = { "PARTITION_" }, value = {
         PARTITION_SYSTEM,
         PARTITION_VENDOR,
         PARTITION_ODM,
@@ -93,14 +93,22 @@ public class PackagePartitions {
         return out;
     }
 
+    private static File canonicalize(File path) {
+        try {
+            return path.getCanonicalFile();
+        } catch (IOException e) {
+            return path;
+        }
+    }
+
     /** Represents a partition that contains application packages. */
     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
     public static class SystemPartition {
-        @NonNull
-        public final File folder;
-
         @PartitionType
         public final int type;
+
+        @NonNull
+        private final DeferredCanonicalFile mFolder;
 
         @Nullable
         private final DeferredCanonicalFile mAppFolder;
@@ -111,23 +119,28 @@ public class PackagePartitions {
         @Nullable
         private final DeferredCanonicalFile mOverlayFolder;
 
+        @NonNull
+        private final File mNonConicalFolder;
+
         private SystemPartition(@NonNull File folder, @PartitionType int type,
                 boolean containsPrivApp, boolean containsOverlay) {
-            this.folder = folder;
             this.type = type;
+            this.mFolder = new DeferredCanonicalFile(folder);
             this.mAppFolder = new DeferredCanonicalFile(folder, "app");
-            this.mPrivAppFolder = containsPrivApp ?
-                    new DeferredCanonicalFile(folder, "priv-app") : null;
-            this.mOverlayFolder = containsOverlay ?
-                    new DeferredCanonicalFile(folder, "overlay") : null;
+            this.mPrivAppFolder = containsPrivApp ? new DeferredCanonicalFile(folder, "priv-app")
+                    : null;
+            this.mOverlayFolder = containsOverlay ? new DeferredCanonicalFile(folder, "overlay")
+                    : null;
+            this.mNonConicalFolder = folder;
         }
 
         public SystemPartition(@NonNull SystemPartition original) {
-            this.folder = original.folder;
             this.type = original.type;
+            this.mFolder = new DeferredCanonicalFile(original.mFolder.getFile());
             this.mAppFolder = original.mAppFolder;
             this.mPrivAppFolder = original.mPrivAppFolder;
             this.mOverlayFolder = original.mOverlayFolder;
+            this.mNonConicalFolder = original.mNonConicalFolder;
         }
 
         /**
@@ -137,6 +150,18 @@ public class PackagePartitions {
         public SystemPartition(@NonNull File rootFolder, @NonNull SystemPartition partition) {
             this(rootFolder, partition.type, partition.mPrivAppFolder != null,
                     partition.mOverlayFolder != null);
+        }
+
+        /** Returns the canonical folder of the partition. */
+        @NonNull
+        public File getFolder() {
+            return mFolder.getFile();
+        }
+
+        /** Returns the non-canonical folder of the partition. */
+        @NonNull
+        public File getNonConicalFolder() {
+            return mNonConicalFolder;
         }
 
         /** Returns the canonical app folder of the partition. */
@@ -157,30 +182,32 @@ public class PackagePartitions {
             return mOverlayFolder == null ? null : mOverlayFolder.getFile();
         }
 
+        /** Returns whether the partition contains the specified file. */
+        public boolean containsPath(@NonNull String path) {
+            return containsFile(new File(path));
+        }
+
+        /** Returns whether the partition contains the specified file. */
+        public boolean containsFile(@NonNull File file) {
+            return FileUtils.contains(mFolder.getFile(), canonicalize(file));
+        }
+
         /** Returns whether the partition contains the specified file in its priv-app folder. */
         public boolean containsPrivApp(@NonNull File scanFile) {
-            return FileUtils.contains(mPrivAppFolder.getFile(), scanFile);
+            return mPrivAppFolder != null
+                    && FileUtils.contains(mPrivAppFolder.getFile(), canonicalize(scanFile));
         }
 
         /** Returns whether the partition contains the specified file in its app folder. */
         public boolean containsApp(@NonNull File scanFile) {
-            return FileUtils.contains(mAppFolder.getFile(), scanFile);
+            return mAppFolder != null
+                    && FileUtils.contains(mAppFolder.getFile(), canonicalize(scanFile));
         }
 
         /** Returns whether the partition contains the specified file in its overlay folder. */
         public boolean containsOverlay(@NonNull File scanFile) {
-            return FileUtils.contains(mOverlayFolder.getFile(), scanFile);
-        }
-
-        /** Returns whether the partition contains the specified file. */
-        public boolean containsPath(@NonNull String path) {
-            return path.startsWith(folder.getPath() + "/");
-        }
-
-        /** Returns whether the partition contains the specified file in its priv-app folder. */
-        public boolean containsPrivPath(@NonNull String path) {
-            return mPrivAppFolder != null
-                    && path.startsWith(mPrivAppFolder.getFile().getPath() + "/");
+            return mOverlayFolder != null
+                    && FileUtils.contains(mOverlayFolder.getFile(), canonicalize(scanFile));
         }
     }
 
@@ -190,22 +217,24 @@ public class PackagePartitions {
      * have the correct selinux policies.
      */
     private static class DeferredCanonicalFile {
-        private boolean mIsCanonical;
+        private boolean mIsCanonical = false;
+
+        @NonNull
         private File mFile;
-        private DeferredCanonicalFile(File dir, String fileName) {
-            mFile = new File(dir, fileName);
-            mIsCanonical = false;
+
+        private DeferredCanonicalFile(@NonNull File dir) {
+            mFile = dir;
         }
 
+        private DeferredCanonicalFile(@NonNull File dir, @NonNull String fileName) {
+            mFile = new File(dir, fileName);
+        }
+
+        @NonNull
         private File getFile() {
-            if (mIsCanonical) {
-                return mFile;
-            }
-            mIsCanonical = true;
-            try {
-                mFile = mFile.getCanonicalFile();
-            } catch (IOException ignore) {
-                // failed to look up canonical path, continue with original one
+            if (!mIsCanonical) {
+                mFile = canonicalize(mFile);
+                mIsCanonical = true;
             }
             return mFile;
         }

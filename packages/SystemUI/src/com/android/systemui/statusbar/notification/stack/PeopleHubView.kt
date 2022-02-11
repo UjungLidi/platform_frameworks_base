@@ -72,7 +72,7 @@ class PeopleHubView(context: Context, attrs: AttributeSet) :
         }
     }
 
-    var canSwipe: Boolean = true
+    var canSwipe: Boolean = false
         set(value) {
             if (field != value) {
                 if (field) {
@@ -92,6 +92,8 @@ class PeopleHubView(context: Context, attrs: AttributeSet) :
             view.translationY = translationY
         }
     }
+
+    fun setOnHeaderClickListener(listener: OnClickListener) = label.setOnClickListener(listener)
 
     private inner class PersonDataListenerImpl(val avatarView: ImageView) :
             DataListener<PersonViewModel?> {

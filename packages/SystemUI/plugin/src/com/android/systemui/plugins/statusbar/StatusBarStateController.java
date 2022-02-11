@@ -40,6 +40,16 @@ public interface StatusBarStateController {
     boolean isDozing();
 
     /**
+     * Is the status bar panel expanded.
+     */
+    boolean isExpanded();
+
+    /**
+     * Is device pulsing.
+     */
+    boolean isPulsing();
+
+    /**
      * Adds a state listener
      */
     void addCallback(StateListener listener);
@@ -107,5 +117,10 @@ public interface StatusBarStateController {
          * Callback to be notified when the pulsing state changes
          */
         default void onPulsingChanged(boolean pulsing) {}
+
+        /**
+         * Callback to be notified when the expanded state of the status bar changes
+         */
+        default void onExpandedChanged(boolean isExpanded) {}
     }
 }

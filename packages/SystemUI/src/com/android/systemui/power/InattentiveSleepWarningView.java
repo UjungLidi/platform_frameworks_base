@@ -93,6 +93,8 @@ public class InattentiveSleepWarningView extends FrameLayout {
         setAlpha(1f);
         setVisibility(View.VISIBLE);
         mWindowManager.addView(this, getLayoutParams(mWindowToken));
+        announceForAccessibility(
+                getContext().getString(R.string.inattentive_sleep_warning_message));
     }
 
     /**
@@ -119,7 +121,7 @@ public class InattentiveSleepWarningView extends FrameLayout {
         final WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY,
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         lp.privateFlags |= WindowManager.LayoutParams.SYSTEM_FLAG_SHOW_FOR_ALL_USERS;

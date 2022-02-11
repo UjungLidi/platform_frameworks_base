@@ -17,6 +17,8 @@
 package com.android.server.wm;
 
 import android.inputmethodservice.InputMethodService;
+import android.view.InsetsState;
+import android.view.InsetsState.InternalInsetsType;
 import android.view.WindowInsets.Type.InsetsType;
 
 /**
@@ -35,6 +37,13 @@ interface InsetsControlTarget {
      */
     default WindowState getWindow() {
         return null;
+    }
+
+    /**
+     * @return The requested visibility of this target.
+     */
+    default boolean getRequestedVisibility(@InternalInsetsType int type) {
+        return InsetsState.getDefaultVisibility(type);
     }
 
     /**
@@ -60,5 +69,10 @@ interface InsetsControlTarget {
      */
     default boolean canShowTransient() {
         return false;
+    }
+
+    /** Returns {@code target.getWindow()}, or null if {@code target} is {@code null}. */
+    static WindowState asWindowOrNull(InsetsControlTarget target) {
+        return target != null ? target.getWindow() : null;
     }
 }

@@ -120,8 +120,10 @@ public class TextViewActivityTest {
     public void setUp() {
         mActivity = mActivityRule.getActivity();
         mInstrumentation = InstrumentationRegistry.getInstrumentation();
-        mActivity.getSystemService(TextClassificationManager.class)
-                .setTextClassifier(TextClassifier.NO_OP);
+        TextClassificationManager tcm = mActivity.getSystemService(
+                TextClassificationManager.class);
+        tcm.setTextClassifier(TextClassifier.NO_OP);
+        tcm.setTextClassificationSessionFactory(null);
     }
 
     @Test
@@ -371,6 +373,56 @@ public class TextViewActivityTest {
 
         sleepForFloatingToolbarPopup();
         assertFloatingToolbarIsDisplayed();
+    }
+
+    @Test
+    public void testToolbarMenuItemClickAfterSelectionChange() throws Throwable {
+        final MenuItem[] latestItem = new MenuItem[1];
+        final MenuItem[] clickedItem = new MenuItem[1];
+        final String text = "abcd efg hijk";
+        mActivityRule.runOnUiThread(() -> {
+            final TextView textView = mActivity.findViewById(R.id.textview);
+            textView.setText(text);
+            textView.setCustomSelectionActionModeCallback(
+                    new ActionMode.Callback() {
+                        @Override
+                        public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                            menu.clear();
+                            latestItem[0] = menu.add("Item");
+                            return true;
+                        }
+
+                        @Override
+                        public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                            clickedItem[0] = item;
+                            return true;
+                        }
+
+                        @Override
+                        public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                            return true;
+                        }
+
+                        @Override
+                        public void onDestroyActionMode(ActionMode mode) {}
+                    });
+        });
+        mInstrumentation.waitForIdleSync();
+
+        onView(withId(R.id.textview)).perform(longPressOnTextAtIndex(text.indexOf("f")));
+        sleepForFloatingToolbarPopup();
+
+        // Change the selection so that the menu items are refreshed.
+        final TextView textView = mActivity.findViewById(R.id.textview);
+        onHandleView(com.android.internal.R.id.selection_start_handle)
+                .perform(dragHandle(textView, Handle.SELECTION_START, 0));
+        sleepForFloatingToolbarPopup();
+        assertFloatingToolbarIsDisplayed();
+
+        clickFloatingToolbarItem("Item");
+        mInstrumentation.waitForIdleSync();
+
+        assertEquals(latestItem[0], clickedItem[0]);
     }
 
     @Test
@@ -1174,6 +1226,53 @@ public class TextViewActivityTest {
     }
 
     @Test
+    public void testTextClassifierSession() throws Throwable {
+        useSystemDefaultTextClassifier();
+        TextClassificationManager tcm =
+                mActivity.getSystemService(TextClassificationManager.class);
+        List<TestableTextClassifier> testableTextClassifiers = new ArrayList<>();
+        tcm.setTextClassificationSessionFactory(classificationContext -> {
+            TestableTextClassifier textClassifier = new TestableTextClassifier();
+            testableTextClassifiers.add(textClassifier);
+            return new TextClassifier() {
+                private boolean mIsDestroyed = false;
+
+                @Override
+                public TextSelection suggestSelection(TextSelection.Request request) {
+                    return textClassifier.suggestSelection(request);
+                }
+
+                @Override
+                public void destroy() {
+                    mIsDestroyed = true;
+                }
+
+                @Override
+                public boolean isDestroyed() {
+                    return mIsDestroyed;
+                }
+            };
+        });
+
+        // Long press to trigger selection
+        onView(withId(R.id.textview)).perform(replaceText("android.com"));
+        onView(withId(R.id.textview)).perform(longPressOnTextAtIndex(0));
+        sleepForFloatingToolbarPopup();
+        // Click "Copy" to dismiss the selection.
+        clickFloatingToolbarItem(mActivity.getString(com.android.internal.R.string.copy));
+
+        // Long press to trigger another selection
+        onView(withId(R.id.textview)).perform(replaceText("android@android.com"));
+        onView(withId(R.id.textview)).perform(longPressOnTextAtIndex(0));
+        sleepForFloatingToolbarPopup();
+
+        // suggestSelection should be called in two different TextClassifier sessions.
+        assertEquals(2, testableTextClassifiers.size());
+        assertEquals(1, testableTextClassifiers.get(0).getTextSelectionRequests().size());
+        assertEquals(1, testableTextClassifiers.get(1).getTextSelectionRequests().size());
+    }
+
+    @Test
     public void testPastePlainText_menuAction() {
         initializeClipboardWithText(TextStyle.STYLED);
 
@@ -1227,6 +1326,7 @@ public class TextViewActivityTest {
 
     private final class TestableTextClassifier implements TextClassifier {
         final List<SelectionEvent> mSelectionEvents = new ArrayList<>();
+        final List<TextSelection.Request> mTextSelectionRequests = new ArrayList<>();
 
         @Override
         public void onSelectionEvent(SelectionEvent event) {
@@ -1235,6 +1335,7 @@ public class TextViewActivityTest {
 
         @Override
         public TextSelection suggestSelection(TextSelection.Request request) {
+            mTextSelectionRequests.add(request);
             return new TextSelection.Builder(request.getStartIndex(), request.getEndIndex())
                     .setEntityType(TextClassifier.TYPE_PHONE, 1)
                     .build();
@@ -1242,6 +1343,10 @@ public class TextViewActivityTest {
 
         List<SelectionEvent> getSelectionEvents() {
             return mSelectionEvents;
+        }
+
+        List<TextSelection.Request> getTextSelectionRequests() {
+            return mTextSelectionRequests;
         }
     }
 }

@@ -22,7 +22,6 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SdkConstant;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.app.ActivityManager;
 import android.app.INotificationManager;
 import android.app.Notification;
@@ -44,6 +43,7 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -64,6 +64,7 @@ import com.android.internal.os.SomeArgs;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -80,6 +81,14 @@ import java.util.Objects;
  *     &lt;intent-filter>
  *         &lt;action android:name="android.service.notification.NotificationListenerService" />
  *     &lt;/intent-filter>
+ *     &lt;meta-data
+ *               android:name="android.service.notification.default_filter_types"
+ *               android:value="conversations,alerting">
+ *           &lt;/meta-data>
+ *     &lt;meta-data
+ *               android:name="android.service.notification.disabled_filter_types"
+ *               android:value="ongoing,silent">
+ *           &lt;/meta-data>
  * &lt;/service></pre>
  *
  * <p>The service should wait for the {@link #onListenerConnected()} event
@@ -101,6 +110,34 @@ public abstract class NotificationListenerService extends Service {
 
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     private final String TAG = getClass().getSimpleName();
+
+    /**
+     * The name of the {@code meta-data} tag containing a comma separated list of default
+     * integer notification types that should be provided to this listener. See
+     * {@link #FLAG_FILTER_TYPE_ONGOING},
+     * {@link #FLAG_FILTER_TYPE_CONVERSATIONS}, {@link #FLAG_FILTER_TYPE_ALERTING),
+     * and {@link #FLAG_FILTER_TYPE_SILENT}.
+     * <p>This value will only be read if the app has not previously specified a default type list,
+     * and if the user has not overridden the allowed types.</p>
+     * <p>An absent value means 'allow all types'.
+     * A present but empty value means 'allow no types'.</p>
+     *
+     */
+    public static final String META_DATA_DEFAULT_FILTER_TYPES
+            = "android.service.notification.default_filter_types";
+
+    /**
+     * The name of the {@code meta-data} tag containing a comma separated list of default
+     * integer notification types that this listener never wants to receive. See
+     * {@link #FLAG_FILTER_TYPE_ONGOING},
+     * {@link #FLAG_FILTER_TYPE_CONVERSATIONS}, {@link #FLAG_FILTER_TYPE_ALERTING),
+     * and {@link #FLAG_FILTER_TYPE_SILENT}.
+     * <p>Types provided in this list will appear as 'off' and 'disabled' in the user interface,
+     * so users don't enable a type that the listener will never bridge to their paired devices.</p>
+     *
+     */
+    public static final String META_DATA_DISABLED_FILTER_TYPES
+            = "android.service.notification.disabled_filter_types";
 
     /**
      * {@link #getCurrentInterruptionFilter() Interruption filter} constant -
@@ -150,7 +187,7 @@ public abstract class NotificationListenerService extends Service {
     public static final int HINT_HOST_DISABLE_NOTIFICATION_EFFECTS = 1 << 1;
 
     /** {@link #getCurrentListenerHints() Listener hints} constant - the primary device UI
-     * should disable phone call sounds, buyt not notification sound.
+     * should disable phone call sounds, but not notification sound.
      * This does not change the interruption filter, only the effects. **/
     public static final int HINT_HOST_DISABLE_CALL_EFFECTS = 1 << 2;
 
@@ -214,6 +251,10 @@ public abstract class NotificationListenerService extends Service {
     public static final int REASON_SNOOZED = 18;
     /** Notification was canceled due to timeout */
     public static final int REASON_TIMEOUT = 19;
+    /** Notification was canceled due to the backing channel being deleted */
+    public static final int REASON_CHANNEL_REMOVED = 20;
+    /** Notification was canceled due to the app's storage being cleared */
+    public static final int REASON_CLEAR_DATA = 21;
 
     /**
      * @hide
@@ -240,6 +281,35 @@ public abstract class NotificationListenerService extends Service {
             REASON_TIMEOUT
     })
     public @interface NotificationCancelReason{};
+
+    /**
+     * @hide
+     */
+    @IntDef(flag = true, prefix = { "FLAG_FILTER_TYPE_" }, value = {
+            FLAG_FILTER_TYPE_CONVERSATIONS,
+            FLAG_FILTER_TYPE_ALERTING,
+            FLAG_FILTER_TYPE_SILENT,
+            FLAG_FILTER_TYPE_ONGOING
+    })
+    public @interface NotificationFilterTypes {}
+    /**
+     * A flag value indicating that this notification listener can see conversation type
+     * notifications.
+     */
+    public static final int FLAG_FILTER_TYPE_CONVERSATIONS = 1;
+    /**
+     * A flag value indicating that this notification listener can see altering type notifications.
+     */
+    public static final int FLAG_FILTER_TYPE_ALERTING = 2;
+    /**
+     * A flag value indicating that this notification listener can see silent type notifications.
+     */
+    public static final int FLAG_FILTER_TYPE_SILENT = 4;
+    /**
+     * A flag value indicating that this notification listener can see important
+     * ( > {@link NotificationManager#IMPORTANCE_MIN}) ongoing type notifications.
+     */
+    public static final int FLAG_FILTER_TYPE_ONGOING = 8;
 
     /**
      * The full trim of the StatusBarNotification including all its features.
@@ -311,7 +381,7 @@ public abstract class NotificationListenerService extends Service {
     private Handler mHandler;
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     protected NotificationListenerWrapper mWrapper = null;
     private boolean isConnected = false;
 
@@ -451,7 +521,6 @@ public abstract class NotificationListenerService extends Service {
      *
      * @hide
      */
-    @TestApi
     @SystemApi
     public void onNotificationRemoved(@NonNull StatusBarNotification sbn,
             @NonNull RankingMap rankingMap, @NonNull NotificationStats stats, int reason) {
@@ -723,6 +792,29 @@ public abstract class NotificationListenerService extends Service {
         }
     }
 
+    /**
+     * Lets an app migrate notification filters from its app into the OS.
+     *
+     * <p>This call will be ignored if the app has already migrated these settings or the user
+     * has set filters in the UI. This method is intended for user specific settings; if an app has
+     * already specified defaults types in its manifest with
+     * {@link #META_DATA_DEFAULT_FILTER_TYPES}, the defaultTypes option will be ignored.</p>
+     * @param defaultTypes A value representing the types of notifications that this listener should
+     * receive by default
+     * @param disallowedPkgs A list of package names whose notifications should not be seen by this
+     * listener, by default, because the listener does not process or display them, or because a
+     * user had previously disallowed these packages in the listener app's UI
+     */
+    public final void migrateNotificationFilter(@NotificationFilterTypes int defaultTypes,
+            @Nullable List<String> disallowedPkgs) {
+        if (!isBound()) return;
+        try {
+            getNotificationInterface().migrateNotificationFilter(
+                    mWrapper, defaultTypes, disallowedPkgs);
+        } catch (android.os.RemoteException ex) {
+            Log.v(TAG, "Unable to contact notification manager", ex);
+        }
+    }
 
     /**
      * Inform the notification manager that these notifications have been viewed by the
@@ -1399,7 +1491,8 @@ public abstract class NotificationListenerService extends Service {
 
         @Override
         public void onNotificationEnqueuedWithChannel(
-                IStatusBarNotificationHolder notificationHolder, NotificationChannel channel)
+                IStatusBarNotificationHolder notificationHolder, NotificationChannel channel,
+                NotificationRankingUpdate update)
                 throws RemoteException {
             // no-op in the listener
         }
@@ -1455,6 +1548,11 @@ public abstract class NotificationListenerService extends Service {
         }
 
         @Override
+        public void onNotificationClicked(String key) {
+            // no-op in the listener
+        }
+
+        @Override
         public void onAllowedAdjustmentsChanged() {
             // no-op in the listener
         }
@@ -1490,6 +1588,14 @@ public abstract class NotificationListenerService extends Service {
             mHandler.obtainMessage(MyHandler.MSG_ON_STATUS_BAR_ICON_BEHAVIOR_CHANGED,
                     hideSilentStatusIcons).sendToTarget();
         }
+
+        @Override
+        public void onNotificationFeedbackReceived(String key, NotificationRankingUpdate update,
+                Bundle feedback) {
+            // no-op in the listener
+        }
+
+
     }
 
     /**
@@ -1518,8 +1624,10 @@ public abstract class NotificationListenerService extends Service {
      */
     public static class Ranking {
 
-        /** Value signifying that the user has not expressed a per-app visibility override value.
-         * @hide */
+        /**
+         * Value signifying that the user and device policy manager have not expressed a lockscreen
+         * visibility override for a notification.
+         */
         public static final int VISIBILITY_NO_OVERRIDE = NotificationManager.VISIBILITY_NO_OVERRIDE;
 
         /**
@@ -1573,6 +1681,7 @@ public abstract class NotificationListenerService extends Service {
         private int mSuppressedVisualEffects;
         private @NotificationManager.Importance int mImportance;
         private CharSequence mImportanceExplanation;
+        private float mRankingScore;
         // System specified group key.
         private String mOverrideGroupKey;
         // Notification assistant channel override.
@@ -1613,6 +1722,7 @@ public abstract class NotificationListenerService extends Service {
             out.writeInt(mSuppressedVisualEffects);
             out.writeInt(mImportance);
             out.writeCharSequence(mImportanceExplanation);
+            out.writeFloat(mRankingScore);
             out.writeString(mOverrideGroupKey);
             out.writeParcelable(mChannel, flags);
             out.writeStringList(mOverridePeople);
@@ -1650,6 +1760,7 @@ public abstract class NotificationListenerService extends Service {
             mSuppressedVisualEffects = in.readInt();
             mImportance = in.readInt();
             mImportanceExplanation = in.readCharSequence(); // may be null
+            mRankingScore = in.readFloat();
             mOverrideGroupKey = in.readString(); // may be null
             mChannel = in.readParcelable(cl); // may be null
             mOverridePeople = in.createStringArrayList();
@@ -1696,14 +1807,14 @@ public abstract class NotificationListenerService extends Service {
         }
 
         /**
-         * Returns the user specified visibility for the package that posted
-         * this notification, or
+         * Returns the user or device policy manager specified visibility (see
+         * {@link Notification#VISIBILITY_PRIVATE}, {@link Notification#VISIBILITY_PUBLIC},
+         * {@link Notification#VISIBILITY_SECRET}) for this notification, or
          * {@link NotificationListenerService.Ranking#VISIBILITY_NO_OVERRIDE} if
          * no such preference has been expressed.
-         * @hide
          */
-        @UnsupportedAppUsage
-        public int getVisibilityOverride() {
+        public @Notification.NotificationVisibilityOverride
+        int getLockscreenVisibilityOverride() {
             return mVisibilityOverride;
         }
 
@@ -1745,6 +1856,17 @@ public abstract class NotificationListenerService extends Service {
          */
         public CharSequence getImportanceExplanation() {
             return mImportanceExplanation;
+        }
+
+        /**
+         * Returns the ranking score provided by the {@link NotificationAssistantService} to
+         * sort the notifications in the shade
+         *
+         * @return the ranking score of the notification, range from -1 to 1
+         * @hide
+         */
+        public float getRankingScore() {
+            return mRankingScore;
         }
 
         /**
@@ -1802,7 +1924,7 @@ public abstract class NotificationListenerService extends Service {
          * {@link NotificationAssistantService}
          */
         public @NonNull List<Notification.Action> getSmartActions() {
-            return mSmartActions;
+            return mSmartActions == null ? Collections.emptyList() : mSmartActions;
         }
 
         /**
@@ -1810,7 +1932,7 @@ public abstract class NotificationListenerService extends Service {
          * {@link NotificationAssistantService}
          */
         public @NonNull List<CharSequence> getSmartReplies() {
-            return mSmartReplies;
+            return mSmartReplies == null ? Collections.emptyList() : mSmartReplies;
         }
 
         /**
@@ -1864,8 +1986,9 @@ public abstract class NotificationListenerService extends Service {
         }
 
         /**
-         * Returns whether this notification is a conversation notification.
-         * @hide
+         * Returns whether this notification is a conversation notification, and would appear
+         * in the conversation section of the notification shade, on devices that separate that
+         * type of notification.
          */
         public boolean isConversation() {
             return mIsConversation;
@@ -1880,9 +2003,12 @@ public abstract class NotificationListenerService extends Service {
         }
 
         /**
-         * @hide
+         * Returns the shortcut information associated with this notification, if it is a
+         * {@link #isConversation() conversation notification}.
+         * <p>This might be null even if the notification is a conversation notification, if
+         * the posting app hasn't opted into the full conversation feature set yet.</p>
          */
-        public @Nullable ShortcutInfo getShortcutInfo() {
+        public @Nullable ShortcutInfo getConversationShortcutInfo() {
             return mShortcutInfo;
         }
 
@@ -1933,6 +2059,17 @@ public abstract class NotificationListenerService extends Service {
             mShortcutInfo = shortcutInfo;
             mRankingAdjustment = rankingAdjustment;
             mIsBubble = isBubble;
+        }
+
+        /**
+         * @hide
+         */
+        public @NonNull Ranking withAudiblyAlertedInfo(@Nullable Ranking previous) {
+            if (previous != null && previous.mLastAudiblyAlertedMs > 0
+                    && this.mLastAudiblyAlertedMs <= 0) {
+                this.mLastAudiblyAlertedMs = previous.mLastAudiblyAlertedMs;
+            }
+            return this;
         }
 
         /**
@@ -1989,7 +2126,7 @@ public abstract class NotificationListenerService extends Service {
         }
 
         @Override
-        public boolean equals(Object o) {
+        public boolean equals(@Nullable Object o) {
             if (this == o) return true;
             if (o == null || getClass() != o.getClass()) return false;
 
@@ -2065,7 +2202,7 @@ public abstract class NotificationListenerService extends Service {
         }
 
         @Override
-        public boolean equals(Object o) {
+        public boolean equals(@Nullable Object o) {
             if (this == o) return true;
             if (o == null || getClass() != o.getClass()) return false;
 

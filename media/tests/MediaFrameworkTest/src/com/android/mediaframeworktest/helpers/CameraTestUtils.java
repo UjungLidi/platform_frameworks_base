@@ -16,16 +16,6 @@
 
 package com.android.mediaframeworktest.helpers;
 
-import com.android.ex.camera2.blocking.BlockingCameraManager;
-import com.android.ex.camera2.blocking.BlockingCameraManager.BlockingOpenException;
-import com.android.ex.camera2.blocking.BlockingSessionCallback;
-import com.android.ex.camera2.blocking.BlockingStateCallback;
-import com.android.ex.camera2.exceptions.TimeoutRuntimeException;
-
-import junit.framework.Assert;
-
-import org.mockito.Mockito;
-
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.ImageFormat;
@@ -58,10 +48,21 @@ import android.os.Handler;
 import android.util.Log;
 import android.util.Pair;
 import android.util.Size;
+import android.view.Display;
 import android.view.Surface;
 import android.view.WindowManager;
 
 import androidx.test.InstrumentationRegistry;
+
+import com.android.ex.camera2.blocking.BlockingCameraManager;
+import com.android.ex.camera2.blocking.BlockingCameraManager.BlockingOpenException;
+import com.android.ex.camera2.blocking.BlockingSessionCallback;
+import com.android.ex.camera2.blocking.BlockingStateCallback;
+import com.android.ex.camera2.exceptions.TimeoutRuntimeException;
+
+import junit.framework.Assert;
+
+import org.mockito.Mockito;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -76,8 +77,8 @@ import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Executor;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -224,7 +225,7 @@ public class CameraTestUtils extends Assert {
     }
 
     /**
-     * Dummy listener that release the image immediately once it is available.
+     * Mock listener that release the image immediately once it is available.
      *
      * <p>
      * It can be used for the case where we don't care the image data at all.
@@ -2210,14 +2211,14 @@ public class CameraTestUtils extends Assert {
     }
 
     public static Size getPreviewSizeBound(WindowManager windowManager, Size bound) {
-        Rect windowBounds = windowManager.getCurrentWindowMetrics().getBounds();
+        Display display = windowManager.getDefaultDisplay();
 
-        int width = windowBounds.width();
-        int height = windowBounds.height();
+        int width = display.getWidth();
+        int height = display.getHeight();
 
         if (height > width) {
             height = width;
-            width = windowBounds.height();
+            width = display.getHeight();
         }
 
         if (bound.getWidth() <= width &&

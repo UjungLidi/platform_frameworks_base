@@ -24,6 +24,7 @@ import static android.text.TextUtils.makeSafeForPresentation;
 import android.annotation.FloatRange;
 import android.annotation.NonNull;
 import android.annotation.SystemApi;
+import android.app.ActivityThread;
 import android.content.res.XmlResourceParser;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
@@ -48,11 +49,19 @@ import java.util.Objects;
  * in the implementation of Parcelable in subclasses.
  */
 public class PackageItemInfo {
-    /** The maximum length of a safe label, in characters */
-    private static final int MAX_SAFE_LABEL_LENGTH = 50000;
+
+    /**
+     * The maximum length of a safe label, in characters
+     *
+     * TODO(b/157997155): It may make sense to expose this publicly so that apps can check for the
+     *  value and truncate the strings/use a different label, without having to hardcode and make
+     *  assumptions about the value.
+     * @hide
+     */
+    public static final int MAX_SAFE_LABEL_LENGTH = 1000;
 
     /** @hide */
-    public static final float DEFAULT_MAX_LABEL_SIZE_PX = 500f;
+    public static final float DEFAULT_MAX_LABEL_SIZE_PX = 1000f;
 
     /**
      * Remove {@link Character#isWhitespace(int) whitespace} and non-breaking spaces from the edges
@@ -194,11 +203,13 @@ public class PackageItemInfo {
      * item does not have a label, its name is returned.
      */
     public @NonNull CharSequence loadLabel(@NonNull PackageManager pm) {
-        if (sForceSafeLabels) {
+        if (sForceSafeLabels && !Objects.equals(packageName, ActivityThread.currentPackageName())) {
             return loadSafeLabel(pm, DEFAULT_MAX_LABEL_SIZE_PX, SAFE_STRING_FLAG_TRIM
                     | SAFE_STRING_FLAG_FIRST_LINE);
         } else {
-            return loadUnsafeLabel(pm);
+            // Trims the label string to the MAX_SAFE_LABEL_LENGTH. This is to prevent that the
+            // system is overwhelmed by an enormous string returned by the application.
+            return TextUtils.trimToSize(loadUnsafeLabel(pm), MAX_SAFE_LABEL_LENGTH);
         }
     }
 
@@ -422,8 +433,8 @@ public class PackageItemInfo {
     }
 
     public void writeToParcel(Parcel dest, int parcelableFlags) {
-        dest.writeString(name);
-        dest.writeString(packageName);
+        dest.writeString8(name);
+        dest.writeString8(packageName);
         dest.writeInt(labelRes);
         TextUtils.writeToParcel(nonLocalizedLabel, dest, parcelableFlags);
         dest.writeInt(icon);
@@ -452,8 +463,8 @@ public class PackageItemInfo {
     }
 
     protected PackageItemInfo(Parcel source) {
-        name = source.readString();
-        packageName = source.readString();
+        name = source.readString8();
+        packageName = source.readString8();
         labelRes = source.readInt();
         nonLocalizedLabel
                 = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(source);

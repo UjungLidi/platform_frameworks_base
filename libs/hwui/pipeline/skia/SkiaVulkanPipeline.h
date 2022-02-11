@@ -42,8 +42,7 @@ public:
     bool swapBuffers(const renderthread::Frame& frame, bool drew, const SkRect& screenDirty,
                      FrameInfo* currentFrameInfo, bool* requireSwap) override;
     DeferredLayerUpdater* createTextureLayer() override;
-    bool setSurface(ANativeWindow* surface, renderthread::SwapBehavior swapBehavior,
-                    uint32_t extraBuffers) override;
+    bool setSurface(ANativeWindow* surface, renderthread::SwapBehavior swapBehavior) override;
     void onStop() override;
     bool isSurfaceReady() override;
     bool isContextReady() override;
@@ -56,7 +55,8 @@ protected:
     void onContextDestroyed() override;
 
 private:
-    renderthread::VulkanManager& mVkManager;
+    renderthread::VulkanManager& vulkanManager();
+
     renderthread::VulkanSurface* mVkSurface = nullptr;
 };
 

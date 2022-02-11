@@ -21,7 +21,7 @@ import android.service.controls.Control
 import android.service.controls.ControlsProviderService
 import android.service.controls.actions.ControlAction
 import com.android.systemui.controls.ControlStatus
-import com.android.systemui.controls.UserAwareController
+import com.android.systemui.util.UserAwareController
 import com.android.systemui.controls.management.ControlsFavoritingActivity
 import com.android.systemui.controls.ui.ControlsUiController
 import java.util.function.Consumer
@@ -40,28 +40,21 @@ import java.util.function.Consumer
  */
 interface ControlsController : UserAwareController {
 
-    /**
-     * Whether the controls system is available for the current user.
-     */
-    val available: Boolean
-
     // SERVICE COMMUNICATION
 
     /**
      * Load all available [Control] for a given service.
      *
      * @param componentName the [ComponentName] of the [ControlsProviderService] to load from
-     * @param dataCallback a callback in which to retrieve the result.
+     * @param dataCallback a callback in which to retrieve the result
+     * @param cancelWrapper a callback to receive a [Runnable] that can be run to cancel the
+     *                      request
      */
     fun loadForComponent(
         componentName: ComponentName,
-        dataCallback: Consumer<LoadData>
+        dataCallback: Consumer<LoadData>,
+        cancelWrapper: Consumer<Runnable>
     )
-
-    /**
-     * Cancels a pending load call
-     */
-    fun cancelLoad()
 
     /**
      * Request to subscribe for favorited controls per structure
@@ -116,12 +109,12 @@ interface ControlsController : UserAwareController {
     /**
      * Send a request to seed favorites into the persisted XML file
      *
-     * @param componentName the component to seed controls from
-     * @param callback true if the favorites were persisted
+     * @param componentNames the list of components to seed controls from
+     * @param callback one [SeedResponse] per componentName
      */
-    fun seedFavoritesForComponent(
-        componentName: ComponentName,
-        callback: Consumer<Boolean>
+    fun seedFavoritesForComponents(
+        componentNames: List<ComponentName>,
+        callback: Consumer<SeedResponse>
     )
 
     /**
@@ -191,10 +184,8 @@ interface ControlsController : UserAwareController {
      */
     fun countFavoritesForComponent(componentName: ComponentName): Int
 
-    /**
-     * TEMPORARY for testing
-     */
-    fun resetFavorites()
+    /** See [ControlsUiController.getPreferredStructure]. */
+    fun getPreferredStructure(): StructureInfo
 
     /**
      * Interface for structure to pass data to [ControlsFavoritingActivity].
@@ -237,3 +228,5 @@ fun createLoadDataObject(
         override val errorOnLoad = error
     }
 }
+
+data class SeedResponse(val packageName: String, val accepted: Boolean)

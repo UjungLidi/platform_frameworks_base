@@ -91,8 +91,8 @@ public class ContentProviderOperation implements Parcelable {
     private ContentProviderOperation(Parcel source) {
         mType = source.readInt();
         mUri = Uri.CREATOR.createFromParcel(source);
-        mMethod = source.readInt() != 0 ? source.readString() : null;
-        mArg = source.readInt() != 0 ? source.readString() : null;
+        mMethod = source.readInt() != 0 ? source.readString8() : null;
+        mArg = source.readInt() != 0 ? source.readString8() : null;
         final int valuesSize = source.readInt();
         if (valuesSize != -1) {
             mValues = new ArrayMap<>(valuesSize);
@@ -107,7 +107,7 @@ public class ContentProviderOperation implements Parcelable {
         } else {
             mExtras = null;
         }
-        mSelection = source.readInt() != 0 ? source.readString() : null;
+        mSelection = source.readInt() != 0 ? source.readString8() : null;
         mSelectionArgs = source.readSparseArray(null);
         mExpectedCount = source.readInt() != 0 ? source.readInt() : null;
         mYieldAllowed = source.readInt() != 0;
@@ -135,13 +135,13 @@ public class ContentProviderOperation implements Parcelable {
         Uri.writeToParcel(dest, mUri);
         if (mMethod != null) {
             dest.writeInt(1);
-            dest.writeString(mMethod);
+            dest.writeString8(mMethod);
         } else {
             dest.writeInt(0);
         }
         if (mArg != null) {
             dest.writeInt(1);
-            dest.writeString(mArg);
+            dest.writeString8(mArg);
         } else {
             dest.writeInt(0);
         }
@@ -159,7 +159,7 @@ public class ContentProviderOperation implements Parcelable {
         }
         if (mSelection != null) {
             dest.writeInt(1);
-            dest.writeString(mSelection);
+            dest.writeString8(mSelection);
         } else {
             dest.writeInt(0);
         }
@@ -533,21 +533,21 @@ public class ContentProviderOperation implements Parcelable {
     @Override
     public String toString() {
         final StringBuilder sb = new StringBuilder("ContentProviderOperation(");
-        sb.append("type=" + typeToString(mType) + " ");
+        sb.append("type=").append(typeToString(mType)).append(' ');
         if (mUri != null) {
-            sb.append("uri=" + mUri + " ");
+            sb.append("uri=").append(mUri).append(' ');
         }
         if (mValues != null) {
-            sb.append("values=" + mValues + " ");
+            sb.append("values=").append(mValues).append(' ');
         }
         if (mSelection != null) {
-            sb.append("selection=" + mSelection + " ");
+            sb.append("selection=").append(mSelection).append(' ');
         }
         if (mSelectionArgs != null) {
-            sb.append("selectionArgs=" + mSelectionArgs + " ");
+            sb.append("selectionArgs=").append(mSelectionArgs).append(' ');
         }
         if (mExpectedCount != null) {
-            sb.append("expectedCount=" + mExpectedCount + " ");
+            sb.append("expectedCount=").append(mExpectedCount).append(' ');
         }
         if (mYieldAllowed) {
             sb.append("yieldAllowed ");
@@ -591,7 +591,7 @@ public class ContentProviderOperation implements Parcelable {
         public BackReference(Parcel src) {
             this.fromIndex = src.readInt();
             if (src.readInt() != 0) {
-                this.fromKey = src.readString();
+                this.fromKey = src.readString8();
             } else {
                 this.fromKey = null;
             }
@@ -620,7 +620,7 @@ public class ContentProviderOperation implements Parcelable {
             dest.writeInt(fromIndex);
             if (fromKey != null) {
                 dest.writeInt(1);
-                dest.writeString(fromKey);
+                dest.writeString8(fromKey);
             } else {
                 dest.writeInt(0);
             }

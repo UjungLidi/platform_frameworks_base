@@ -31,6 +31,7 @@ import android.location.LocationRequest;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerExecutor;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.print.PrintManager;
@@ -231,11 +232,6 @@ public final class FusedPrintersProvider extends Loader<List<PrinterInfo>>
         // Add the new printers, i.e. what is left.
         printers.addAll(discoveredPrinters.values());
 
-        // Do nothing if the printer list is not changed.
-        if (Objects.equals(mPrinters, printers)) {
-            return;
-        }
-
         // Update the list of printers.
         mPrinters.clear();
         mPrinters.addAll(printers);
@@ -255,9 +251,13 @@ public final class FusedPrintersProvider extends Loader<List<PrinterInfo>>
             Log.i(LOG_TAG, "onStartLoading() " + FusedPrintersProvider.this.hashCode());
         }
 
-        mLocationManager.requestLocationUpdates(LocationRequest.create()
-                .setQuality(LocationRequest.POWER_LOW).setInterval(LOCATION_UPDATE_MS), this,
-                Looper.getMainLooper());
+        mLocationManager.requestLocationUpdates(
+                LocationManager.FUSED_PROVIDER,
+                new LocationRequest.Builder(LOCATION_UPDATE_MS)
+                        .setQuality(LocationRequest.QUALITY_LOW_POWER)
+                        .build(),
+                new HandlerExecutor(new Handler(Looper.getMainLooper())),
+                this);
 
         Location lastLocation = mLocationManager.getLastLocation();
         if (lastLocation != null) {

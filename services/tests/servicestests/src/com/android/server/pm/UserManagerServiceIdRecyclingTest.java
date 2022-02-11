@@ -20,9 +20,9 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import android.app.PropertyInvalidatedCache;
 import android.content.pm.UserInfo;
 import android.os.Looper;
-import android.os.UserManagerInternal;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.MediumTest;
@@ -57,6 +57,9 @@ public class UserManagerServiceIdRecyclingTest {
         if (Looper.myLooper() == null) {
             Looper.prepare();
         }
+        // Disable binder caches in this process.
+        PropertyInvalidatedCache.disableForTestMode();
+
         LocalServices.removeServiceForTest(UserManagerInternal.class);
         mUserManagerService = new UserManagerService(InstrumentationRegistry.getContext());
     }
@@ -122,4 +125,3 @@ public class UserManagerServiceIdRecyclingTest {
         return new UserInfo(userId, "User " + userId, 0);
     }
 }
-

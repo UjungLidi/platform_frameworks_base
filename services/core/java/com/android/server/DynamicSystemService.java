@@ -22,14 +22,15 @@ import android.gsi.AvbPublicKey;
 import android.gsi.GsiProgress;
 import android.gsi.IGsiService;
 import android.gsi.IGsiServiceCallback;
-import android.os.Environment;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
+import android.os.ServiceManager;
 import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.os.image.IDynamicSystemService;
+import android.os.storage.DiskInfo;
 import android.os.storage.StorageManager;
-import android.os.storage.StorageVolume;
+import android.os.storage.VolumeInfo;
 import android.util.Slog;
 
 import java.io.File;
@@ -40,6 +41,7 @@ import java.io.File;
  */
 public class DynamicSystemService extends IDynamicSystemService.Stub {
     private static final String TAG = "DynamicSystemService";
+    private static final long MINIMUM_SD_MB = (30L << 10);
     private static final int GSID_ROUGH_TIMEOUT_MS = 8192;
     private static final String PATH_DEFAULT = "/data/gsi/";
     private Context mContext;
@@ -50,17 +52,16 @@ public class DynamicSystemService extends IDynamicSystemService.Stub {
         mContext = context;
     }
 
-    private IGsiService getGsiService() throws RemoteException {
+    private IGsiService getGsiService() {
         checkPermission();
         if (mGsiService != null) {
             return mGsiService;
         }
-        return IGsiService.Stub.asInterface(waitForService("gsiservice"));
+        return IGsiService.Stub.asInterface(ServiceManager.waitForService("gsiservice"));
     }
 
     private void checkPermission() {
-        if (mContext.checkCallingOrSelfPermission(
-                        android.Manifest.permission.MANAGE_DYNAMIC_SYSTEM)
+        if (mContext.checkCallingOrSelfPermission(android.Manifest.permission.MANAGE_DYNAMIC_SYSTEM)
                 != PackageManager.PERMISSION_GRANTED) {
             throw new SecurityException("Requires MANAGE_DYNAMIC_SYSTEM permission");
         }
@@ -88,16 +89,24 @@ public class DynamicSystemService extends IDynamicSystemService.Stub {
         String path = SystemProperties.get("os.aot.path");
         if (path.isEmpty()) {
             final int userId = UserHandle.myUserId();
-            final StorageVolume[] volumes =
-                    StorageManager.getVolumeList(userId, StorageManager.FLAG_FOR_WRITE);
-            for (StorageVolume volume : volumes) {
-                if (volume.isEmulated()) continue;
-                if (!volume.isRemovable()) continue;
-                if (!Environment.MEDIA_MOUNTED.equals(volume.getState())) continue;
-                File sdCard = volume.getPathFile();
-                if (sdCard.isDirectory()) {
-                    path = new File(sdCard, dsuSlot).getPath();
-                    break;
+            final StorageManager sm = mContext.getSystemService(StorageManager.class);
+            for (VolumeInfo volume : sm.getVolumes()) {
+                if (volume.getType() != volume.TYPE_PUBLIC) {
+                    continue;
+                }
+                if (!volume.isMountedWritable()) {
+                    continue;
+                }
+                DiskInfo disk = volume.getDisk();
+                long mega = disk.size >> 20;
+                Slog.i(TAG, volume.getPath() + ": " + mega + " MB");
+                if (mega < MINIMUM_SD_MB) {
+                    Slog.i(TAG, volume.getPath() + ": insufficient storage");
+                    continue;
+                }
+                File sd_internal = volume.getInternalPathForUser(userId);
+                if (sd_internal != null) {
+                    path = new File(sd_internal, dsuSlot).getPath();
                 }
             }
             if (path.isEmpty()) {
@@ -126,6 +135,16 @@ public class DynamicSystemService extends IDynamicSystemService.Stub {
     }
 
     @Override
+    public boolean closePartition() throws RemoteException {
+        IGsiService service = getGsiService();
+        if (service.closePartition() != 0) {
+            Slog.i(TAG, "Partition installation completes with error");
+            return false;
+        }
+        return true;
+    }
+
+    @Override
     public boolean finishInstallation() throws RemoteException {
         IGsiService service = getGsiService();
         if (service.closeInstall() != 0) {
@@ -146,12 +165,12 @@ public class DynamicSystemService extends IDynamicSystemService.Stub {
     }
 
     @Override
-    public boolean isInUse() throws RemoteException {
+    public boolean isInUse() {
         return SystemProperties.getBoolean("ro.gsid.image_running", false);
     }
 
     @Override
-    public boolean isInstalled() throws RemoteException {
+    public boolean isInstalled() {
         boolean installed = SystemProperties.getBoolean("gsid.image_installed", false);
         Slog.i(TAG, "isInstalled(): " + installed);
         return installed;
@@ -225,5 +244,10 @@ public class DynamicSystemService extends IDynamicSystemService.Stub {
         } catch (RemoteException e) {
             throw new RuntimeException(e.toString());
         }
+    }
+
+    @Override
+    public long suggestScratchSize() throws RemoteException {
+        return getGsiService().suggestScratchSize();
     }
 }

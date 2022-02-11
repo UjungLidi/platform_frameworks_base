@@ -38,6 +38,7 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"<xliff:g id="PERCENTAGE">%s</xliff:g> • ચાર્જિંગ"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"<xliff:g id="PERCENTAGE">%s</xliff:g> • ઝડપથી ચાર્જિંગ"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"<xliff:g id="PERCENTAGE">%s</xliff:g> • ધીમેથી ચાર્જિંગ"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="6091488837901216962">"<xliff:g id="PERCENTAGE">%s</xliff:g> • ચાર્જ કરવાનું થોડા સમય માટે મર્યાદિત કરવામાં આવ્યું છે"</string>
     <string name="keyguard_low_battery" msgid="1868012396800230904">"તમારું ચાર્જર કનેક્ટ કરો."</string>
     <string name="keyguard_instructions_when_pattern_disabled" msgid="8448804180089936954">"અનલૉક કરવા માટે મેનૂ દબાવો."</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"નેટવર્ક લૉક થયું"</string>
@@ -101,9 +102,6 @@
     <string name="keyguard_carrier_default" msgid="6359808469637388586">"કોઈ સેવા નથી."</string>
     <string name="accessibility_ime_switch_button" msgid="9082358310194861329">"ઇનપુટ પદ્ધતિ સ્વિચ કરો"</string>
     <string name="airplane_mode" msgid="2528005343938497866">"એરપ્લેન મોડ"</string>
-    <string name="kg_prompt_reason_prepare_for_update_pin" msgid="8878724145347297575">"અપડેટ માટે તૈયાર કરવા માટે પિન જરુરી છે"</string>
-    <string name="kg_prompt_reason_prepare_for_update_pattern" msgid="4873394344883271519">"અપડેટ માટે તૈયાર કરવા માટે પૅટર્ન જરુરી છે"</string>
-    <string name="kg_prompt_reason_prepare_for_update_password" msgid="5625446803865598337">"અપડેટ માટે તૈયાર કરવા માટે પાસવર્ડ જરુરી છે"</string>
     <string name="kg_prompt_reason_restart_pattern" msgid="4720554342633852066">"ઉપકરણનો પુનઃપ્રારંભ થાય તે પછી પૅટર્ન જરૂરી છે"</string>
     <string name="kg_prompt_reason_restart_pin" msgid="1587671566498057656">"ઉપકરણનો પુનઃપ્રારંભ થાય તે પછી પિન જરૂરી છે"</string>
     <string name="kg_prompt_reason_restart_password" msgid="8061279087240952002">"ઉપકરણનો પુનઃપ્રારંભ થાય તે પછી પાસવર્ડ જરૂરી છે"</string>

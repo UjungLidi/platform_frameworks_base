@@ -19,6 +19,7 @@ package com.android.internal.accessibility;
 import static android.view.WindowManager.LayoutParams.TYPE_KEYGUARD_DIALOG;
 import static android.view.accessibility.AccessibilityManager.ACCESSIBILITY_SHORTCUT_KEY;
 
+import static com.android.internal.accessibility.dialog.AccessibilityTargetHelper.getTargets;
 import static com.android.internal.util.ArrayUtils.convertToLongArray;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
@@ -31,6 +32,7 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.database.ContentObserver;
 import android.media.AudioAttributes;
 import android.media.Ringtone;
@@ -52,6 +54,7 @@ import android.view.accessibility.AccessibilityManager;
 import android.widget.Toast;
 
 import com.android.internal.R;
+import com.android.internal.accessibility.dialog.AccessibilityTarget;
 import com.android.internal.util.function.pooled.PooledLambda;
 
 import java.lang.annotation.Retention;
@@ -68,13 +71,25 @@ import java.util.Map;
 public class AccessibilityShortcutController {
     private static final String TAG = "AccessibilityShortcutController";
 
-    // Dummy component names for framework features
+    // Placeholder component names for framework features
     public static final ComponentName COLOR_INVERSION_COMPONENT_NAME =
             new ComponentName("com.android.server.accessibility", "ColorInversion");
     public static final ComponentName DALTONIZER_COMPONENT_NAME =
             new ComponentName("com.android.server.accessibility", "Daltonizer");
+    // TODO(b/147990389): Use MAGNIFICATION_COMPONENT_NAME to replace.
     public static final String MAGNIFICATION_CONTROLLER_NAME =
             "com.android.server.accessibility.MagnificationController";
+    public static final ComponentName MAGNIFICATION_COMPONENT_NAME =
+            new ComponentName("com.android.server.accessibility", "Magnification");
+    public static final ComponentName ONE_HANDED_COMPONENT_NAME =
+            new ComponentName("com.android.server.accessibility", "OneHandedMode");
+    public static final ComponentName REDUCE_BRIGHT_COLORS_COMPONENT_NAME =
+            new ComponentName("com.android.server.accessibility", "ReduceBrightColors");
+
+    // The component name for the sub setting of Accessibility button in Accessibility settings
+    public static final ComponentName ACCESSIBILITY_BUTTON_COMPONENT_NAME =
+            new ComponentName("com.android.server.accessibility", "AccessibilityButton");
+
 
     private static final AudioAttributes VIBRATION_ATTRIBUTES = new AudioAttributes.Builder()
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -104,13 +119,13 @@ public class AccessibilityShortcutController {
     public FrameworkObjectProvider mFrameworkObjectProvider = new FrameworkObjectProvider();
 
     /**
-     * @return An immutable map from dummy component names to feature info for toggling a framework
-     *         feature
+     * @return An immutable map from placeholder component names to feature
+     *         info for toggling a framework feature
      */
     public static Map<ComponentName, ToggleableFrameworkFeatureInfo>
         getFrameworkShortcutFeaturesMap() {
         if (sFrameworkShortcutFeaturesMap == null) {
-            Map<ComponentName, ToggleableFrameworkFeatureInfo> featuresMap = new ArrayMap<>(2);
+            Map<ComponentName, ToggleableFrameworkFeatureInfo> featuresMap = new ArrayMap<>(4);
             featuresMap.put(COLOR_INVERSION_COMPONENT_NAME,
                     new ToggleableFrameworkFeatureInfo(
                             Settings.Secure.ACCESSIBILITY_DISPLAY_INVERSION_ENABLED,
@@ -121,6 +136,16 @@ public class AccessibilityShortcutController {
                             Settings.Secure.ACCESSIBILITY_DISPLAY_DALTONIZER_ENABLED,
                             "1" /* Value to enable */, "0" /* Value to disable */,
                             R.string.color_correction_feature_name));
+            featuresMap.put(ONE_HANDED_COMPONENT_NAME,
+                    new ToggleableFrameworkFeatureInfo(
+                            Settings.Secure.ONE_HANDED_MODE_ACTIVATED,
+                            "1" /* Value to enable */, "0" /* Value to disable */,
+                            R.string.one_handed_mode_feature_name));
+            featuresMap.put(REDUCE_BRIGHT_COLORS_COMPONENT_NAME,
+                    new ToggleableFrameworkFeatureInfo(
+                            Settings.Secure.REDUCE_BRIGHT_COLORS_ACTIVATED,
+                            "1" /* Value to enable */, "0" /* Value to disable */,
+                            R.string.reduce_bright_colors_feature_name));
             sFrameworkShortcutFeaturesMap = Collections.unmodifiableMap(featuresMap);
         }
         return sFrameworkShortcutFeaturesMap;
@@ -232,9 +257,8 @@ public class AccessibilityShortcutController {
     }
 
     /**
-     * Show toast if current assigned shortcut target is an accessibility service and its target
-     * sdk version is less than or equal to Q, or greater than Q and does not request
-     * accessibility button.
+     * Show toast to alert the user that the accessibility shortcut turned on or off an
+     * accessibility service.
      */
     private void showToast() {
         final AccessibilityServiceInfo serviceInfo = getInfoForTargetService();
@@ -247,12 +271,15 @@ public class AccessibilityShortcutController {
         }
         final boolean requestA11yButton = (serviceInfo.flags
                 & AccessibilityServiceInfo.FLAG_REQUEST_ACCESSIBILITY_BUTTON) != 0;
-        if (serviceInfo.getResolveInfo().serviceInfo.applicationInfo
-                .targetSdkVersion > Build.VERSION_CODES.Q && requestA11yButton) {
+        final boolean isServiceEnabled = isServiceEnabled(serviceInfo);
+        if (serviceInfo.getResolveInfo().serviceInfo.applicationInfo.targetSdkVersion
+                > Build.VERSION_CODES.Q && requestA11yButton && isServiceEnabled) {
+            // An accessibility button callback is sent to the target accessibility service.
+            // No need to show up a toast in this case.
             return;
         }
         // For accessibility services, show a toast explaining what we're doing.
-        String toastMessageFormatString = mContext.getString(isServiceEnabled(serviceInfo)
+        String toastMessageFormatString = mContext.getString(isServiceEnabled
                 ? R.string.accessibility_shortcut_disabling_service
                 : R.string.accessibility_shortcut_enabling_service);
         String toastMessage = String.format(toastMessageFormatString, serviceName);
@@ -262,16 +289,21 @@ public class AccessibilityShortcutController {
     }
 
     private AlertDialog createShortcutWarningDialog(int userId) {
-        final String warningMessage = mContext.getString(
-                R.string.accessibility_shortcut_toogle_warning);
+        List<AccessibilityTarget> targets = getTargets(mContext, ACCESSIBILITY_SHORTCUT_KEY);
+        if (targets.size() == 0) {
+            return null;
+        }
+
+        // Avoid non-a11y users accidentally turning shortcut on without reading this carefully.
+        // Put "don't turn on" as the primary action.
         final AlertDialog alertDialog = mFrameworkObjectProvider.getAlertDialogBuilder(
                 // Use SystemUI context so we pick up any theme set in a vendor overlay
                 mFrameworkObjectProvider.getSystemUiContext())
-                .setTitle(R.string.accessibility_shortcut_warning_dialog_title)
-                .setMessage(warningMessage)
+                .setTitle(getShortcutWarningTitle(targets))
+                .setMessage(getShortcutWarningMessage(targets))
                 .setCancelable(false)
-                .setPositiveButton(R.string.leave_accessibility_shortcut_on, null)
-                .setNegativeButton(R.string.disable_accessibility_shortcut,
+                .setNegativeButton(R.string.accessibility_shortcut_on, null)
+                .setPositiveButton(R.string.accessibility_shortcut_off,
                         (DialogInterface d, int which) -> {
                             Settings.Secure.putStringForUser(mContext.getContentResolver(),
                                     Settings.Secure.ACCESSIBILITY_SHORTCUT_TARGET_SERVICE, "",
@@ -290,6 +322,32 @@ public class AccessibilityShortcutController {
                 })
                 .create();
         return alertDialog;
+    }
+
+    private String getShortcutWarningTitle(List<AccessibilityTarget> targets) {
+        if (targets.size() == 1) {
+            return mContext.getString(
+                    R.string.accessibility_shortcut_single_service_warning_title,
+                    targets.get(0).getLabel());
+        }
+        return mContext.getString(
+                R.string.accessibility_shortcut_multiple_service_warning_title);
+    }
+
+    private String getShortcutWarningMessage(List<AccessibilityTarget> targets) {
+        if (targets.size() == 1) {
+            return mContext.getString(
+                    R.string.accessibility_shortcut_single_service_warning,
+                    targets.get(0).getLabel());
+        }
+
+        final StringBuilder sb = new StringBuilder();
+        for (AccessibilityTarget target : targets) {
+            sb.append(mContext.getString(R.string.accessibility_shortcut_multiple_service_list,
+                    target.getLabel()));
+        }
+        return mContext.getString(R.string.accessibility_shortcut_multiple_service_warning,
+                sb.toString());
     }
 
     private AccessibilityServiceInfo getInfoForTargetService() {
@@ -545,7 +603,11 @@ public class AccessibilityShortcutController {
         }
 
         public AlertDialog.Builder getAlertDialogBuilder(Context context) {
-            return new AlertDialog.Builder(context);
+            final boolean inNightMode = (context.getResources().getConfiguration().uiMode
+                    & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+            final int themeId = inNightMode ? R.style.Theme_DeviceDefault_Dialog_Alert :
+                    R.style.Theme_DeviceDefault_Light_Dialog_Alert;
+            return new AlertDialog.Builder(context, themeId);
         }
 
         public Toast makeToastFromText(Context context, CharSequence charSequence, int duration) {

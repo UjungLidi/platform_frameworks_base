@@ -155,6 +155,33 @@ public class LauncherApps {
     public static final String EXTRA_PIN_ITEM_REQUEST =
             "android.content.pm.extra.PIN_ITEM_REQUEST";
 
+    /**
+     * Cache shortcuts which are used in notifications.
+     * @hide
+     */
+    public static final int FLAG_CACHE_NOTIFICATION_SHORTCUTS = 0;
+
+    /**
+     * Cache shortcuts which are used in bubbles.
+     * @hide
+     */
+    public static final int FLAG_CACHE_BUBBLE_SHORTCUTS = 1;
+
+    /**
+     * Cache shortcuts which are used in People Tile.
+     * @hide
+     */
+    public static final int FLAG_CACHE_PEOPLE_TILE_SHORTCUTS = 2;
+
+    /** @hide */
+    @IntDef(flag = false, prefix = { "FLAG_CACHE_" }, value = {
+            FLAG_CACHE_NOTIFICATION_SHORTCUTS,
+            FLAG_CACHE_BUBBLE_SHORTCUTS,
+            FLAG_CACHE_PEOPLE_TILE_SHORTCUTS
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ShortcutCacheFlags {}
+
     private final Context mContext;
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     private final ILauncherApps mService;
@@ -303,6 +330,16 @@ public class LauncherApps {
         public void onShortcutsChanged(@NonNull String packageName,
                 @NonNull List<ShortcutInfo> shortcuts, @NonNull UserHandle user) {
         }
+
+        /**
+         * Indicates that the loading progress of an installed package has changed.
+         *
+         * @param packageName The name of the package that has changed.
+         * @param user The UserHandle of the profile that generated the change.
+         * @param progress The new progress value, between [0, 1].
+         */
+        public void onPackageLoadingProgressChanged(@NonNull String packageName,
+                @NonNull UserHandle user, float progress) {}
     }
 
     /**
@@ -402,13 +439,26 @@ public class LauncherApps {
          */
         public static final int FLAG_GET_KEY_FIELDS_ONLY = 1 << 2;
 
+        /**
+         * Populate the persons field in the result. See {@link ShortcutInfo#getPersons()}.
+         *
+         * <p>The caller must have the system {@code ACCESS_SHORTCUTS} permission.
+         *
+         * @hide
+         */
+        @SystemApi
+        @RequiresPermission(android.Manifest.permission.ACCESS_SHORTCUTS)
+        public static final int FLAG_GET_PERSONS_DATA = 1 << 11;
+
         /** @hide */
         @IntDef(flag = true, prefix = { "FLAG_" }, value = {
                 FLAG_MATCH_DYNAMIC,
                 FLAG_MATCH_PINNED,
                 FLAG_MATCH_MANIFEST,
                 FLAG_MATCH_CACHED,
+                FLAG_MATCH_PINNED_BY_ANY_LAUNCHER,
                 FLAG_GET_KEY_FIELDS_ONLY,
+                FLAG_GET_PERSONS_DATA,
         })
         @Retention(RetentionPolicy.SOURCE)
         public @interface QueryFlags {}
@@ -507,7 +557,8 @@ public class LauncherApps {
         /**
          * Indicates that one or more shortcuts, that match the {@link ShortcutQuery} used to
          * register this callback, have been added or updated.
-         * @see LauncherApps#registerShortcutChangeCallback(ShortcutChangeCallback, ShortcutQuery)
+         * @see LauncherApps#registerShortcutChangeCallback(ShortcutChangeCallback, ShortcutQuery,
+         * Executor)
          *
          * <p>Only the applications that are allowed to access the shortcut information,
          * as defined in {@link #hasShortcutHostPermission()}, will receive it.
@@ -525,7 +576,8 @@ public class LauncherApps {
         /**
          * Indicates that one or more shortcuts, that match the {@link ShortcutQuery} used to
          * register this callback, have been removed.
-         * @see LauncherApps#registerShortcutChangeCallback(ShortcutChangeCallback, ShortcutQuery)
+         * @see LauncherApps#registerShortcutChangeCallback(ShortcutChangeCallback, ShortcutQuery,
+         * Executor)
          *
          * <p>Only the applications that are allowed to access the shortcut information,
          * as defined in {@link #hasShortcutHostPermission()}, will receive it.
@@ -683,6 +735,29 @@ public class LauncherApps {
     }
 
     /**
+     * Returns a PendingIntent that would start the same activity started from
+     * {@link #startMainActivity(ComponentName, UserHandle, Rect, Bundle)}.
+     *
+     * @param component The ComponentName of the activity to launch
+     * @param startActivityOptions Options to pass to startActivity
+     * @param user The UserHandle of the profile
+     * @hide
+     */
+    @Nullable
+    public PendingIntent getMainActivityLaunchIntent(@NonNull ComponentName component,
+            @Nullable Bundle startActivityOptions, @NonNull UserHandle user) {
+        logErrorForInvalidProfileAccess(user);
+        if (DEBUG) {
+            Log.i(TAG, "GetMainActivityLaunchIntent " + component + " " + user);
+        }
+        try {
+            return mService.getActivityLaunchIntent(component, startActivityOptions, user);
+        } catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Returns the activity info for a given intent and user handle, if it resolves. Otherwise it
      * returns null.
      *
@@ -693,16 +768,15 @@ public class LauncherApps {
     public LauncherActivityInfo resolveActivity(Intent intent, UserHandle user) {
         logErrorForInvalidProfileAccess(user);
         try {
-            ActivityInfo ai = mService.resolveActivity(mContext.getPackageName(),
-                    intent.getComponent(), user);
-            if (ai != null) {
-                LauncherActivityInfo info = new LauncherActivityInfo(mContext, ai, user);
-                return info;
+            LauncherActivityInfoInternal ai = mService.resolveLauncherActivityInternal(
+                    mContext.getPackageName(), intent.getComponent(), user);
+            if (ai == null) {
+                return null;
             }
+            return new LauncherActivityInfo(mContext, user, ai);
         } catch (RemoteException re) {
             throw re.rethrowFromSystemServer();
         }
-        return null;
     }
 
     /**
@@ -768,6 +842,30 @@ public class LauncherApps {
     }
 
     /**
+     * Returns PendingIntent associated with specified shortcut.
+     *
+     * @param packageName The packageName of the shortcut
+     * @param shortcutId The id of the shortcut
+     * @param opts Options to pass to the PendingIntent
+     * @param user The UserHandle of the profile
+     */
+    @Nullable
+    public PendingIntent getShortcutIntent(@NonNull final String packageName,
+            @NonNull final String shortcutId, @Nullable final Bundle opts,
+            @NonNull final UserHandle user) {
+        logErrorForInvalidProfileAccess(user);
+        if (DEBUG) {
+            Log.i(TAG, "GetShortcutIntent " + packageName + "/" + shortcutId + " " + user);
+        }
+        try {
+            return mService.getShortcutIntent(
+                    mContext.getPackageName(), packageName, shortcutId, opts, user);
+        } catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Retrieves a list of config activities for creating {@link ShortcutInfo}.
      *
      * @param packageName The specific package to query. If null, it checks all installed packages
@@ -791,13 +889,13 @@ public class LauncherApps {
     }
 
     private List<LauncherActivityInfo> convertToActivityList(
-            @Nullable ParceledListSlice<ResolveInfo> activities, UserHandle user) {
-        if (activities == null) {
+            @Nullable ParceledListSlice<LauncherActivityInfoInternal> internals, UserHandle user) {
+        if (internals == null || internals.getList().isEmpty()) {
             return Collections.EMPTY_LIST;
         }
         ArrayList<LauncherActivityInfo> lais = new ArrayList<>();
-        for (ResolveInfo ri : activities.getList()) {
-            LauncherActivityInfo lai = new LauncherActivityInfo(mContext, ri.activityInfo, user);
+        for (LauncherActivityInfoInternal internal : internals.getList()) {
+            LauncherActivityInfo lai = new LauncherActivityInfo(mContext, user, internal);
             if (DEBUG) {
                 Log.v(TAG, "Returning activity for profile " + user + " : "
                         + lai.getComponentName());
@@ -1107,6 +1205,12 @@ public class LauncherApps {
      * @param packageName The target package name.
      * @param shortcutIds The IDs of the shortcut to be cached.
      * @param user The UserHandle of the profile.
+     * @param cacheFlags One of the values in:
+     * <ul>
+     *     <li>{@link #FLAG_CACHE_NOTIFICATION_SHORTCUTS}
+     *     <li>{@link #FLAG_CACHE_BUBBLE_SHORTCUTS}
+     *     <li>{@link #FLAG_CACHE_PEOPLE_TILE_SHORTCUTS}
+     * </ul>
      * @throws IllegalStateException when the user is locked, or when the {@code user} user
      * is locked or not running.
      *
@@ -1116,10 +1220,11 @@ public class LauncherApps {
      */
     @RequiresPermission(android.Manifest.permission.ACCESS_SHORTCUTS)
     public void cacheShortcuts(@NonNull String packageName, @NonNull List<String> shortcutIds,
-            @NonNull UserHandle user) {
+            @NonNull UserHandle user, @ShortcutCacheFlags int cacheFlags) {
         logErrorForInvalidProfileAccess(user);
         try {
-            mService.cacheShortcuts(mContext.getPackageName(), packageName, shortcutIds, user);
+            mService.cacheShortcuts(
+                    mContext.getPackageName(), packageName, shortcutIds, user, cacheFlags);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1131,6 +1236,12 @@ public class LauncherApps {
      * @param packageName The target package name.
      * @param shortcutIds The IDs of the shortcut to be uncached.
      * @param user The UserHandle of the profile.
+     * @param cacheFlags One of the values in:
+     * <ul>
+     *     <li>{@link #FLAG_CACHE_NOTIFICATION_SHORTCUTS}
+     *     <li>{@link #FLAG_CACHE_BUBBLE_SHORTCUTS}
+     *     <li>{@link #FLAG_CACHE_PEOPLE_TILE_SHORTCUTS}
+     * </ul>
      * @throws IllegalStateException when the user is locked, or when the {@code user} user
      * is locked or not running.
      *
@@ -1140,10 +1251,11 @@ public class LauncherApps {
      */
     @RequiresPermission(android.Manifest.permission.ACCESS_SHORTCUTS)
     public void uncacheShortcuts(@NonNull String packageName, @NonNull List<String> shortcutIds,
-            @NonNull UserHandle user) {
+            @NonNull UserHandle user, @ShortcutCacheFlags int cacheFlags) {
         logErrorForInvalidProfileAccess(user);
         try {
-            mService.uncacheShortcuts(mContext.getPackageName(), packageName, shortcutIds, user);
+            mService.uncacheShortcuts(
+                    mContext.getPackageName(), packageName, shortcutIds, user, cacheFlags);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1209,14 +1321,7 @@ public class LauncherApps {
 
     private ParcelFileDescriptor getUriShortcutIconFd(@NonNull String packageName,
             @NonNull String shortcutId, int userId) {
-        String uri = null;
-        try {
-            uri = mService.getShortcutIconUri(mContext.getPackageName(), packageName, shortcutId,
-                    userId);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
-
+        String uri = getShortcutIconUri(packageName, shortcutId, userId);
         if (uri == null) {
             return null;
         }
@@ -1226,6 +1331,18 @@ public class LauncherApps {
             Log.e(TAG, "Icon file not found: " + uri);
             return null;
         }
+    }
+
+    private String getShortcutIconUri(@NonNull String packageName,
+            @NonNull String shortcutId, int userId) {
+        String uri = null;
+        try {
+            uri = mService.getShortcutIconUri(mContext.getPackageName(), packageName, shortcutId,
+                    userId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+        return uri;
     }
 
     /**
@@ -1322,6 +1439,17 @@ public class LauncherApps {
                     pfd.close();
                 } catch (IOException ignore) {
                 }
+            }
+        } else if (shortcut.hasIconUri()) {
+            String uri = getShortcutIconUri(shortcut.getPackage(), shortcut.getId(),
+                    shortcut.getUserId());
+            if (uri == null) {
+                return null;
+            }
+            if (shortcut.hasAdaptiveBitmap()) {
+                return Icon.createWithAdaptiveBitmapContentUri(uri);
+            } else {
+                return Icon.createWithContentUri(uri);
             }
         } else if (shortcut.hasIconResource()) {
             return Icon.createWithResource(shortcut.getPackage(), shortcut.getIconResourceId());
@@ -1617,6 +1745,19 @@ public class LauncherApps {
                 }
             }
         }
+
+        public void onPackageLoadingProgressChanged(UserHandle user, String packageName,
+                float progress) {
+            if (DEBUG) {
+                Log.d(TAG, "onPackageLoadingProgressChanged " + user.getIdentifier() + ","
+                        + packageName + "," + progress);
+            }
+            synchronized (LauncherApps.this) {
+                for (CallbackMessageHandler callback : mCallbacks) {
+                    callback.postOnPackageLoadingProgressChanged(user, packageName, progress);
+                }
+            }
+        }
     };
 
     private static class CallbackMessageHandler extends Handler {
@@ -1628,6 +1769,7 @@ public class LauncherApps {
         private static final int MSG_SUSPENDED = 6;
         private static final int MSG_UNSUSPENDED = 7;
         private static final int MSG_SHORTCUT_CHANGED = 8;
+        private static final int MSG_LOADING_PROGRESS_CHANGED = 9;
 
         private LauncherApps.Callback mCallback;
 
@@ -1638,6 +1780,7 @@ public class LauncherApps {
             boolean replacing;
             UserHandle user;
             List<ShortcutInfo> shortcuts;
+            float mLoadingProgress;
         }
 
         public CallbackMessageHandler(Looper looper, LauncherApps.Callback callback) {
@@ -1676,6 +1819,10 @@ public class LauncherApps {
                     break;
                 case MSG_SHORTCUT_CHANGED:
                     mCallback.onShortcutsChanged(info.packageName, info.shortcuts, info.user);
+                    break;
+                case MSG_LOADING_PROGRESS_CHANGED:
+                    mCallback.onPackageLoadingProgressChanged(info.packageName, info.user,
+                            info.mLoadingProgress);
                     break;
             }
         }
@@ -1742,6 +1889,15 @@ public class LauncherApps {
             info.user = user;
             info.shortcuts = shortcuts;
             obtainMessage(MSG_SHORTCUT_CHANGED, info).sendToTarget();
+        }
+
+        public void postOnPackageLoadingProgressChanged(UserHandle user, String packageName,
+                float progress) {
+            CallbackInfo info = new CallbackInfo();
+            info.packageName = packageName;
+            info.user = user;
+            info.mLoadingProgress = progress;
+            obtainMessage(MSG_LOADING_PROGRESS_CHANGED, info).sendToTarget();
         }
     }
 
@@ -1868,7 +2024,7 @@ public class LauncherApps {
      * an {@link #ACTION_CONFIRM_PIN_SHORTCUT} or {@link #ACTION_CONFIRM_PIN_APPWIDGET} intent
      * respectively to the default launcher app.
      *
-     * <h3>Request of the {@link #REQUEST_TYPE_SHORTCUT} type.
+     * <h3>Request of the {@link #REQUEST_TYPE_SHORTCUT} type.</h3>
      *
      * <p>A {@link #REQUEST_TYPE_SHORTCUT} request represents a request to pin a
      * {@link ShortcutInfo}.  If the launcher accepts a request, call {@link #accept()},
@@ -1885,7 +2041,7 @@ public class LauncherApps {
      *
      * <p>See also {@link ShortcutManager} for more details.
      *
-     * <h3>Request of the {@link #REQUEST_TYPE_APPWIDGET} type.
+     * <h3>Request of the {@link #REQUEST_TYPE_APPWIDGET} type.</h3>
      *
      * <p>A {@link #REQUEST_TYPE_SHORTCUT} request represents a request to pin a
      * an AppWidget.  If the launcher accepts a request, call {@link #accept(Bundle)} with

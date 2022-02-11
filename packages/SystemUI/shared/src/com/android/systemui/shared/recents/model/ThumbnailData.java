@@ -18,12 +18,18 @@ package com.android.systemui.shared.recents.model;
 
 import static android.app.WindowConfiguration.ROTATION_UNDEFINED;
 import static android.content.res.Configuration.ORIENTATION_UNDEFINED;
+import static android.graphics.Bitmap.Config.ARGB_8888;
 
 import static com.android.systemui.shared.system.WindowManagerWrapper.WINDOWING_MODE_UNDEFINED;
 
-import android.app.ActivityManager.TaskSnapshot;
+import android.window.TaskSnapshot;
 import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.graphics.Point;
 import android.graphics.Rect;
+import android.hardware.HardwareBuffer;
+import android.util.Log;
+import android.view.WindowInsetsController.Appearance;
 
 /**
  * Data for a single thumbnail.
@@ -38,7 +44,7 @@ public class ThumbnailData {
     public boolean isRealSnapshot;
     public boolean isTranslucent;
     public int windowingMode;
-    public int systemUiVisibility;
+    public @Appearance int appearance;
     public float scale;
     public long snapshotId;
 
@@ -52,13 +58,30 @@ public class ThumbnailData {
         isRealSnapshot = true;
         isTranslucent = false;
         windowingMode = WINDOWING_MODE_UNDEFINED;
-        systemUiVisibility = 0;
         snapshotId = 0;
     }
 
+    private static Bitmap makeThumbnail(TaskSnapshot snapshot) {
+        Bitmap thumbnail = null;
+        try (final HardwareBuffer buffer = snapshot.getHardwareBuffer()) {
+            if (buffer != null) {
+                thumbnail = Bitmap.wrapHardwareBuffer(buffer, snapshot.getColorSpace());
+            }
+        } catch (IllegalArgumentException ex) {
+            // TODO(b/157562905): Workaround for a crash when we get a snapshot without this state
+            Log.e("ThumbnailData", "Unexpected snapshot without USAGE_GPU_SAMPLED_IMAGE: "
+                    + snapshot.getHardwareBuffer(), ex);
+        }
+        if (thumbnail == null) {
+            Point taskSize = snapshot.getTaskSize();
+            thumbnail = Bitmap.createBitmap(taskSize.x, taskSize.y, ARGB_8888);
+            thumbnail.eraseColor(Color.BLACK);
+        }
+        return thumbnail;
+    }
+
     public ThumbnailData(TaskSnapshot snapshot) {
-        thumbnail = Bitmap.wrapHardwareBuffer(snapshot.getHardwareBuffer(),
-                snapshot.getColorSpace());
+        thumbnail = makeThumbnail(snapshot);
         insets = new Rect(snapshot.getContentInsets());
         orientation = snapshot.getOrientation();
         rotation = snapshot.getRotation();
@@ -69,7 +92,7 @@ public class ThumbnailData {
         isRealSnapshot = snapshot.isRealSnapshot();
         isTranslucent = snapshot.isTranslucent();
         windowingMode = snapshot.getWindowingMode();
-        systemUiVisibility = snapshot.getSystemUiVisibility();
+        appearance = snapshot.getAppearance();
         snapshotId = snapshot.getId();
     }
 }

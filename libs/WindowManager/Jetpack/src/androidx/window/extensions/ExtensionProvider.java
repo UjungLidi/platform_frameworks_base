@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 The Android Open Source Project
+ * Copyright (C) 2021 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,13 +23,12 @@ import android.content.Context;
  * vendor library, and the vendor implementation must match the signature of this class.
  */
 public class ExtensionProvider {
-
     /**
-     * The support library will instantiate the vendor implementation using this interface.
-     * @return An implementation of {@link ExtensionInterface}.
+     * Provides a simple implementation of {@link ExtensionInterface} that can be replaced by
+     * an OEM by overriding this method.
      */
     public static ExtensionInterface getExtensionImpl(Context context) {
-        return new SettingsExtensionImpl(context);
+        return new SampleExtensionImpl(context);
     }
 
     /**

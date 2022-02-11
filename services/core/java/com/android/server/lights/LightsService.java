@@ -25,28 +25,32 @@ import android.hardware.light.ILights;
 import android.hardware.lights.ILightsManager;
 import android.hardware.lights.Light;
 import android.hardware.lights.LightState;
+import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.Trace;
 import android.provider.Settings;
 import android.util.Slog;
 import android.util.SparseArray;
-import android.view.SurfaceControl;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.display.BrightnessSynchronizer;
+import com.android.internal.util.DumpUtils;
 import com.android.internal.util.Preconditions;
-import com.android.internal.BrightnessSynchronizer;
 import com.android.server.SystemService;
 
+import java.io.FileDescriptor;
+import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 public class LightsService extends SystemService {
     static final String TAG = "LightsService";
@@ -55,7 +59,8 @@ public class LightsService extends SystemService {
     private final LightImpl[] mLightsByType = new LightImpl[LightsManager.LIGHT_ID_COUNT];
     private final SparseArray<LightImpl> mLightsById = new SparseArray<>();
 
-    private ILights mVintfLights = null;
+    @Nullable
+    private final Supplier<ILights> mVintfLights;
 
     @VisibleForTesting
     final LightsManagerBinderService mManagerService;
@@ -64,12 +69,14 @@ public class LightsService extends SystemService {
 
     private final class LightsManagerBinderService extends ILightsManager.Stub {
 
-        private final class Session {
+        private final class Session implements Comparable<Session> {
             final IBinder mToken;
             final SparseArray<LightState> mRequests = new SparseArray<>();
+            final int mPriority;
 
-            Session(IBinder token) {
+            Session(IBinder token, int priority) {
                 mToken = token;
+                mPriority = priority;
             }
 
             void setRequest(int lightId, LightState state) {
@@ -78,6 +85,12 @@ public class LightsService extends SystemService {
                 } else {
                     mRequests.remove(lightId);
                 }
+            }
+
+            @Override
+            public int compareTo(Session otherSession) {
+                // Sort descending by priority
+                return Integer.compare(otherSession.mPriority, mPriority);
             }
         }
 
@@ -146,7 +159,7 @@ public class LightsService extends SystemService {
         }
 
         @Override
-        public void openSession(IBinder token) {
+        public void openSession(IBinder token, int priority) {
             getContext().enforceCallingOrSelfPermission(Manifest.permission.CONTROL_DEVICE_LIGHTS,
                     "openSession requires CONTROL_DEVICE_LIGHTS permission");
             Preconditions.checkNotNull(token);
@@ -155,7 +168,8 @@ public class LightsService extends SystemService {
                 Preconditions.checkState(getSessionLocked(token) == null, "already registered");
                 try {
                     token.linkToDeath(() -> closeSessionInternal(token), 0);
-                    mSessions.add(new Session(token));
+                    mSessions.add(new Session(token, priority));
+                    Collections.sort(mSessions);
                 } catch (RemoteException e) {
                     Slog.e(TAG, "Couldn't open session, client already died" , e);
                     throw new IllegalArgumentException("Client is already dead.");
@@ -171,6 +185,36 @@ public class LightsService extends SystemService {
             closeSessionInternal(token);
         }
 
+        @Override
+        protected void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+            if (!DumpUtils.checkDumpPermission(getContext(), TAG, pw)) return;
+
+            synchronized (LightsService.this) {
+                if (mVintfLights != null) {
+                    pw.println("Service: aidl (" + mVintfLights.get() + ")");
+                } else {
+                    pw.println("Service: hidl");
+                }
+
+                pw.println("Lights:");
+                for (int i = 0; i < mLightsById.size(); i++) {
+                    final LightImpl light = mLightsById.valueAt(i);
+                    pw.println(String.format("  Light id=%d ordinal=%d color=%08x",
+                            light.mHwLight.id, light.mHwLight.ordinal, light.getColor()));
+                }
+
+                pw.println("Session clients:");
+                for (Session session : mSessions) {
+                    pw.println("  Session token=" + session.mToken);
+                    for (int i = 0; i < session.mRequests.size(); i++) {
+                        pw.println(String.format("    Request id=%d color=%08x",
+                                session.mRequests.keyAt(i),
+                                session.mRequests.valueAt(i).getColor()));
+                    }
+                }
+            }
+        }
+
         private void closeSessionInternal(IBinder token) {
             synchronized (LightsService.this) {
                 final Session session = getSessionLocked(token);
@@ -182,10 +226,10 @@ public class LightsService extends SystemService {
         }
 
         private void checkRequestIsValid(int[] lightIds) {
-            for (int i = 0; i < lightIds.length; i++) {
-                final LightImpl light = mLightsById.get(lightIds[i]);
+            for (int lightId : lightIds) {
+                final LightImpl light = mLightsById.get(lightId);
                 Preconditions.checkState(light != null && !light.isSystemLight(),
-                        "Invalid lightId " + lightIds[i]);
+                        "Invalid lightId " + lightId);
             }
         }
 
@@ -226,25 +270,9 @@ public class LightsService extends SystemService {
     }
 
     private final class LightImpl extends LogicalLight {
-        private final IBinder mDisplayToken;
-        private final int mSurfaceControlMaximumBrightness;
 
         private LightImpl(Context context, HwLight hwLight) {
             mHwLight = hwLight;
-            mDisplayToken = SurfaceControl.getInternalDisplayToken();
-            final boolean brightnessSupport = SurfaceControl.getDisplayBrightnessSupport(
-                    mDisplayToken);
-            if (DEBUG) {
-                Slog.d(TAG, "Display brightness support: " + brightnessSupport);
-            }
-            int maximumBrightness = 0;
-            if (brightnessSupport) {
-                PowerManager pm = context.getSystemService(PowerManager.class);
-                if (pm != null) {
-                    maximumBrightness = pm.getMaximumScreenBrightnessSetting();
-                }
-            }
-            mSurfaceControlMaximumBrightness = maximumBrightness;
         }
 
         @Override
@@ -265,29 +293,10 @@ public class LightsService extends SystemService {
                             + ": brightness=" + brightness);
                     return;
                 }
-                // Ideally, we'd like to set the brightness mode through the SF/HWC as well, but
-                // right now we just fall back to the old path through Lights brightessMode is
-                // anything but USER or the device shouldBeInLowPersistenceMode().
-                if (brightnessMode == BRIGHTNESS_MODE_USER && !shouldBeInLowPersistenceMode()
-                        && mSurfaceControlMaximumBrightness == 255) {
-                    // New system
-                    // TODO: the last check should be mSurfaceControlMaximumBrightness != 0; the
-                    // reason we enforce 255 right now is to stay consistent with the old path. In
-                    // the future, the framework should be refactored so that brightness is a float
-                    // between 0.0f and 1.0f, and the actual number of supported brightness levels
-                    // is determined in the device-specific implementation.
-                    if (DEBUG) {
-                        Slog.d(TAG, "Using new setBrightness path!");
-                    }
-                    SurfaceControl.setDisplayBrightness(mDisplayToken, brightness);
-                } else {
-                    // Old system
-                    int brightnessInt = BrightnessSynchronizer.brightnessFloatToInt(
-                            getContext(), brightness);
-                    int color = brightnessInt & 0x000000ff;
-                    color = 0xff000000 | (color << 16) | (color << 8) | color;
-                    setLightLocked(color, LIGHT_FLASH_NONE, 0, 0, brightnessMode);
-                }
+                int brightnessInt = BrightnessSynchronizer.brightnessFloatToInt(brightness);
+                int color = brightnessInt & 0x000000ff;
+                color = 0xff000000 | (color << 16) | (color << 8) | color;
+                setLightLocked(color, LIGHT_FLASH_NONE, 0, 0, brightnessMode);
             }
         }
 
@@ -391,7 +400,7 @@ public class LightsService extends SystemService {
                     lightState.flashOnMs = onMS;
                     lightState.flashOffMs = offMS;
                     lightState.brightnessMode = (byte) brightnessMode;
-                    mVintfLights.setLightState(mHwLight.id, lightState);
+                    mVintfLights.get().setLightState(mHwLight.id, lightState);
                 } else {
                     setLight_native(mHwLight.id, color, mode, onMS, offMS, brightnessMode);
                 }
@@ -435,19 +444,17 @@ public class LightsService extends SystemService {
     }
 
     public LightsService(Context context) {
-        this(context,
-                ILights.Stub.asInterface(
-                        ServiceManager.getService("android.hardware.light.ILights/default")),
-                Looper.myLooper());
+        this(context, new VintfHalCache(), Looper.myLooper());
     }
 
     @VisibleForTesting
-    LightsService(Context context, ILights service, Looper looper) {
+    LightsService(Context context, Supplier<ILights> service, Looper looper) {
         super(context);
         mH = new Handler(looper);
-        mVintfLights = service;
-        mManagerService = new LightsManagerBinderService();
+        mVintfLights = service.get() != null ? service : null;
+
         populateAvailableLights(context);
+        mManagerService = new LightsManagerBinderService();
     }
 
     private void populateAvailableLights(Context context) {
@@ -467,7 +474,7 @@ public class LightsService extends SystemService {
 
     private void populateAvailableLightsFromAidl(Context context) {
         try {
-            for (HwLight hwLight : mVintfLights.getLights()) {
+            for (HwLight hwLight : mVintfLights.get().getLights()) {
                 mLightsById.put(hwLight.id, new LightImpl(context, hwLight));
             }
         } catch (RemoteException ex) {
@@ -513,6 +520,33 @@ public class LightsService extends SystemService {
             }
         }
     };
+
+    private static class VintfHalCache implements Supplier<ILights>, IBinder.DeathRecipient {
+        @GuardedBy("this")
+        private ILights mInstance = null;
+
+        @Override
+        public synchronized ILights get() {
+            if (mInstance == null) {
+                IBinder binder = Binder.allowBlocking(
+                        ServiceManager.waitForDeclaredService(ILights.DESCRIPTOR + "/default"));
+                if (binder != null) {
+                    mInstance = ILights.Stub.asInterface(binder);
+                    try {
+                        binder.linkToDeath(this, 0);
+                    } catch (RemoteException e) {
+                        Slog.e(TAG, "Unable to register DeathRecipient for " + mInstance);
+                    }
+                }
+            }
+            return mInstance;
+        }
+
+        @Override
+        public synchronized void binderDied() {
+            mInstance = null;
+        }
+    }
 
     static native void setLight_native(int light, int color, int mode,
             int onMS, int offMS, int brightnessMode);

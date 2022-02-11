@@ -98,18 +98,19 @@ import android.os.UserHandle;
 import android.test.suitebuilder.annotation.SmallTest;
 import android.util.Log;
 import android.util.SparseArray;
+import android.util.TypedXmlPullParser;
+import android.util.TypedXmlSerializer;
 import android.util.Xml;
 
 import com.android.frameworks.servicestests.R;
-import com.android.internal.util.FastXmlSerializer;
 import com.android.server.pm.ShortcutService.ConfigConstants;
 import com.android.server.pm.ShortcutService.FileOutputStreamWithPath;
 import com.android.server.pm.ShortcutUser.PackageWithUser;
 
 import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
-import org.xmlpull.v1.XmlSerializer;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -136,6 +137,10 @@ import java.util.function.BiConsumer;
  */
 @SmallTest
 public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
+
+    private static final int CACHE_OWNER_0 = LauncherApps.FLAG_CACHE_NOTIFICATION_SHORTCUTS;
+    private static final int CACHE_OWNER_1 = LauncherApps.FLAG_CACHE_BUBBLE_SHORTCUTS;
+    private static final int CACHE_OWNER_2 = LauncherApps.FLAG_CACHE_PEOPLE_TILE_SHORTCUTS;
 
     @Override
     protected void tearDown() throws Exception {
@@ -234,7 +239,7 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
         assertEquals(ShortcutService.DEFAULT_RESET_INTERVAL_SEC * 1000,
                 mService.getResetIntervalForTest());
 
-        assertEquals(ShortcutService.DEFAULT_MAX_SHORTCUTS_PER_APP,
+        assertEquals(ShortcutService.DEFAULT_MAX_SHORTCUTS_PER_ACTIVITY,
                 mService.getMaxShortcutsForTest());
 
         assertEquals(ShortcutService.DEFAULT_MAX_UPDATES_PER_INTERVAL,
@@ -393,6 +398,8 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
     }
 
     public void testPushDynamicShortcut() {
+        // Change the max number of shortcuts.
+        mService.updateConfigurationLocked(ConfigConstants.KEY_MAX_SHORTCUTS + "=5");
 
         setCaller(CALLING_PACKAGE_1, USER_0);
 
@@ -400,19 +407,21 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
         final ShortcutInfo s2 = makeShortcut("s2");
         final ShortcutInfo s3 = makeShortcut("s3");
         final ShortcutInfo s4 = makeShortcut("s4");
-
-        final ShortcutInfo s10 = makeShortcut("s10");
-        final ShortcutInfo s11 = makeShortcut("s11");
-        final ShortcutInfo s12 = makeShortcut("s12");
-        final ShortcutInfo s13 = makeShortcut("s13");
-        final ShortcutInfo s14 = makeShortcut("s14");
+        final ShortcutInfo s5 = makeShortcut("s5");
+        final ShortcutInfo s6 = makeShortcut("s6");
+        final ShortcutInfo s7 = makeShortcut("s7");
+        final ShortcutInfo s8 = makeShortcut("s8");
+        final ShortcutInfo s9 = makeShortcut("s9");
 
         // Test push as first shortcut
         mManager.pushDynamicShortcut(s1);
         assertShortcutIds(assertAllNotKeyFieldsOnly(mManager.getDynamicShortcuts()), "s1");
         assertEquals(0, getCallerShortcut("s1").getRank());
+        verify(mMockUsageStatsManagerInternal, times(1)).reportShortcutUsage(
+                eq(CALLING_PACKAGE_1), eq("s1"), eq(USER_0));
 
         // Test push when other shortcuts exist
+        Mockito.reset(mMockUsageStatsManagerInternal);
         assertTrue(mManager.setDynamicShortcuts(list(s1, s2)));
         assertShortcutIds(assertAllNotKeyFieldsOnly(mManager.getDynamicShortcuts()), "s1", "s2");
         mManager.pushDynamicShortcut(s3);
@@ -421,82 +430,112 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
         assertEquals(0, getCallerShortcut("s3").getRank());
         assertEquals(1, getCallerShortcut("s1").getRank());
         assertEquals(2, getCallerShortcut("s2").getRank());
+        verify(mMockUsageStatsManagerInternal, times(0)).reportShortcutUsage(
+                eq(CALLING_PACKAGE_1), eq("s1"), eq(USER_0));
+        verify(mMockUsageStatsManagerInternal, times(0)).reportShortcutUsage(
+                eq(CALLING_PACKAGE_1), eq("s2"), eq(USER_0));
+        verify(mMockUsageStatsManagerInternal, times(1)).reportShortcutUsage(
+                eq(CALLING_PACKAGE_1), eq("s3"), eq(USER_0));
 
         mInjectedCurrentTimeMillis += INTERVAL; // reset
 
         // Push with set rank
+        Mockito.reset(mMockUsageStatsManagerInternal);
         s4.setRank(2);
         mManager.pushDynamicShortcut(s4);
         assertEquals(2, getCallerShortcut("s4").getRank());
         assertEquals(3, getCallerShortcut("s2").getRank());
+        verify(mMockUsageStatsManagerInternal, times(1)).reportShortcutUsage(
+                eq(CALLING_PACKAGE_1), eq("s4"), eq(USER_0));
 
         // Push existing shortcut with set rank
+        Mockito.reset(mMockUsageStatsManagerInternal);
         final ShortcutInfo s4_2 = makeShortcut("s4");
         s4_2.setRank(4);
         mManager.pushDynamicShortcut(s4_2);
         assertEquals(2, getCallerShortcut("s2").getRank());
         assertEquals(3, getCallerShortcut("s4").getRank());
+        verify(mMockUsageStatsManagerInternal, times(1)).reportShortcutUsage(
+                eq(CALLING_PACKAGE_1), eq("s4"), eq(USER_0));
 
         mInjectedCurrentTimeMillis += INTERVAL; // reset
 
         // Test push as last
-        assertTrue(mManager.addDynamicShortcuts(makeShortcuts("s5", "s6", "s7", "s8", "s9")));
-        mManager.pushDynamicShortcut(s10);
+        Mockito.reset(mMockUsageStatsManagerInternal);
+        mManager.pushDynamicShortcut(s5);
         assertShortcutIds(assertAllNotKeyFieldsOnly(mManager.getDynamicShortcuts()),
-                "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10");
-        assertEquals(0, getCallerShortcut("s10").getRank());
-        assertEquals(1, getCallerShortcut("s5").getRank());
-        assertEquals(6, getCallerShortcut("s3").getRank());
-        assertEquals(7, getCallerShortcut("s1").getRank());
-        assertEquals(8, getCallerShortcut("s2").getRank());
-        assertEquals(9, getCallerShortcut("s4").getRank());
+                "s1", "s2", "s3", "s4", "s5");
+        assertEquals(0, getCallerShortcut("s5").getRank());
+        assertEquals(1, getCallerShortcut("s3").getRank());
+        assertEquals(2, getCallerShortcut("s1").getRank());
+        assertEquals(3, getCallerShortcut("s2").getRank());
+        assertEquals(4, getCallerShortcut("s4").getRank());
+        verify(mMockUsageStatsManagerInternal, times(1)).reportShortcutUsage(
+                eq(CALLING_PACKAGE_1), eq("s5"), eq(USER_0));
 
         // Push when max has already reached
-        mManager.pushDynamicShortcut(s11);
+        Mockito.reset(mMockUsageStatsManagerInternal);
+        mManager.pushDynamicShortcut(s6);
         assertShortcutIds(assertAllNotKeyFieldsOnly(mManager.getDynamicShortcuts()),
-                "s1", "s2", "s3", "s5", "s6", "s7", "s8", "s9", "s10", "s11");
-        assertEquals(0, getCallerShortcut("s11").getRank());
-        assertEquals(1, getCallerShortcut("s10").getRank());
-        assertEquals(9, getCallerShortcut("s2").getRank());
+                "s1", "s2", "s3", "s5", "s6");
+        assertEquals(0, getCallerShortcut("s6").getRank());
+        assertEquals(1, getCallerShortcut("s5").getRank());
+        assertEquals(4, getCallerShortcut("s2").getRank());
+        verify(mMockUsageStatsManagerInternal, times(1)).reportShortcutUsage(
+                eq(CALLING_PACKAGE_1), eq("s6"), eq(USER_0));
 
         mInjectedCurrentTimeMillis += INTERVAL; // reset
 
         // Push with different activity
-        s12.setActivity(makeComponent(ShortcutActivity2.class));
-        mManager.pushDynamicShortcut(s12);
+        Mockito.reset(mMockUsageStatsManagerInternal);
+        s7.setActivity(makeComponent(ShortcutActivity2.class));
+        mManager.pushDynamicShortcut(s7);
         assertEquals(makeComponent(ShortcutActivity2.class),
-                getCallerShortcut("s12").getActivity());
-        assertEquals(0, getCallerShortcut("s12").getRank());
+                getCallerShortcut("s7").getActivity());
+        assertEquals(0, getCallerShortcut("s7").getRank());
+        verify(mMockUsageStatsManagerInternal, times(1)).reportShortcutUsage(
+                eq(CALLING_PACKAGE_1), eq("s7"), eq(USER_0));
 
         // Push to update shortcut with different activity
+        Mockito.reset(mMockUsageStatsManagerInternal);
         final ShortcutInfo s1_2 = makeShortcut("s1");
         s1_2.setActivity(makeComponent(ShortcutActivity2.class));
         s1_2.setRank(1);
         mManager.pushDynamicShortcut(s1_2);
-        assertEquals(0, getCallerShortcut("s12").getRank());
+        assertEquals(0, getCallerShortcut("s7").getRank());
         assertEquals(1, getCallerShortcut("s1").getRank());
-        assertEquals(0, getCallerShortcut("s11").getRank());
-        assertEquals(1, getCallerShortcut("s10").getRank());
-        assertEquals(7, getCallerShortcut("s3").getRank());
-        assertEquals(8, getCallerShortcut("s2").getRank());
+        assertEquals(0, getCallerShortcut("s6").getRank());
+        assertEquals(1, getCallerShortcut("s5").getRank());
+        assertEquals(2, getCallerShortcut("s3").getRank());
+        assertEquals(3, getCallerShortcut("s2").getRank());
+        verify(mMockUsageStatsManagerInternal, times(1)).reportShortcutUsage(
+                eq(CALLING_PACKAGE_1), eq("s1"), eq(USER_0));
 
         mInjectedCurrentTimeMillis += INTERVAL; // reset
 
         // Test push when dropped shortcut is cached
-        s13.setLongLived();
-        s13.setRank(100);
-        mManager.pushDynamicShortcut(s13);
-        assertEquals(9, getCallerShortcut("s13").getRank());
+        Mockito.reset(mMockUsageStatsManagerInternal);
+        s8.setLongLived();
+        s8.setRank(100);
+        mManager.pushDynamicShortcut(s8);
+        assertEquals(4, getCallerShortcut("s8").getRank());
         runWithCaller(LAUNCHER_1, USER_0, () -> {
-            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s13"), HANDLE_USER_0);
+            mInjectCheckAccessShortcutsPermission = true;
+            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s8"), HANDLE_USER_0,
+                    CACHE_OWNER_0);
+            verify(mMockUsageStatsManagerInternal, times(1)).reportShortcutUsage(
+                    eq(CALLING_PACKAGE_1), eq("s8"), eq(USER_0));
         });
 
-        mManager.pushDynamicShortcut(s14);
+        Mockito.reset(mMockUsageStatsManagerInternal);
+        mManager.pushDynamicShortcut(s9);
         assertShortcutIds(assertAllNotKeyFieldsOnly(mManager.getDynamicShortcuts()),
-                "s1", "s2", "s3", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12", "s14");
+                "s1", "s2", "s3", "s5", "s6", "s7", "s9");
         // Verify s13 stayed as cached
         assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED),
-                "s13");
+                "s8");
+        verify(mMockUsageStatsManagerInternal, times(1)).reportShortcutUsage(
+                eq(CALLING_PACKAGE_1), eq("s9"), eq(USER_0));
     }
 
     public void testUnlimitedCalls() {
@@ -1453,8 +1492,11 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
 
         // Cache 1 and 2
         runWithCaller(LAUNCHER_1, USER_0, () -> {
-            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s1", "s2"),
-                    HANDLE_USER_0);
+            mInjectCheckAccessShortcutsPermission = true;
+            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s1"),
+                    HANDLE_USER_0, CACHE_OWNER_0);
+            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s2"),
+                    HANDLE_USER_0, CACHE_OWNER_1);
         });
 
         setCaller(CALLING_PACKAGE_1);
@@ -1522,7 +1564,8 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
         runWithCaller(CALLING_PACKAGE_1, USER_0, () -> {
             assertTrue(mManager.setDynamicShortcuts(list(makeShortcut("s1"),
                     makeLongLivedShortcut("s2"), makeLongLivedShortcut("s3"),
-                    makeLongLivedShortcut("s4"))));
+                    makeLongLivedShortcut("s4"), makeLongLivedShortcut("s5"),
+                    makeLongLivedShortcut("s6"))));
         });
 
         // Pin s2
@@ -1533,8 +1576,131 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
 
         // Cache some, but non long lived shortcuts will be ignored.
         runWithCaller(LAUNCHER_1, USER_0, () -> {
-            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s1", "s2", "s4"),
-                    HANDLE_USER_0);
+            mInjectCheckAccessShortcutsPermission = true;
+            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s1", "s2"),
+                    HANDLE_USER_0, CACHE_OWNER_0);
+            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s2", "s4", "s5"),
+                    HANDLE_USER_0, CACHE_OWNER_1);
+            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s5", "s6"),
+                    HANDLE_USER_0, CACHE_OWNER_2);
+        });
+
+        setCaller(CALLING_PACKAGE_1);
+
+        // Get dynamic shortcuts
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_DYNAMIC),
+                "s1", "s2", "s3", "s4", "s5", "s6");
+        // Get pinned shortcuts
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_PINNED),
+                "s2");
+        // Get cached shortcuts
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED),
+                "s2", "s4", "s5", "s6");
+
+        // Remove a dynamic cached shortcut
+        mManager.removeDynamicShortcuts(list("s4", "s5"));
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_DYNAMIC),
+                "s1", "s2", "s3", "s6");
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED),
+                "s2", "s4", "s5", "s6");
+
+        runWithCaller(LAUNCHER_1, USER_0, () -> {
+            mLauncherApps.uncacheShortcuts(CALLING_PACKAGE_1, list("s2", "s4"),
+                    HANDLE_USER_0, CACHE_OWNER_0);
+        });
+        // s2 still cached by owner1. s4 wasn't cached by owner0 so didn't get removed.
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED),
+                "s2", "s4", "s5", "s6");
+
+        // uncache a non-dynamic shortcut. Should be removed.
+        runWithCaller(LAUNCHER_1, USER_0, () -> {
+            mLauncherApps.uncacheShortcuts(CALLING_PACKAGE_1, list("s4"),
+                    HANDLE_USER_0, CACHE_OWNER_1);
+        });
+
+        // uncache s6 by its only owner. s5 still cached by owner1
+        runWithCaller(LAUNCHER_1, USER_0, () -> {
+            mLauncherApps.uncacheShortcuts(CALLING_PACKAGE_1, list("s5", "s6"),
+                    HANDLE_USER_0, CACHE_OWNER_2);
+        });
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED),
+                "s2", "s5");
+
+        // Cache another shortcut
+        runWithCaller(LAUNCHER_1, USER_0, () -> {
+            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s3"),
+                    HANDLE_USER_0, CACHE_OWNER_0);
+        });
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED),
+                "s2", "s3", "s5");
+
+        // Remove a dynamic cached pinned long lived shortcut
+        mManager.removeLongLivedShortcuts(list("s2"));
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_DYNAMIC),
+                "s1", "s3", "s6");
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED),
+                "s3", "s5");
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_PINNED),
+                "s2");
+    }
+
+    public void testCachedShortcuts_accessShortcutsPermission() {
+        runWithCaller(CALLING_PACKAGE_1, USER_0, () -> {
+            assertTrue(mManager.setDynamicShortcuts(list(makeShortcut("s1"),
+                    makeLongLivedShortcut("s2"), makeLongLivedShortcut("s3"),
+                    makeLongLivedShortcut("s4"))));
+        });
+
+        // s1 is not long lived and will be ignored.
+        runWithCaller(LAUNCHER_1, USER_0, () -> {
+            mInjectCheckAccessShortcutsPermission = false;
+            assertExpectException(
+                    SecurityException.class, "Caller can't access shortcut information", () -> {
+                        mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s1", "s2", "s3"),
+                                HANDLE_USER_0, CACHE_OWNER_0);
+                    });
+            // Give ACCESS_SHORTCUTS permission to LAUNCHER_1
+            mInjectCheckAccessShortcutsPermission = true;
+            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s1", "s2", "s3"),
+                    HANDLE_USER_0, CACHE_OWNER_0);
+        });
+
+        setCaller(CALLING_PACKAGE_1);
+
+        // Get cached shortcuts
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED), "s2", "s3");
+
+        runWithCaller(LAUNCHER_1, USER_0, () -> {
+            mInjectCheckAccessShortcutsPermission = false;
+            assertExpectException(
+                    SecurityException.class, "Caller can't access shortcut information", () -> {
+                        mLauncherApps.uncacheShortcuts(CALLING_PACKAGE_1, list("s2", "s4"),
+                                HANDLE_USER_0, CACHE_OWNER_0);
+                    });
+            // Give ACCESS_SHORTCUTS permission to LAUNCHER_1
+            mInjectCheckAccessShortcutsPermission = true;
+            mLauncherApps.uncacheShortcuts(CALLING_PACKAGE_1, list("s2", "s4"),
+                    HANDLE_USER_0, CACHE_OWNER_0);
+        });
+
+        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED), "s3");
+    }
+
+    public void testCachedShortcuts_canPassShortcutLimit() {
+        // Change the max number of shortcuts.
+        mService.updateConfigurationLocked(ConfigConstants.KEY_MAX_SHORTCUTS + "=4");
+
+        runWithCaller(CALLING_PACKAGE_1, USER_0, () -> {
+            assertTrue(mManager.setDynamicShortcuts(list(makeLongLivedShortcut("s1"),
+                    makeLongLivedShortcut("s2"), makeLongLivedShortcut("s3"),
+                    makeLongLivedShortcut("s4"))));
+        });
+
+        // Cache All
+        runWithCaller(LAUNCHER_1, USER_0, () -> {
+            mInjectCheckAccessShortcutsPermission = true;
+            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s1", "s2", "s3", "s4"),
+                    HANDLE_USER_0, CACHE_OWNER_0);
         });
 
         setCaller(CALLING_PACKAGE_1);
@@ -1542,44 +1708,18 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
         // Get dynamic shortcuts
         assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_DYNAMIC),
                 "s1", "s2", "s3", "s4");
-        // Get pinned shortcuts
-        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_PINNED),
-                "s2");
         // Get cached shortcuts
         assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED),
-                "s2", "s4");
+                "s1", "s2", "s3", "s4");
 
-        // Remove a dynamic cached shortcut
-        mManager.removeDynamicShortcuts(list("s4"));
+        assertTrue(mManager.setDynamicShortcuts(makeShortcuts("sx1", "sx2", "sx3", "sx4")));
+
+        // Get dynamic shortcuts
         assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_DYNAMIC),
-                "s1", "s2", "s3");
+                "sx1", "sx2", "sx3", "sx4");
+        // Get cached shortcuts
         assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED),
-                "s2", "s4");
-
-        // uncache a non-dynamic shortcut. Should be removed.
-        runWithCaller(LAUNCHER_1, USER_0, () -> {
-            mLauncherApps.uncacheShortcuts(CALLING_PACKAGE_1, list("s4"),
-                    HANDLE_USER_0);
-        });
-        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED),
-                "s2");
-
-        // Cache another shortcut
-        runWithCaller(LAUNCHER_1, USER_0, () -> {
-            mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s3"),
-                    HANDLE_USER_0);
-        });
-        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED),
-                "s2", "s3");
-
-        // Remove a dynamic cached pinned long lived shortcut
-        mManager.removeLongLivedShortcuts(list("s2"));
-        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_DYNAMIC),
-                "s1", "s3");
-        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_CACHED),
-                "s3");
-        assertShortcutIds(mManager.getShortcuts(ShortcutManager.FLAG_MATCH_PINNED),
-                "s2");
+                "s1", "s2", "s3", "s4");
     }
 
     // === Test for launcher side APIs ===
@@ -1596,8 +1736,8 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
 
         // Because setDynamicShortcuts will update the timestamps when ranks are changing,
         // we explicitly set timestamps here.
-        getCallerShortcut("s1").setTimestamp(5000);
-        getCallerShortcut("s2").setTimestamp(1000);
+        updateCallerShortcut("s1", si -> si.setTimestamp(5000));
+        updateCallerShortcut("s2", si -> si.setTimestamp(1000));
 
         setCaller(CALLING_PACKAGE_2);
         final ShortcutInfo s2_2 = makeShortcut("s2");
@@ -1607,9 +1747,9 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
                 makeComponent(ShortcutActivity.class));
         assertTrue(mManager.setDynamicShortcuts(list(s2_2, s2_3, s2_4)));
 
-        getCallerShortcut("s2").setTimestamp(1500);
-        getCallerShortcut("s3").setTimestamp(3000);
-        getCallerShortcut("s4").setTimestamp(500);
+        updateCallerShortcut("s2", si -> si.setTimestamp(1500));
+        updateCallerShortcut("s3", si -> si.setTimestamp(3000));
+        updateCallerShortcut("s4", si -> si.setTimestamp(500));
 
         setCaller(CALLING_PACKAGE_3);
         final ShortcutInfo s3_2 = makeShortcutWithLocusId("s3", makeLocusId("l2"));
@@ -1617,7 +1757,7 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
 
         assertTrue(mManager.setDynamicShortcuts(list(s3_2)));
 
-        getCallerShortcut("s3").setTimestamp(START_TIME + 5000);
+        updateCallerShortcut("s3", si -> si.setTimestamp(START_TIME + 5000));
 
         setCaller(LAUNCHER_1);
 
@@ -1758,8 +1898,11 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
         setCaller(LAUNCHER_1);
 
         // Cache some shortcuts. Only long lived shortcuts can get cached.
-        mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s1"), getCallingUser());
-        mLauncherApps.cacheShortcuts(CALLING_PACKAGE_3, list("s3"), getCallingUser());
+        mInjectCheckAccessShortcutsPermission = true;
+        mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s1"), getCallingUser(),
+                CACHE_OWNER_0);
+        mLauncherApps.cacheShortcuts(CALLING_PACKAGE_3, list("s3"), getCallingUser(),
+                CACHE_OWNER_0);
 
         // Cached ones only
         assertShortcutIds(assertAllNotKeyFieldsOnly(
@@ -1955,6 +2098,53 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
             assertEquals("string-com.android.test.1-user:20-res:12/en",
                     ret.get(0).getDisabledMessage());
         });
+    }
+
+    public void testGetShortcuts_personsFlag() {
+        ShortcutInfo s = new ShortcutInfo.Builder(mClientContext, "id")
+                .setShortLabel("label")
+                .setActivity(new ComponentName(mClientContext, ShortcutActivity2.class))
+                .setPerson(makePerson("person", "personKey", "personUri"))
+                .setIntent(makeIntent("action", ShortcutActivity.class, "key", "val"))
+                .build();
+
+        setCaller(CALLING_PACKAGE_1);
+        assertTrue(mManager.setDynamicShortcuts(list(s)));
+
+        setCaller(LAUNCHER_1);
+
+        assertNull(mLauncherApps.getShortcuts(buildQuery(
+                /* time =*/ 0, CALLING_PACKAGE_1, /* activity =*/ null,
+                ShortcutQuery.FLAG_MATCH_DYNAMIC | ShortcutQuery.FLAG_GET_KEY_FIELDS_ONLY),
+                getCallingUser()).get(0).getPersons());
+
+        assertNull(mLauncherApps.getShortcuts(buildQuery(
+                /* time =*/ 0, CALLING_PACKAGE_1, /* activity =*/ null,
+                ShortcutQuery.FLAG_MATCH_DYNAMIC),
+                getCallingUser()).get(0).getPersons());
+
+        // Using FLAG_GET_PERSONS_DATA should fail without permission
+        mInjectCheckAccessShortcutsPermission = false;
+        assertExpectException(
+                SecurityException.class, "Caller can't access shortcut information", () -> {
+                    mLauncherApps.getShortcuts(buildQuery(
+                            /* time =*/ 0, CALLING_PACKAGE_1, /* activity =*/ null,
+                            ShortcutQuery.FLAG_MATCH_DYNAMIC
+                                    | ShortcutQuery.FLAG_GET_PERSONS_DATA),
+                            getCallingUser());
+                });
+
+        mInjectCheckAccessShortcutsPermission = true;
+        assertEquals("person", mLauncherApps.getShortcuts(buildQuery(
+                /* time =*/ 0, CALLING_PACKAGE_1, /* activity =*/ null,
+                ShortcutQuery.FLAG_MATCH_DYNAMIC | ShortcutQuery.FLAG_GET_PERSONS_DATA),
+                getCallingUser()).get(0).getPersons()[0].getName());
+
+        assertNull(mLauncherApps.getShortcuts(buildQuery(
+                /* time =*/ 0, CALLING_PACKAGE_1, /* activity =*/ null,
+                ShortcutQuery.FLAG_MATCH_DYNAMIC | ShortcutQuery.FLAG_GET_PERSONS_DATA
+                        | ShortcutQuery.FLAG_GET_KEY_FIELDS_ONLY),
+                getCallingUser()).get(0).getPersons());
     }
 
     // TODO resource
@@ -3758,9 +3948,6 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
             assertEquals(2, mManager.getRemainingCallCount());
         });
 
-        mService.getShortcutsForTest().get(UserHandle.USER_SYSTEM).setLauncher(
-                new ComponentName("pkg1", "class"));
-
         // Restore.
         mService.saveDirtyInfo();
         initService();
@@ -3791,9 +3978,6 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
             assertEquals("title2-2", getCallerShortcut("s2").getTitle());
         });
 
-        assertEquals("pkg1", mService.getShortcutsForTest().get(UserHandle.USER_SYSTEM)
-                .getLastKnownLauncher().getPackageName());
-
         // Start another user
         mService.handleUnlockUser(USER_10);
 
@@ -3808,7 +3992,6 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
             assertEquals("title10-1-1", getCallerShortcut("s1").getTitle());
             assertEquals("title10-1-2", getCallerShortcut("s2").getTitle());
         });
-        assertNull(mService.getShortcutsForTest().get(USER_10).getLastKnownLauncher());
 
         // Try stopping the user
         mService.handleStopUser(USER_10);
@@ -6388,7 +6571,7 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
             });
 
             // Prepare for requestPinShortcut().
-            setDefaultLauncher(USER_0, mMainActivityFetcher.apply(LAUNCHER_1, USER_0));
+            setDefaultLauncher(USER_0, LAUNCHER_1);
             mPinConfirmActivityFetcher = (packageName, userId) ->
                     new ComponentName(packageName, PIN_CONFIRM_ACTIVITY_CLASS);
 
@@ -6413,7 +6596,7 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
             });
 
             // Now, change the launcher to launcher2, and request pin again.
-            setDefaultLauncher(USER_0, mMainActivityFetcher.apply(LAUNCHER_2, USER_0));
+            setDefaultLauncher(USER_0, LAUNCHER_2);
 
             reset(mServiceContext);
 
@@ -6728,6 +6911,21 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
     public void testHasShareTargets_permission() {
         assertExpectException(SecurityException.class, "Missing permission", () ->
                 mManager.hasShareTargets(CALLING_PACKAGE_1));
+
+        // Has permission, now it should pass.
+        mCallerPermissions.add(permission.MANAGE_APP_PREDICTIONS);
+        mManager.hasShareTargets(CALLING_PACKAGE_1);
+    }
+
+    public void testisSharingShortcut_permission() throws IntentFilter.MalformedMimeTypeException {
+        setCaller(LAUNCHER_1, USER_0);
+
+        IntentFilter filter_any = new IntentFilter();
+        filter_any.addDataType("*/*");
+
+        assertExpectException(SecurityException.class, "Missing permission", () ->
+                mInternal.isSharingShortcut(USER_0, LAUNCHER_1, CALLING_PACKAGE_1, "s1", USER_0,
+                        filter_any));
 
         // Has permission, now it should pass.
         mCallerPermissions.add(permission.MANAGE_APP_PREDICTIONS);
@@ -7522,7 +7720,7 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
                         assertEquals("http://www/", si.getIntent().getData().toString());
                         assertEquals("foo/bar", si.getIntent().getType());
                         assertEquals(
-                                new ComponentName("abc", ".xyz"), si.getIntent().getComponent());
+                                new ComponentName("abc", "abc.xyz"), si.getIntent().getComponent());
 
                         assertEquals(set("cat1", "cat2"), si.getIntent().getCategories());
                         assertEquals("value1", si.getIntent().getStringExtra("key1"));
@@ -8447,10 +8645,9 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
     }
 
     public void testIsForegroundDefaultLauncher_true() {
-        final ComponentName defaultLauncher = new ComponentName("default", "launcher");
         final int uid = 1024;
 
-        setDefaultLauncher(UserHandle.USER_SYSTEM, defaultLauncher);
+        setDefaultLauncher(UserHandle.USER_SYSTEM, "default");
         makeUidForeground(uid);
 
         assertTrue(mInternal.isForegroundDefaultLauncher("default", uid));
@@ -8458,20 +8655,18 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
 
 
     public void testIsForegroundDefaultLauncher_defaultButNotForeground() {
-        final ComponentName defaultLauncher = new ComponentName("default", "launcher");
         final int uid = 1024;
 
-        setDefaultLauncher(UserHandle.USER_SYSTEM, defaultLauncher);
+        setDefaultLauncher(UserHandle.USER_SYSTEM, "default");
         makeUidBackground(uid);
 
         assertFalse(mInternal.isForegroundDefaultLauncher("default", uid));
     }
 
     public void testIsForegroundDefaultLauncher_foregroundButNotDefault() {
-        final ComponentName defaultLauncher = new ComponentName("default", "launcher");
         final int uid = 1024;
 
-        setDefaultLauncher(UserHandle.USER_SYSTEM, defaultLauncher);
+        setDefaultLauncher(UserHandle.USER_SYSTEM, "default");
         makeUidForeground(uid);
 
         assertFalse(mInternal.isForegroundDefaultLauncher("another", uid));
@@ -8544,7 +8739,7 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
 
         // Write ShareTargets to Xml
         ByteArrayOutputStream outStream = new ByteArrayOutputStream();
-        final XmlSerializer outXml = new FastXmlSerializer();
+        final TypedXmlSerializer outXml = Xml.newFastSerializer();
         outXml.setOutput(outStream, StandardCharsets.UTF_8.name());
         outXml.startDocument(null, true);
         for (int i = 0; i < expectedValues.size(); i++) {
@@ -8555,7 +8750,7 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
 
         // Read ShareTargets from Xml
         ByteArrayInputStream inStream = new ByteArrayInputStream(outStream.toByteArray());
-        XmlPullParser parser = Xml.newPullParser();
+        TypedXmlPullParser parser = Xml.newFastPullParser();
         parser.setInput(new InputStreamReader(inStream));
         List<ShareTargetInfo> shareTargets = new ArrayList<>();
         int type;
@@ -8642,6 +8837,63 @@ public class ShortcutManagerTest1 extends BaseShortcutManagerTest {
         assertFalse(mInternal.isSharingShortcut(USER_0, LAUNCHER_1, CALLING_PACKAGE_1, "s3", USER_0,
                 filter_any));
         assertFalse(mInternal.isSharingShortcut(USER_0, LAUNCHER_1, CALLING_PACKAGE_1, "s4", USER_0,
+                filter_any));
+    }
+
+    public void testIsSharingShortcut_PinnedAndCachedOnlyShortcuts()
+            throws IntentFilter.MalformedMimeTypeException {
+        addManifestShortcutResource(
+                new ComponentName(CALLING_PACKAGE_1, ShortcutActivity.class.getName()),
+                R.xml.shortcut_share_targets);
+        updatePackageVersion(CALLING_PACKAGE_1, 1);
+        mService.mPackageMonitor.onReceive(getTestContext(),
+                genPackageAddIntent(CALLING_PACKAGE_1, USER_0));
+
+        final ShortcutInfo s1 = makeShortcutWithCategory("s1",
+                set("com.test.category.CATEGORY1", "com.test.category.CATEGORY2"));
+        final ShortcutInfo s2 = makeShortcutWithCategory("s2",
+                set("com.test.category.CATEGORY5", "com.test.category.CATEGORY6"));
+        final ShortcutInfo s3 = makeShortcutWithCategory("s3",
+                set("com.test.category.CATEGORY5", "com.test.category.CATEGORY6"));
+        s1.setLongLived();
+        s2.setLongLived();
+
+        runWithCaller(CALLING_PACKAGE_1, USER_0, () -> {
+            assertTrue(mManager.setDynamicShortcuts(list(s1, s2, s3)));
+            assertShortcutIds(assertAllNotKeyFieldsOnly(mManager.getDynamicShortcuts()),
+                    "s1", "s2", "s3");
+        });
+
+        IntentFilter filter_any = new IntentFilter();
+        filter_any.addDataType("*/*");
+
+        setCaller(LAUNCHER_1, USER_0);
+        mCallerPermissions.add(permission.MANAGE_APP_PREDICTIONS);
+
+        // Assert all are sharing shortcuts
+        assertTrue(mInternal.isSharingShortcut(USER_0, LAUNCHER_1, CALLING_PACKAGE_1, "s1", USER_0,
+                filter_any));
+        assertTrue(mInternal.isSharingShortcut(USER_0, LAUNCHER_1, CALLING_PACKAGE_1, "s2", USER_0,
+                filter_any));
+        assertTrue(mInternal.isSharingShortcut(USER_0, LAUNCHER_1, CALLING_PACKAGE_1, "s3", USER_0,
+                filter_any));
+
+        mInjectCheckAccessShortcutsPermission = true;
+        mLauncherApps.cacheShortcuts(CALLING_PACKAGE_1, list("s1", "s2"), HANDLE_USER_0,
+                CACHE_OWNER_0);
+        mLauncherApps.pinShortcuts(CALLING_PACKAGE_1, list("s3"), HANDLE_USER_0);
+
+        runWithCaller(CALLING_PACKAGE_1, USER_0, () -> {
+            // Remove one cached shortcut, and leave one cached-only and pinned-only shortcuts.
+            mManager.removeLongLivedShortcuts(list("s1"));
+            mManager.removeDynamicShortcuts(list("s2, s3"));
+        });
+
+        assertFalse(mInternal.isSharingShortcut(USER_0, LAUNCHER_1, CALLING_PACKAGE_1, "s1", USER_0,
+                filter_any));
+        assertTrue(mInternal.isSharingShortcut(USER_0, LAUNCHER_1, CALLING_PACKAGE_1, "s2", USER_0,
+                filter_any));
+        assertTrue(mInternal.isSharingShortcut(USER_0, LAUNCHER_1, CALLING_PACKAGE_1, "s3", USER_0,
                 filter_any));
     }
 

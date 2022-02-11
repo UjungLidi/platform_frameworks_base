@@ -117,21 +117,12 @@ public class NotificationInterruptStateProviderImplTest extends SysuiTestCase {
 
     /**
      * Sets up the state such that any requests to
-     * {@link NotificationInterruptStateProviderImpl#canAlertAwakeCommon(NotificationEntry)} will
-     * pass as long its provided NotificationEntry fulfills launch fullscreen check.
-     */
-    private void ensureStateForAlertAwakeCommon() {
-        when(mHeadsUpManager.isSnoozed(any())).thenReturn(false);
-    }
-
-    /**
-     * Sets up the state such that any requests to
      * {@link NotificationInterruptStateProviderImpl#shouldHeadsUp(NotificationEntry)} will
      * pass as long its provided NotificationEntry fulfills importance & DND checks.
      */
     private void ensureStateForHeadsUpWhenAwake() throws RemoteException {
         ensureStateForAlertCommon();
-        ensureStateForAlertAwakeCommon();
+        when(mHeadsUpManager.isSnoozed(any())).thenReturn(false);
 
         when(mStatusBarStateController.isDozing()).thenReturn(false);
         when(mDreamManager.isDreaming()).thenReturn(false);
@@ -157,7 +148,6 @@ public class NotificationInterruptStateProviderImplTest extends SysuiTestCase {
      */
     private void ensureStateForBubbleUp() {
         ensureStateForAlertCommon();
-        ensureStateForAlertAwakeCommon();
     }
 
     @Test
@@ -392,7 +382,6 @@ public class NotificationInterruptStateProviderImplTest extends SysuiTestCase {
     @Test
     public void testShouldNotHeadsUp_snoozedPackage() {
         NotificationEntry entry = createNotification(IMPORTANCE_DEFAULT);
-        ensureStateForAlertAwakeCommon();
 
         when(mHeadsUpManager.isSnoozed(entry.getSbn().getPackageName())).thenReturn(true);
 
@@ -402,7 +391,6 @@ public class NotificationInterruptStateProviderImplTest extends SysuiTestCase {
 
     @Test
     public void testShouldNotHeadsUp_justLaunchedFullscreen() {
-        ensureStateForAlertAwakeCommon();
 
         // On screen alerts don't happen when that package has just launched fullscreen.
         NotificationEntry entry = createNotification(IMPORTANCE_DEFAULT);
@@ -488,7 +476,8 @@ public class NotificationInterruptStateProviderImplTest extends SysuiTestCase {
 
     private NotificationEntry createBubble() {
         Notification.BubbleMetadata data = new Notification.BubbleMetadata.Builder(
-                PendingIntent.getActivity(mContext, 0, new Intent(), 0),
+                PendingIntent.getActivity(mContext, 0, new Intent(),
+                    PendingIntent.FLAG_MUTABLE),
                         Icon.createWithResource(mContext.getResources(), R.drawable.android))
                 .build();
         Notification n = new Notification.Builder(getContext(), "a")

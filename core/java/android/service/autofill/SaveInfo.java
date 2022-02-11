@@ -687,7 +687,7 @@ public final class SaveInfo implements Parcelable {
         public @NonNull Builder setValidator(@NonNull Validator validator) {
             throwIfDestroyed();
             Preconditions.checkArgument((validator instanceof InternalValidator),
-                    "not provided by Android System: " + validator);
+                    "not provided by Android System: %s", validator);
             mValidator = (InternalValidator) validator;
             return this;
         }
@@ -719,7 +719,7 @@ public final class SaveInfo implements Parcelable {
          *
          * <p>The sanitizer can also be used as an alternative for a
          * {@link #setValidator(Validator) validator}. If any of the {@code ids} is a
-         * {@link #SaveInfo.Builder(int, AutofillId[]) required id} and the {@code sanitizer} fails
+         * {@link #Builder(int, AutofillId[]) required id} and the {@code sanitizer} fails
          * because of it, then the save UI is not shown.
          *
          * @param sanitizer an implementation provided by the Android System.
@@ -734,7 +734,7 @@ public final class SaveInfo implements Parcelable {
             throwIfDestroyed();
             Preconditions.checkArgument(!ArrayUtils.isEmpty(ids), "ids cannot be empty or null");
             Preconditions.checkArgument((sanitizer instanceof InternalSanitizer),
-                    "not provided by Android System: " + sanitizer);
+                    "not provided by Android System: %s", sanitizer);
 
             if (mSanitizers == null) {
                 mSanitizers = new ArrayMap<>();
@@ -777,7 +777,7 @@ public final class SaveInfo implements Parcelable {
          * Builds a new {@link SaveInfo} instance.
          *
          * @throws IllegalStateException if no
-         * {@link #SaveInfo.Builder(int, AutofillId[]) required ids},
+         * {@link #Builder(int, AutofillId[]) required ids},
          * or {@link #setOptionalIds(AutofillId[]) optional ids}, or {@link #FLAG_DELAY_SAVE}
          * were set
          */

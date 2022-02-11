@@ -23,6 +23,7 @@ import android.app.WindowConfiguration;
 import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.graphics.Rect;
+import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -30,6 +31,7 @@ import android.util.ArrayMap;
 import android.view.SurfaceControl;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -107,8 +109,8 @@ public final class WindowContainerTransaction implements Parcelable {
     }
 
     /**
-     * Notify activities within the hierarchy of a container that they have entered picture-in-picture
-     * mode with the given bounds.
+     * Notify {@link com.android.server.wm.PinnedTaskController} that the picture-in-picture task
+     * has finished the enter animation with the given bounds.
      */
     @NonNull
     public WindowContainerTransaction scheduleFinishEnterPip(
@@ -137,6 +139,36 @@ public final class WindowContainerTransaction implements Parcelable {
         Change chg = getOrCreateChange(container.asBinder());
         chg.mBoundsChangeTransaction = t;
         chg.mChangeMask |= Change.CHANGE_BOUNDS_TRANSACTION;
+        return this;
+    }
+
+    /**
+     * Like {@link #setBoundsChangeTransaction} but instead queues up a setPosition/WindowCrop
+     * on a container's surface control. This is useful when a boundsChangeTransaction needs to be
+     * queued up on a Task that won't be organized until the end of this window-container
+     * transaction.
+     *
+     * This requires that, at the end of this transaction, `task` will be organized; otherwise
+     * the server will throw an IllegalArgumentException.
+     *
+     * WARNING: Use this carefully. Whatever is set here should match the expected bounds after
+     *          the transaction completes since it will likely be replaced by it. This call is
+     *          intended to pre-emptively set bounds on a surface in sync with a buffer when
+     *          otherwise the new bounds and the new buffer would update on different frames.
+     *
+     * TODO(b/134365562): remove once TaskOrg drives full-screen or BLAST is enabled.
+     *
+     * @hide
+     */
+    @NonNull
+    public WindowContainerTransaction setBoundsChangeTransaction(
+            @NonNull WindowContainerToken task, @NonNull Rect surfaceBounds) {
+        Change chg = getOrCreateChange(task.asBinder());
+        if (chg.mBoundsChangeSurfaceBounds == null) {
+            chg.mBoundsChangeSurfaceBounds = new Rect();
+        }
+        chg.mBoundsChangeSurfaceBounds.set(surfaceBounds);
+        chg.mChangeMask |= Change.CHANGE_BOUNDS_TRANSACTION_RECT;
         return this;
     }
 
@@ -208,6 +240,22 @@ public final class WindowContainerTransaction implements Parcelable {
     }
 
     /**
+     * Sets whether a container should ignore the orientation request from apps and windows below
+     * it. It currently only applies to {@link com.android.server.wm.DisplayArea}. When
+     * {@code false}, it may rotate based on the orientation request; When {@code true}, it can
+     * never specify orientation, but shows the fixed-orientation apps below it in the letterbox.
+     * @hide
+     */
+    @NonNull
+    public WindowContainerTransaction setIgnoreOrientationRequest(
+            @NonNull WindowContainerToken container, boolean ignoreOrientationRequest) {
+        Change chg = getOrCreateChange(container.asBinder());
+        chg.mIgnoreOrientationRequest = ignoreOrientationRequest;
+        chg.mChangeMask |= Change.CHANGE_IGNORE_ORIENTATION_REQUEST;
+        return this;
+    }
+
+    /**
      * Reparents a container into another one. The effect of a {@code null} parent can vary. For
      * example, reparenting a stack to {@code null} will reparent it to its display.
      *
@@ -217,8 +265,9 @@ public final class WindowContainerTransaction implements Parcelable {
     @NonNull
     public WindowContainerTransaction reparent(@NonNull WindowContainerToken child,
             @Nullable WindowContainerToken parent, boolean onTop) {
-        mHierarchyOps.add(new HierarchyOp(child.asBinder(),
-                parent == null ? null : parent.asBinder(), onTop));
+        mHierarchyOps.add(HierarchyOp.createForReparent(child.asBinder(),
+                parent == null ? null : parent.asBinder(),
+                onTop));
         return this;
     }
 
@@ -230,8 +279,130 @@ public final class WindowContainerTransaction implements Parcelable {
      */
     @NonNull
     public WindowContainerTransaction reorder(@NonNull WindowContainerToken child, boolean onTop) {
-        mHierarchyOps.add(new HierarchyOp(child.asBinder(), onTop));
+        mHierarchyOps.add(HierarchyOp.createForReorder(child.asBinder(), onTop));
         return this;
+    }
+
+    /**
+     * Reparent's all children tasks of {@param currentParent} in the specified
+     * {@param windowingMode} and {@param activityType} to {@param newParent} in their current
+     * z-order.
+     *
+     * @param currentParent of the tasks to perform the operation no.
+     *                      {@code null} will perform the operation on the display.
+     * @param newParent for the tasks. {@code null} will perform the operation on the display.
+     * @param windowingModes of the tasks to reparent.
+     * @param activityTypes of the tasks to reparent.
+     * @param onTop When {@code true}, the child goes to the top of parent; otherwise it goes to
+     *              the bottom.
+     */
+    @NonNull
+    public WindowContainerTransaction reparentTasks(@Nullable WindowContainerToken currentParent,
+            @Nullable WindowContainerToken newParent, @Nullable int[] windowingModes,
+            @Nullable int[] activityTypes, boolean onTop) {
+        mHierarchyOps.add(HierarchyOp.createForChildrenTasksReparent(
+                currentParent != null ? currentParent.asBinder() : null,
+                newParent != null ? newParent.asBinder() : null,
+                windowingModes,
+                activityTypes,
+                onTop));
+        return this;
+    }
+
+    /**
+     * Sets whether a container should be the launch root for the specified windowing mode and
+     * activity type. This currently only applies to Task containers created by organizer.
+     */
+    @NonNull
+    public WindowContainerTransaction setLaunchRoot(@NonNull WindowContainerToken container,
+            @Nullable int[] windowingModes, @Nullable int[] activityTypes) {
+        mHierarchyOps.add(HierarchyOp.createForSetLaunchRoot(
+                container.asBinder(),
+                windowingModes,
+                activityTypes));
+        return this;
+    }
+
+    /**
+     * Sets to containers adjacent to each other. Containers below two visible adjacent roots will
+     * be made invisible. This currently only applies to Task containers created by organizer.
+     * @param root1 the first root.
+     * @param root2 the second root.
+     */
+    @NonNull
+    public WindowContainerTransaction setAdjacentRoots(
+            @NonNull WindowContainerToken root1, @NonNull WindowContainerToken root2) {
+        mHierarchyOps.add(HierarchyOp.createForAdjacentRoots(
+                root1.asBinder(),
+                root2.asBinder()));
+        return this;
+    }
+
+    /**
+     * Sets the container as launch adjacent flag root. Task starting with
+     * {@link FLAG_ACTIVITY_LAUNCH_ADJACENT} will be launching to.
+     *
+     * @hide
+     */
+    @NonNull
+    public WindowContainerTransaction setLaunchAdjacentFlagRoot(
+            @NonNull WindowContainerToken container) {
+        mHierarchyOps.add(HierarchyOp.createForSetLaunchAdjacentFlagRoot(container.asBinder(),
+                false /* clearRoot */));
+        return this;
+    }
+
+    /**
+     * Clears launch adjacent flag root for the display area of passing container.
+     *
+     * @hide
+     */
+    @NonNull
+    public WindowContainerTransaction clearLaunchAdjacentFlagRoot(
+            @NonNull WindowContainerToken container) {
+        mHierarchyOps.add(HierarchyOp.createForSetLaunchAdjacentFlagRoot(container.asBinder(),
+                true /* clearRoot */));
+        return this;
+    }
+
+    /**
+     * Starts a task by id. The task is expected to already exist (eg. as a recent task).
+     * @param taskId Id of task to start.
+     * @param options bundle containing ActivityOptions for the task's top activity.
+     * @hide
+     */
+    @NonNull
+    public WindowContainerTransaction startTask(int taskId, @Nullable Bundle options) {
+        mHierarchyOps.add(HierarchyOp.createForTaskLaunch(taskId, options));
+        return this;
+    }
+
+    /**
+     * Merges another WCT into this one.
+     * @param transfer When true, this will transfer everything from other potentially leaving
+     *                 other in an unusable state. When false, other is left alone, but
+     *                 SurfaceFlinger Transactions will not be merged.
+     * @hide
+     */
+    public void merge(WindowContainerTransaction other, boolean transfer) {
+        for (int i = 0, n = other.mChanges.size(); i < n; ++i) {
+            final IBinder key = other.mChanges.keyAt(i);
+            Change existing = mChanges.get(key);
+            if (existing == null) {
+                existing = new Change();
+                mChanges.put(key, existing);
+            }
+            existing.merge(other.mChanges.valueAt(i), transfer);
+        }
+        for (int i = 0, n = other.mHierarchyOps.size(); i < n; ++i) {
+            mHierarchyOps.add(transfer ? other.mHierarchyOps.get(i)
+                    : new HierarchyOp(other.mHierarchyOps.get(i)));
+        }
+    }
+
+    /** @hide */
+    public boolean isEmpty() {
+        return mChanges.isEmpty() && mHierarchyOps.isEmpty();
     }
 
     /** @hide */
@@ -287,16 +458,21 @@ public final class WindowContainerTransaction implements Parcelable {
         public static final int CHANGE_BOUNDS_TRANSACTION = 1 << 1;
         public static final int CHANGE_PIP_CALLBACK = 1 << 2;
         public static final int CHANGE_HIDDEN = 1 << 3;
+        public static final int CHANGE_BOUNDS_TRANSACTION_RECT = 1 << 4;
+        public static final int CHANGE_IGNORE_ORIENTATION_REQUEST = 1 << 5;
 
         private final Configuration mConfiguration = new Configuration();
         private boolean mFocusable = true;
         private boolean mHidden = false;
+        private boolean mIgnoreOrientationRequest = false;
+
         private int mChangeMask = 0;
         private @ActivityInfo.Config int mConfigSetMask = 0;
         private @WindowConfiguration.WindowConfig int mWindowSetMask = 0;
 
         private Rect mPinnedBounds = null;
         private SurfaceControl.Transaction mBoundsChangeTransaction = null;
+        private Rect mBoundsChangeSurfaceBounds = null;
 
         private int mActivityWindowingMode = -1;
         private int mWindowingMode = -1;
@@ -307,6 +483,7 @@ public final class WindowContainerTransaction implements Parcelable {
             mConfiguration.readFromParcel(in);
             mFocusable = in.readBoolean();
             mHidden = in.readBoolean();
+            mIgnoreOrientationRequest = in.readBoolean();
             mChangeMask = in.readInt();
             mConfigSetMask = in.readInt();
             mWindowSetMask = in.readInt();
@@ -318,9 +495,51 @@ public final class WindowContainerTransaction implements Parcelable {
                 mBoundsChangeTransaction =
                     SurfaceControl.Transaction.CREATOR.createFromParcel(in);
             }
+            if ((mChangeMask & Change.CHANGE_BOUNDS_TRANSACTION_RECT) != 0) {
+                mBoundsChangeSurfaceBounds = new Rect();
+                mBoundsChangeSurfaceBounds.readFromParcel(in);
+            }
 
             mWindowingMode = in.readInt();
             mActivityWindowingMode = in.readInt();
+        }
+
+        /**
+         * @param transfer When true, this will transfer other into this leaving other in an
+         *                 undefined state. Use this if you don't intend to use other. When false,
+         *                 SurfaceFlinger Transactions will not merge.
+         */
+        public void merge(Change other, boolean transfer) {
+            mConfiguration.setTo(other.mConfiguration, other.mConfigSetMask, other.mWindowSetMask);
+            mConfigSetMask |= other.mConfigSetMask;
+            mWindowSetMask |= other.mWindowSetMask;
+            if ((other.mChangeMask & CHANGE_FOCUSABLE) != 0) {
+                mFocusable = other.mFocusable;
+            }
+            if (transfer && (other.mChangeMask & CHANGE_BOUNDS_TRANSACTION) != 0) {
+                mBoundsChangeTransaction = other.mBoundsChangeTransaction;
+                other.mBoundsChangeTransaction = null;
+            }
+            if ((other.mChangeMask & CHANGE_PIP_CALLBACK) != 0) {
+                mPinnedBounds = transfer ? other.mPinnedBounds : new Rect(other.mPinnedBounds);
+            }
+            if ((other.mChangeMask & CHANGE_HIDDEN) != 0) {
+                mHidden = other.mHidden;
+            }
+            if ((other.mChangeMask & CHANGE_IGNORE_ORIENTATION_REQUEST) != 0) {
+                mIgnoreOrientationRequest = other.mIgnoreOrientationRequest;
+            }
+            mChangeMask |= other.mChangeMask;
+            if (other.mActivityWindowingMode >= 0) {
+                mActivityWindowingMode = other.mActivityWindowingMode;
+            }
+            if (other.mWindowingMode >= 0) {
+                mWindowingMode = other.mWindowingMode;
+            }
+            if (other.mBoundsChangeSurfaceBounds != null) {
+                mBoundsChangeSurfaceBounds = transfer ? other.mBoundsChangeSurfaceBounds
+                        : new Rect(other.mBoundsChangeSurfaceBounds);
+            }
         }
 
         public int getWindowingMode() {
@@ -351,6 +570,15 @@ public final class WindowContainerTransaction implements Parcelable {
             return mHidden;
         }
 
+        /** Gets the requested state of whether to ignore orientation request. */
+        public boolean getIgnoreOrientationRequest() {
+            if ((mChangeMask & CHANGE_IGNORE_ORIENTATION_REQUEST) == 0) {
+                throw new RuntimeException("IgnoreOrientationRequest not set. "
+                        + "Check CHANGE_IGNORE_ORIENTATION_REQUEST first");
+            }
+            return mIgnoreOrientationRequest;
+        }
+
         public int getChangeMask() {
             return mChangeMask;
         }
@@ -375,6 +603,10 @@ public final class WindowContainerTransaction implements Parcelable {
 
         public SurfaceControl.Transaction getBoundsChangeTransaction() {
             return mBoundsChangeTransaction;
+        }
+
+        public Rect getBoundsChangeSurfaceBounds() {
+            return mBoundsChangeSurfaceBounds;
         }
 
         @Override
@@ -408,6 +640,12 @@ public final class WindowContainerTransaction implements Parcelable {
             if ((mChangeMask & CHANGE_FOCUSABLE) != 0) {
                 sb.append("focusable:" + mFocusable + ",");
             }
+            if (mBoundsChangeTransaction != null) {
+                sb.append("hasBoundsTransaction,");
+            }
+            if ((mChangeMask & CHANGE_IGNORE_ORIENTATION_REQUEST) != 0) {
+                sb.append("ignoreOrientationRequest:" + mIgnoreOrientationRequest + ",");
+            }
             sb.append("}");
             return sb.toString();
         }
@@ -417,6 +655,7 @@ public final class WindowContainerTransaction implements Parcelable {
             mConfiguration.writeToParcel(dest, flags);
             dest.writeBoolean(mFocusable);
             dest.writeBoolean(mHidden);
+            dest.writeBoolean(mIgnoreOrientationRequest);
             dest.writeInt(mChangeMask);
             dest.writeInt(mConfigSetMask);
             dest.writeInt(mWindowSetMask);
@@ -426,6 +665,9 @@ public final class WindowContainerTransaction implements Parcelable {
             }
             if (mBoundsChangeTransaction != null) {
                 mBoundsChangeTransaction.writeToParcel(dest, flags);
+            }
+            if (mBoundsChangeSurfaceBounds != null) {
+                mBoundsChangeSurfaceBounds.writeToParcel(dest, flags);
             }
 
             dest.writeInt(mWindowingMode);
@@ -456,6 +698,21 @@ public final class WindowContainerTransaction implements Parcelable {
      * @hide
      */
     public static class HierarchyOp implements Parcelable {
+        public static final int HIERARCHY_OP_TYPE_REPARENT = 0;
+        public static final int HIERARCHY_OP_TYPE_REORDER = 1;
+        public static final int HIERARCHY_OP_TYPE_CHILDREN_TASKS_REPARENT = 2;
+        public static final int HIERARCHY_OP_TYPE_SET_LAUNCH_ROOT = 3;
+        public static final int HIERARCHY_OP_TYPE_SET_ADJACENT_ROOTS = 4;
+        public static final int HIERARCHY_OP_TYPE_LAUNCH_TASK = 5;
+        public static final int HIERARCHY_OP_TYPE_SET_LAUNCH_ADJACENT_FLAG_ROOT = 6;
+
+        // The following key(s) are for use with mLaunchOptions:
+        // When launching a task (eg. from recents), this is the taskId to be launched.
+        public static final String LAUNCH_KEY_TASK_ID = "android:transaction.hop.taskId";
+
+        private final int mType;
+
+        // Container we are performing the operation on.
         private final IBinder mContainer;
 
         // If this is same as mContainer, then only change position, don't reparent.
@@ -464,26 +721,95 @@ public final class WindowContainerTransaction implements Parcelable {
         // Moves/reparents to top of parent when {@code true}, otherwise moves/reparents to bottom.
         private final boolean mToTop;
 
-        public HierarchyOp(@NonNull IBinder container, @Nullable IBinder reparent, boolean toTop) {
-            mContainer = container;
-            mReparent = reparent;
-            mToTop = toTop;
+        final private int[]  mWindowingModes;
+        final private int[] mActivityTypes;
+
+        private final Bundle mLaunchOptions;
+
+        public static HierarchyOp createForReparent(
+                @NonNull IBinder container, @Nullable IBinder reparent, boolean toTop) {
+            return new HierarchyOp(HIERARCHY_OP_TYPE_REPARENT,
+                    container, reparent, null, null, toTop, null);
         }
 
-        public HierarchyOp(@NonNull IBinder container, boolean toTop) {
+        public static HierarchyOp createForReorder(@NonNull IBinder container, boolean toTop) {
+            return new HierarchyOp(HIERARCHY_OP_TYPE_REORDER,
+                    container, container, null, null, toTop, null);
+        }
+
+        public static HierarchyOp createForChildrenTasksReparent(IBinder currentParent,
+                IBinder newParent, int[] windowingModes, int[] activityTypes, boolean onTop) {
+            return new HierarchyOp(HIERARCHY_OP_TYPE_CHILDREN_TASKS_REPARENT,
+                    currentParent, newParent, windowingModes, activityTypes, onTop, null);
+        }
+
+        public static HierarchyOp createForSetLaunchRoot(IBinder container,
+                int[] windowingModes, int[] activityTypes) {
+            return new HierarchyOp(HIERARCHY_OP_TYPE_SET_LAUNCH_ROOT,
+                    container, null, windowingModes, activityTypes, false, null);
+        }
+
+        public static HierarchyOp createForAdjacentRoots(IBinder root1, IBinder root2) {
+            return new HierarchyOp(HIERARCHY_OP_TYPE_SET_ADJACENT_ROOTS,
+                    root1, root2, null, null, false, null);
+        }
+
+        /** Create a hierarchy op for launching a task. */
+        public static HierarchyOp createForTaskLaunch(int taskId, @Nullable Bundle options) {
+            final Bundle fullOptions = options == null ? new Bundle() : options;
+            fullOptions.putInt(LAUNCH_KEY_TASK_ID, taskId);
+            return new HierarchyOp(HIERARCHY_OP_TYPE_LAUNCH_TASK, null, null, null, null, true,
+                    fullOptions);
+        }
+
+        /** Create a hierarchy op for setting launch adjacent flag root. */
+        public static HierarchyOp createForSetLaunchAdjacentFlagRoot(IBinder container,
+                boolean clearRoot) {
+            return new HierarchyOp(HIERARCHY_OP_TYPE_SET_LAUNCH_ADJACENT_FLAG_ROOT, container, null,
+                    null, null, clearRoot, null);
+        }
+
+
+        private HierarchyOp(int type, @Nullable IBinder container, @Nullable IBinder reparent,
+                int[] windowingModes, int[] activityTypes, boolean toTop,
+                @Nullable Bundle launchOptions) {
+            mType = type;
             mContainer = container;
-            mReparent = container;
+            mReparent = reparent;
+            mWindowingModes = windowingModes != null ?
+                    Arrays.copyOf(windowingModes, windowingModes.length) : null;
+            mActivityTypes = activityTypes != null ?
+                    Arrays.copyOf(activityTypes, activityTypes.length) : null;
             mToTop = toTop;
+            mLaunchOptions = launchOptions;
+        }
+
+        public HierarchyOp(@NonNull HierarchyOp copy) {
+            mType = copy.mType;
+            mContainer = copy.mContainer;
+            mReparent = copy.mReparent;
+            mToTop = copy.mToTop;
+            mWindowingModes = copy.mWindowingModes;
+            mActivityTypes = copy.mActivityTypes;
+            mLaunchOptions = copy.mLaunchOptions;
         }
 
         protected HierarchyOp(Parcel in) {
+            mType = in.readInt();
             mContainer = in.readStrongBinder();
             mReparent = in.readStrongBinder();
             mToTop = in.readBoolean();
+            mWindowingModes = in.createIntArray();
+            mActivityTypes = in.createIntArray();
+            mLaunchOptions = in.readBundle();
+        }
+
+        public int getType() {
+            return mType;
         }
 
         public boolean isReparent() {
-            return mContainer != mReparent;
+            return mType == HIERARCHY_OP_TYPE_REPARENT;
         }
 
         @Nullable
@@ -496,25 +822,68 @@ public final class WindowContainerTransaction implements Parcelable {
             return mContainer;
         }
 
+        @NonNull
+        public IBinder getAdjacentRoot() {
+            return mReparent;
+        }
+
         public boolean getToTop() {
             return mToTop;
         }
 
+        public int[] getWindowingModes() {
+            return mWindowingModes;
+        }
+
+        public int[] getActivityTypes() {
+            return mActivityTypes;
+        }
+
+        @Nullable
+        public Bundle getLaunchOptions() {
+            return mLaunchOptions;
+        }
+
         @Override
         public String toString() {
-            if (isReparent()) {
-                return "{reparent: " + mContainer + " to " + (mToTop ? "top of " : "bottom of ")
-                        + mReparent + "}";
-            } else {
-                return "{reorder: " + mContainer + " to " + (mToTop ? "top" : "bottom") + "}";
+            switch (mType) {
+                case HIERARCHY_OP_TYPE_CHILDREN_TASKS_REPARENT:
+                    return "{ChildrenTasksReparent: from=" + mContainer + " to=" + mReparent
+                            + " mToTop=" + mToTop + " mWindowingMode=" + mWindowingModes
+                            + " mActivityType=" + mActivityTypes + "}";
+                case HIERARCHY_OP_TYPE_SET_LAUNCH_ROOT:
+                    return "{SetLaunchRoot: container=" + mContainer
+                            + " mWindowingMode=" + mWindowingModes
+                            + " mActivityType=" + mActivityTypes + "}";
+                case HIERARCHY_OP_TYPE_REPARENT:
+                    return "{reparent: " + mContainer + " to " + (mToTop ? "top of " : "bottom of ")
+                            + mReparent + "}";
+                case HIERARCHY_OP_TYPE_REORDER:
+                    return "{reorder: " + mContainer + " to " + (mToTop ? "top" : "bottom") + "}";
+                case HIERARCHY_OP_TYPE_SET_ADJACENT_ROOTS:
+                    return "{SetAdjacentRoot: container=" + mContainer
+                            + " adjacentRoot=" + mReparent + "}";
+                case HIERARCHY_OP_TYPE_LAUNCH_TASK:
+                    return "{LaunchTask: " + mLaunchOptions + "}";
+                case HIERARCHY_OP_TYPE_SET_LAUNCH_ADJACENT_FLAG_ROOT:
+                    return "{SetAdjacentFlagRoot: container=" + mContainer + " clearRoot=" + mToTop
+                            + "}";
+                default:
+                    return "{mType=" + mType + " container=" + mContainer + " reparent=" + mReparent
+                            + " mToTop=" + mToTop + " mWindowingMode=" + mWindowingModes
+                            + " mActivityType=" + mActivityTypes + "}";
             }
         }
 
         @Override
         public void writeToParcel(Parcel dest, int flags) {
+            dest.writeInt(mType);
             dest.writeStrongBinder(mContainer);
             dest.writeStrongBinder(mReparent);
             dest.writeBoolean(mToTop);
+            dest.writeIntArray(mWindowingModes);
+            dest.writeIntArray(mActivityTypes);
+            dest.writeBundle(mLaunchOptions);
         }
 
         @Override

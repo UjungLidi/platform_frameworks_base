@@ -27,12 +27,14 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentSender;
+import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.graphics.drawable.Drawable;
 import android.metrics.LogMaker;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.UserHandle;
 import android.service.autofill.BatchUpdates;
 import android.service.autofill.CustomDescription;
 import android.service.autofill.InternalOnClickAction;
@@ -196,7 +198,9 @@ final class SaveUi {
                 }
                 intent.putExtra(AutofillManager.EXTRA_RESTORE_CROSS_ACTIVITY, true);
 
-                PendingIntent p = PendingIntent.getActivity(this, 0, intent, 0);
+                PendingIntent p = PendingIntent.getActivityAsUser(this, /* requestCode= */ 0,
+                        intent, PendingIntent.FLAG_MUTABLE, /* options= */ null,
+                        UserHandle.CURRENT);
                 if (sDebug) {
                     Slog.d(TAG, "startActivity add save UI restored with intent=" + intent);
                 }
@@ -211,7 +215,13 @@ final class SaveUi {
                     return componentName;
                 }
                 intent.addFlags(Intent.FLAG_ACTIVITY_MATCH_EXTERNAL);
-                return intent.resolveActivity(packageManager);
+                final ActivityInfo ai =
+                        intent.resolveActivityInfo(packageManager, PackageManager.MATCH_INSTANT);
+                if (ai != null) {
+                    return new ComponentName(ai.applicationInfo.packageName, ai.name);
+                }
+
+                return null;
             }
         };
         final LayoutInflater inflater = LayoutInflater.from(context);
@@ -378,18 +388,20 @@ final class SaveUi {
             }
         }
 
-        final RemoteViews.OnClickHandler handler = (view, pendingIntent, response) -> {
-            Intent intent = response.getLaunchOptions(view).first;
-            final boolean isValid = isValidLink(pendingIntent, intent);
-            if (!isValid) {
-                final LogMaker log = newLogMaker(MetricsEvent.AUTOFILL_SAVE_LINK_TAPPED, mType);
-                log.setType(MetricsEvent.TYPE_UNKNOWN);
-                mMetricsLogger.write(log);
-                return false;
-            }
+        final RemoteViews.InteractionHandler handler =
+                (view, pendingIntent, response) -> {
+                    Intent intent = response.getLaunchOptions(view).first;
+                    final boolean isValid = isValidLink(pendingIntent, intent);
+                    if (!isValid) {
+                        final LogMaker log =
+                                newLogMaker(MetricsEvent.AUTOFILL_SAVE_LINK_TAPPED, mType);
+                        log.setType(MetricsEvent.TYPE_UNKNOWN);
+                        mMetricsLogger.write(log);
+                        return false;
+                    }
 
-            startIntentSenderWithRestore(pendingIntent, intent);
-            return true;
+                    startIntentSenderWithRestore(pendingIntent, intent);
+                    return true;
         };
 
         try {

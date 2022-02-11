@@ -39,6 +39,14 @@
 #define ENCODING_E_AC3_JOC      18
 #define ENCODING_DOLBY_MAT      19
 #define ENCODING_OPUS           20
+#define ENCODING_PCM_24BIT_PACKED 21
+#define ENCODING_PCM_32BIT 22
+#define ENCODING_MPEGH_BL_L3 23
+#define ENCODING_MPEGH_BL_L4 24
+#define ENCODING_MPEGH_LC_L3 25
+#define ENCODING_MPEGH_LC_L4 26
+#define ENCODING_DTS_UHD 27
+#define ENCODING_DRA 28
 
 #define ENCODING_INVALID    0
 #define ENCODING_DEFAULT    1
@@ -47,6 +55,7 @@
 
 #define CHANNEL_INVALID 0
 #define CHANNEL_OUT_DEFAULT 1
+#define CHANNEL_IN_DEFAULT 1
 
 static inline audio_format_t audioFormatToNative(int audioFormat)
 {
@@ -91,6 +100,22 @@ static inline audio_format_t audioFormatToNative(int audioFormat)
         return AUDIO_FORMAT_MAT;
     case ENCODING_OPUS:
         return AUDIO_FORMAT_OPUS;
+    case ENCODING_PCM_24BIT_PACKED:
+        return AUDIO_FORMAT_PCM_24_BIT_PACKED;
+    case ENCODING_PCM_32BIT:
+        return AUDIO_FORMAT_PCM_32_BIT;
+    case ENCODING_MPEGH_BL_L3:
+        return AUDIO_FORMAT_MPEGH_BL_L3;
+    case ENCODING_MPEGH_BL_L4:
+        return AUDIO_FORMAT_MPEGH_BL_L4;
+    case ENCODING_MPEGH_LC_L3:
+        return AUDIO_FORMAT_MPEGH_LC_L3;
+    case ENCODING_MPEGH_LC_L4:
+        return AUDIO_FORMAT_MPEGH_LC_L4;
+    case ENCODING_DTS_UHD:
+        return AUDIO_FORMAT_DTS_UHD;
+    case ENCODING_DRA:
+        return AUDIO_FORMAT_DRA;
     default:
         return AUDIO_FORMAT_INVALID;
     }
@@ -106,10 +131,15 @@ static inline int audioFormatFromNative(audio_format_t nativeFormat)
     case AUDIO_FORMAT_PCM_FLOAT:
         return ENCODING_PCM_FLOAT;
 
-    // map these to ENCODING_PCM_FLOAT
-    case AUDIO_FORMAT_PCM_8_24_BIT:
+    // As of S, these extend integer precision formats now return more specific values
+    // than ENCODING_PCM_FLOAT.
     case AUDIO_FORMAT_PCM_24_BIT_PACKED:
+        return ENCODING_PCM_24BIT_PACKED;
     case AUDIO_FORMAT_PCM_32_BIT:
+        return ENCODING_PCM_32BIT;
+
+    // map this to ENCODING_PCM_FLOAT
+    case AUDIO_FORMAT_PCM_8_24_BIT:
         return ENCODING_PCM_FLOAT;
 
     case AUDIO_FORMAT_AC3:
@@ -147,6 +177,18 @@ static inline int audioFormatFromNative(audio_format_t nativeFormat)
         return ENCODING_DOLBY_MAT;
     case AUDIO_FORMAT_OPUS:
         return ENCODING_OPUS;
+    case AUDIO_FORMAT_MPEGH_BL_L3:
+        return ENCODING_MPEGH_BL_L3;
+    case AUDIO_FORMAT_MPEGH_BL_L4:
+        return ENCODING_MPEGH_BL_L4;
+    case AUDIO_FORMAT_MPEGH_LC_L3:
+        return ENCODING_MPEGH_LC_L3;
+    case AUDIO_FORMAT_MPEGH_LC_L4:
+        return ENCODING_MPEGH_LC_L4;
+    case AUDIO_FORMAT_DTS_UHD:
+        return ENCODING_DTS_UHD;
+    case AUDIO_FORMAT_DRA:
+        return ENCODING_DRA;
     case AUDIO_FORMAT_DEFAULT:
         return ENCODING_DEFAULT;
     default:
@@ -196,12 +238,22 @@ static inline int outChannelMaskFromNative(audio_channel_mask_t nativeMask)
 
 static inline audio_channel_mask_t inChannelMaskToNative(int channelMask)
 {
-    return (audio_channel_mask_t)channelMask;
+    switch (channelMask) {
+        case CHANNEL_IN_DEFAULT:
+            return AUDIO_CHANNEL_NONE;
+        default:
+            return (audio_channel_mask_t)channelMask;
+    }
 }
 
 static inline int inChannelMaskFromNative(audio_channel_mask_t nativeMask)
 {
-    return (int)nativeMask;
+    switch (nativeMask) {
+        case AUDIO_CHANNEL_NONE:
+            return CHANNEL_IN_DEFAULT;
+        default:
+            return (int)nativeMask;
+    }
 }
 
 #endif // ANDROID_MEDIA_AUDIOFORMAT_H

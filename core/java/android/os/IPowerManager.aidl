@@ -18,6 +18,7 @@
 package android.os;
 
 import android.os.BatterySaverPolicyConfig;
+import android.os.ParcelDuration;
 import android.os.PowerSaveState;
 import android.os.WorkSource;
 
@@ -26,13 +27,12 @@ import android.os.WorkSource;
 interface IPowerManager
 {
     void acquireWakeLock(IBinder lock, int flags, String tag, String packageName, in WorkSource ws,
-            String historyTag);
+            String historyTag, int displayId);
     void acquireWakeLockWithUid(IBinder lock, int flags, String tag, String packageName,
-            int uidtoblame);
+            int uidtoblame, int displayId);
     @UnsupportedAppUsage
     void releaseWakeLock(IBinder lock, int flags);
     void updateWakeLockUids(IBinder lock, in int[] uids);
-    oneway void powerHint(int hintId, int data);
     oneway void setPowerBoost(int boost, int durationMs);
     oneway void setPowerMode(int mode, boolean enabled);
 
@@ -42,10 +42,9 @@ interface IPowerManager
     void updateWakeLockWorkSource(IBinder lock, in WorkSource ws, String historyTag);
     boolean isWakeLockLevelSupported(int level);
 
-    @UnsupportedAppUsage
-    void userActivity(long time, int event, int flags);
+    void userActivity(int displayId, long time, int event, int flags);
     void wakeUp(long time, int reason, String details, String opPackageName);
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void goToSleep(long time, int reason, int flags);
     @UnsupportedAppUsage(maxTargetSdk = 28)
     void nap(long time);
@@ -55,10 +54,15 @@ interface IPowerManager
     boolean isPowerSaveMode();
     PowerSaveState getPowerSaveState(int serviceType);
     boolean setPowerSaveModeEnabled(boolean mode);
+    BatterySaverPolicyConfig getFullPowerSavePolicy();
+    boolean setFullPowerSavePolicy(in BatterySaverPolicyConfig config);
     boolean setDynamicPowerSaveHint(boolean powerSaveHint, int disableThreshold);
     boolean setAdaptivePowerSavePolicy(in BatterySaverPolicyConfig config);
     boolean setAdaptivePowerSaveEnabled(boolean enabled);
     int getPowerSaveModeTrigger();
+    void setBatteryDischargePrediction(in ParcelDuration timeRemaining, boolean isCustomized);
+    ParcelDuration getBatteryDischargePrediction();
+    boolean isBatteryDischargePredictionPersonalized();
     boolean isDeviceIdleMode();
     boolean isLightDeviceIdleMode();
 
@@ -95,6 +99,8 @@ interface IPowerManager
     boolean isAmbientDisplaySuppressedForToken(String token);
     // returns whether ambient display is suppressed by any app with any token.
     boolean isAmbientDisplaySuppressed();
+    // returns whether ambient display is suppressed by the given app with the given token.
+    boolean isAmbientDisplaySuppressedForTokenByApp(String token, int appUid);
 
     // Forces the system to suspend even if there are held wakelocks.
     boolean forceSuspend();

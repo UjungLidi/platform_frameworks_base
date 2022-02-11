@@ -38,13 +38,11 @@ import android.text.SpannableStringBuilder;
 import android.util.Log;
 
 import com.android.internal.app.ChooserActivity;
-import com.android.internal.app.ChooserFlags;
 import com.android.internal.app.ResolverActivity;
 import com.android.internal.app.ResolverListAdapter.ActivityInfoPresentationGetter;
 import com.android.internal.app.SimpleIconFactory;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -136,6 +134,10 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
         return mIsSuspended;
     }
 
+    public DisplayResolveInfo getDisplayResolveInfo() {
+        return mSourceInfo;
+    }
+
     private Drawable getChooserTargetIconDrawable(ChooserTarget target,
             @Nullable ShortcutInfo shortcutInfo) {
         Drawable directShareIcon = null;
@@ -144,7 +146,7 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
         final Icon icon = target.getIcon();
         if (icon != null) {
             directShareIcon = icon.loadDrawable(mContext);
-        } else if (ChooserFlags.USE_SHORTCUT_MANAGER_FOR_DIRECT_TARGETS && shortcutInfo != null) {
+        } else if (shortcutInfo != null) {
             LauncherApps launcherApps = (LauncherApps) mContext.getSystemService(
                     Context.LAUNCHER_APPS_SERVICE);
             directShareIcon = launcherApps.getShortcutIconDrawable(shortcutInfo, 0);
@@ -163,7 +165,7 @@ public final class SelectableTargetInfo implements ChooserTargetInfo {
 
         // Now fetch app icon and raster with no badging even in work profile
         Bitmap appIcon = mSelectableTargetInfoCommunicator.makePresentationGetter(info)
-                .getIconBitmap(UserHandle.getUserHandleForUid(UserHandle.myUserId()));
+                .getIconBitmap(mContext.getUser());
 
         // Raster target drawable with appIcon as a badge
         SimpleIconFactory sif = SimpleIconFactory.obtain(mContext);

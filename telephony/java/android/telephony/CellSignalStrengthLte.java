@@ -18,6 +18,7 @@ package android.telephony;
 
 import android.annotation.IntRange;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.PersistableBundle;
@@ -85,6 +86,15 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
     private int mRsrq;
     @UnsupportedAppUsage(maxTargetSdk = android.os.Build.VERSION_CODES.P)
     private int mRssnr;
+    /**
+     * CSI channel quality indicator (CQI) table index. There are multiple CQI tables.
+     * The definition of CQI in each table is different.
+     *
+     * Reference: 3GPP TS 136.213 section 7.2.3.
+     *
+     * Range [1, 6].
+     */
+    private int mCqiTableIndex;
     @UnsupportedAppUsage(maxTargetSdk = android.os.Build.VERSION_CODES.P)
     private int mCqi;
     @UnsupportedAppUsage(maxTargetSdk = android.os.Build.VERSION_CODES.P)
@@ -107,7 +117,7 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
     private int mParametersUseForLevel;
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public CellSignalStrengthLte() {
         setDefaultValues();
     }
@@ -118,7 +128,33 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
      * @param rssi in dBm [-113,-51], UNKNOWN
      * @param rsrp in dBm [-140,-43], UNKNOWN
      * @param rsrq in dB [-34, 3], UNKNOWN
-     * @param rssnr in 10*dB [-200, +300], UNKNOWN
+     * @param rssnr in dB [-20, +30], UNKNOWN
+     * @param cqiTableIndex [1, 6], UNKNOWN
+     * @param cqi [0, 15], UNKNOWN
+     * @param timingAdvance [0, 1282], UNKNOWN
+     *
+     */
+    /** @hide */
+    public CellSignalStrengthLte(int rssi, int rsrp, int rsrq, int rssnr, int cqiTableIndex,
+            int cqi, int timingAdvance) {
+        mRssi = inRangeOrUnavailable(rssi, -113, -51);
+        mSignalStrength = mRssi;
+        mRsrp = inRangeOrUnavailable(rsrp, -140, -43);
+        mRsrq = inRangeOrUnavailable(rsrq, -34, 3);
+        mRssnr = inRangeOrUnavailable(rssnr, -20, 30);
+        mCqiTableIndex = inRangeOrUnavailable(cqiTableIndex, 1, 6);
+        mCqi = inRangeOrUnavailable(cqi, 0, 15);
+        mTimingAdvance = inRangeOrUnavailable(timingAdvance, 0, 1282);
+        updateLevel(null, null);
+    }
+
+    /**
+     * Construct a cell signal strength
+     *
+     * @param rssi in dBm [-113,-51], UNKNOWN
+     * @param rsrp in dBm [-140,-43], UNKNOWN
+     * @param rsrq in dB [-34, 3], UNKNOWN
+     * @param rssnr in dB [-20, +30], UNKNOWN
      * @param cqi [0, 15], UNKNOWN
      * @param timingAdvance [0, 1282], UNKNOWN
      *
@@ -126,15 +162,7 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
     /** @hide */
     public CellSignalStrengthLte(int rssi, int rsrp, int rsrq, int rssnr, int cqi,
             int timingAdvance) {
-
-        mRssi = inRangeOrUnavailable(rssi, -113, -51);
-        mSignalStrength = mRssi;
-        mRsrp = inRangeOrUnavailable(rsrp, -140, -43);
-        mRsrq = inRangeOrUnavailable(rsrq, -34, 3);
-        mRssnr = inRangeOrUnavailable(rssnr, -200, 300);
-        mCqi = inRangeOrUnavailable(cqi, 0, 15);
-        mTimingAdvance = inRangeOrUnavailable(timingAdvance, 0, 1282);
-        updateLevel(null, null);
+        this(rssi, rsrp, rsrq, rssnr, CellInfo.UNAVAILABLE, cqi, timingAdvance);
     }
 
     /** @hide */
@@ -143,7 +171,17 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
         this(convertRssiAsuToDBm(lte.signalStrength),
                 lte.rsrp != CellInfo.UNAVAILABLE ? -lte.rsrp : lte.rsrp,
                 lte.rsrq != CellInfo.UNAVAILABLE ? -lte.rsrq : lte.rsrq,
-                lte.rssnr, lte.cqi, lte.timingAdvance);
+                convertRssnrUnitFromTenDbToDB(lte.rssnr), lte.cqi, lte.timingAdvance);
+    }
+
+    /** @hide */
+    public CellSignalStrengthLte(android.hardware.radio.V1_6.LteSignalStrength lte) {
+        // Convert from HAL values as part of construction.
+        this(convertRssiAsuToDBm(lte.base.signalStrength),
+                lte.base.rsrp != CellInfo.UNAVAILABLE ? -lte.base.rsrp : lte.base.rsrp,
+                lte.base.rsrq != CellInfo.UNAVAILABLE ? -lte.base.rsrq : lte.base.rsrq,
+                convertRssnrUnitFromTenDbToDB(lte.base.rssnr), lte.cqiTableIndex, lte.base.cqi,
+                lte.base.timingAdvance);
     }
 
     /** @hide */
@@ -158,6 +196,7 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
         mRsrp = s.mRsrp;
         mRsrq = s.mRsrq;
         mRssnr = s.mRssnr;
+        mCqiTableIndex = s.mCqiTableIndex;
         mCqi = s.mCqi;
         mTimingAdvance = s.mTimingAdvance;
         mLevel = s.mLevel;
@@ -178,6 +217,7 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
         mRsrp = CellInfo.UNAVAILABLE;
         mRsrq = CellInfo.UNAVAILABLE;
         mRssnr = CellInfo.UNAVAILABLE;
+        mCqiTableIndex = CellInfo.UNAVAILABLE;
         mCqi = CellInfo.UNAVAILABLE;
         mTimingAdvance = CellInfo.UNAVAILABLE;
         mLevel = SIGNAL_STRENGTH_NONE_OR_UNKNOWN;
@@ -208,10 +248,10 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
     };
     // Lifted from Default carrier configs and max range of RSSNR
     private static final int[] sRssnrThresholds = new int[] {
-            -30, /* SIGNAL_STRENGTH_POOR */
-            10,  /* SIGNAL_STRENGTH_MODERATE */
-            45,  /* SIGNAL_STRENGTH_GOOD */
-            130  /* SIGNAL_STRENGTH_GREAT */
+            -3, /* SIGNAL_STRENGTH_POOR */
+            1,  /* SIGNAL_STRENGTH_MODERATE */
+            5,  /* SIGNAL_STRENGTH_GOOD */
+            13  /* SIGNAL_STRENGTH_GREAT */
     };
     private static final int sRsrpBoost = 0;
 
@@ -274,7 +314,7 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
 
         int rsrpBoost = 0;
         if (ss != null) {
-            rsrpBoost = ss.getLteEarfcnRsrpBoost();
+            rsrpBoost = ss.getArfcnRsrpBoost();
         }
 
         int rsrp = inRangeOrUnavailable(mRsrp + rsrpBoost, MIN_LTE_RSRP, MAX_LTE_RSRP);
@@ -401,11 +441,27 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
     }
 
     /**
+     * Get table index for channel quality indicator
+     *
+     * Reference: 3GPP TS 136.213 section 7.2.3.
+     *
+     * @return the CQI table index if available or
+     *         {@link android.telephony.CellInfo#UNAVAILABLE UNAVAILABLE} if unavailable.
+     */
+    @IntRange(from = 1, to = 6)
+    public int getCqiTableIndex() {
+        return mCqiTableIndex;
+    }
+
+    /**
      * Get channel quality indicator
+     *
+     * Reference: 3GPP TS 136.213 section 7.2.3.
      *
      * @return the CQI if available or
      *         {@link android.telephony.CellInfo#UNAVAILABLE UNAVAILABLE} if unavailable.
      */
+    @IntRange(from = 0, to = 15)
     public int getCqi() {
         return mCqi;
     }
@@ -453,7 +509,8 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
 
     @Override
     public int hashCode() {
-        return Objects.hash(mRssi, mRsrp, mRsrq, mRssnr, mCqi, mTimingAdvance, mLevel);
+        return Objects.hash(mRssi, mRsrp, mRsrq, mRssnr, mCqiTableIndex, mCqi, mTimingAdvance,
+                mLevel);
     }
 
     private static final CellSignalStrengthLte sInvalid = new CellSignalStrengthLte();
@@ -475,6 +532,7 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
                 && mRsrp == s.mRsrp
                 && mRsrq == s.mRsrq
                 && mRssnr == s.mRssnr
+                && mCqiTableIndex == s.mCqiTableIndex
                 && mCqi == s.mCqi
                 && mTimingAdvance == s.mTimingAdvance
                 && mLevel == s.mLevel;
@@ -490,6 +548,7 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
                 + " rsrp=" + mRsrp
                 + " rsrq=" + mRsrq
                 + " rssnr=" + mRssnr
+                + " cqiTableIndex=" + mCqiTableIndex
                 + " cqi=" + mCqi
                 + " ta=" + mTimingAdvance
                 + " level=" + mLevel
@@ -507,6 +566,7 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
         dest.writeInt(mRsrp);
         dest.writeInt(mRsrq);
         dest.writeInt(mRssnr);
+        dest.writeInt(mCqiTableIndex);
         dest.writeInt(mCqi);
         dest.writeInt(mTimingAdvance);
         dest.writeInt(mLevel);
@@ -522,6 +582,7 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
         mRsrp = in.readInt();
         mRsrq = in.readInt();
         mRssnr = in.readInt();
+        mCqiTableIndex = in.readInt();
         mCqi = in.readInt();
         mTimingAdvance = in.readInt();
         mLevel = in.readInt();
@@ -554,6 +615,10 @@ public final class CellSignalStrengthLte extends CellSignalStrength implements P
      */
     private static void log(String s) {
         Rlog.w(LOG_TAG, s);
+    }
+
+    private static int convertRssnrUnitFromTenDbToDB(int rssnr) {
+        return rssnr / 10;
     }
 
     private static int convertRssiAsuToDBm(int rssiAsu) {

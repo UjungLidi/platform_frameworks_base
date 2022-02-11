@@ -17,6 +17,9 @@
 package com.android.systemui.controls.dagger
 
 import android.app.Activity
+import android.content.pm.PackageManager
+import com.android.systemui.controls.ControlsMetricsLogger
+import com.android.systemui.controls.ControlsMetricsLoggerImpl
 import com.android.systemui.controls.controller.ControlsBindingController
 import com.android.systemui.controls.controller.ControlsBindingControllerImpl
 import com.android.systemui.controls.controller.ControlsController
@@ -28,16 +31,39 @@ import com.android.systemui.controls.management.ControlsListingController
 import com.android.systemui.controls.management.ControlsListingControllerImpl
 import com.android.systemui.controls.management.ControlsProviderSelectorActivity
 import com.android.systemui.controls.management.ControlsRequestDialog
+import com.android.systemui.controls.ui.ControlActionCoordinator
+import com.android.systemui.controls.ui.ControlActionCoordinatorImpl
+import com.android.systemui.controls.ui.ControlsActivity
 import com.android.systemui.controls.ui.ControlsUiController
 import com.android.systemui.controls.ui.ControlsUiControllerImpl
+import com.android.systemui.dagger.SysUISingleton
 import dagger.Binds
 import dagger.BindsOptionalOf
 import dagger.Module
+import dagger.Provides
 import dagger.multibindings.ClassKey
 import dagger.multibindings.IntoMap
 
+/**
+ * Module for injecting classes in `com.android.systemui.controls`-
+ *
+ * Classes provided by this module should only be injected directly into other classes in this
+ * module. For injecting outside of this module (for example, [GlobalActionsDialog], inject
+ * [ControlsComponent] and obtain the corresponding optionals from it.
+ */
 @Module
 abstract class ControlsModule {
+
+    @Module
+    companion object {
+        @JvmStatic
+        @Provides
+        @SysUISingleton
+        @ControlsFeatureEnabled
+        fun providesControlsFeatureEnabled(pm: PackageManager): Boolean {
+            return pm.hasSystemFeature(PackageManager.FEATURE_CONTROLS)
+        }
+    }
 
     @Binds
     abstract fun provideControlsListingController(
@@ -54,6 +80,14 @@ abstract class ControlsModule {
 
     @Binds
     abstract fun provideUiController(controller: ControlsUiControllerImpl): ControlsUiController
+
+    @Binds
+    abstract fun provideMetricsLogger(logger: ControlsMetricsLoggerImpl): ControlsMetricsLogger
+
+    @Binds
+    abstract fun provideControlActionCoordinator(
+        coordinator: ControlActionCoordinatorImpl
+    ): ControlActionCoordinator
 
     @BindsOptionalOf
     abstract fun optionalPersistenceWrapper(): ControlsFavoritePersistenceWrapper
@@ -85,4 +119,9 @@ abstract class ControlsModule {
     abstract fun provideControlsRequestDialog(
         activity: ControlsRequestDialog
     ): Activity
+
+    @Binds
+    @IntoMap
+    @ClassKey(ControlsActivity::class)
+    abstract fun provideControlsActivity(activity: ControlsActivity): Activity
 }

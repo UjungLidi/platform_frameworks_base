@@ -38,6 +38,7 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Wird geladen"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Wird schnell geladen"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Wird langsam geladen"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="6091488837901216962">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Laden vorübergehend eingeschränkt"</string>
     <string name="keyguard_low_battery" msgid="1868012396800230904">"Ladegerät anschließen."</string>
     <string name="keyguard_instructions_when_pattern_disabled" msgid="8448804180089936954">"Zum Entsperren die Menütaste drücken."</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"Netzwerk gesperrt"</string>
@@ -101,9 +102,6 @@
     <string name="keyguard_carrier_default" msgid="6359808469637388586">"Dienst nicht verfügbar"</string>
     <string name="accessibility_ime_switch_button" msgid="9082358310194861329">"Eingabemethode wechseln"</string>
     <string name="airplane_mode" msgid="2528005343938497866">"Flugmodus"</string>
-    <string name="kg_prompt_reason_prepare_for_update_pin" msgid="8878724145347297575">"Zur Vorbereitung auf das Update ist eine PIN erforderlich"</string>
-    <string name="kg_prompt_reason_prepare_for_update_pattern" msgid="4873394344883271519">"Zur Vorbereitung auf das Update ist ein Muster erforderlich"</string>
-    <string name="kg_prompt_reason_prepare_for_update_password" msgid="5625446803865598337">"Zur Vorbereitung auf das Update ist ein Passwort erforderlich"</string>
     <string name="kg_prompt_reason_restart_pattern" msgid="4720554342633852066">"Nach dem Neustart des Geräts ist die Eingabe des Musters erforderlich"</string>
     <string name="kg_prompt_reason_restart_pin" msgid="1587671566498057656">"Nach dem Neustart des Geräts ist die Eingabe der PIN erforderlich"</string>
     <string name="kg_prompt_reason_restart_password" msgid="8061279087240952002">"Nach dem Neustart des Geräts ist die Eingabe des Passworts erforderlich"</string>

@@ -40,6 +40,7 @@ import android.app.usage.UsageStatsManager;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.os.SystemClock;
+import android.os.UserHandle;
 import android.text.format.DateUtils;
 import android.util.ArrayMap;
 import android.util.ArraySet;
@@ -181,19 +182,27 @@ class UserUsageStatsService {
 
     private void readPackageMappingsLocked(HashMap<String, Long> installedPackages) {
         mDatabase.readMappingsLocked();
-        updatePackageMappingsLocked(installedPackages);
+        // Package mappings for the system user are updated after 24 hours via a job scheduled by
+        // UsageStatsIdleService to ensure restored data is not lost on first boot. Additionally,
+        // this makes user service initialization a little quicker on subsequent boots.
+        if (mUserId != UserHandle.USER_SYSTEM) {
+            updatePackageMappingsLocked(installedPackages);
+        }
     }
 
     /**
-     * Queries Job Scheduler for any pending data prune jobs and if any exist, it updates the
-     * package mappings in memory by removing those tokens.
+     * Compares the package mappings on disk with the ones currently installed and removes the
+     * mappings for those packages that have been uninstalled.
      * This will only happen once per device boot, when the user is unlocked for the first time.
+     * If the user is the system user (user 0), this is delayed to ensure data for packages
+     * that were restored isn't removed before the restore is complete.
      *
      * @param installedPackages map of installed packages (package_name:package_install_time)
+     * @return {@code true} on a successful mappings update, {@code false} otherwise.
      */
-    private void updatePackageMappingsLocked(HashMap<String, Long> installedPackages) {
+    boolean updatePackageMappingsLocked(HashMap<String, Long> installedPackages) {
         if (ArrayUtils.isEmpty(installedPackages)) {
-            return;
+            return true;
         }
 
         final long timeNow = System.currentTimeMillis();
@@ -206,7 +215,7 @@ class UserUsageStatsService {
             }
         }
         if (removedPackages.isEmpty()) {
-            return;
+            return true;
         }
 
         // remove packages in the mappings that are no longer installed and persist to disk
@@ -217,7 +226,9 @@ class UserUsageStatsService {
             mDatabase.writeMappingsLocked();
         } catch (Exception e) {
             Slog.w(TAG, "Unable to write updated package mappings file on service initialization.");
+            return false;
         }
+        return true;
     }
 
     boolean pruneUninstalledPackagesData() {
@@ -266,8 +277,11 @@ class UserUsageStatsService {
                     + eventToString(event.mEventType));
         }
 
-        checkAndGetTimeLocked();
-        convertToSystemTimeLocked(event);
+        if (event.mEventType != Event.USER_INTERACTION
+                && event.mEventType != Event.APP_COMPONENT_USED) {
+            checkAndGetTimeLocked();
+            convertToSystemTimeLocked(event);
+        }
 
         if (event.mTimeStamp >= mDailyExpiryDate.getTimeInMillis()) {
             // Need to rollover
@@ -292,7 +306,9 @@ class UserUsageStatsService {
                 // FLUSH_TO_DISK is a private event.
                 && event.mEventType != Event.FLUSH_TO_DISK
                 // DEVICE_SHUTDOWN is added to event list after reboot.
-                && event.mEventType != Event.DEVICE_SHUTDOWN) {
+                && event.mEventType != Event.DEVICE_SHUTDOWN
+                // We aren't interested in every instance of the APP_COMPONENT_USED event.
+                && event.mEventType != Event.APP_COMPONENT_USED) {
             currentDailyStats.addEvent(event);
         }
 
@@ -990,6 +1006,8 @@ class UserUsageStatsService {
                     formatElapsedTime(usageStats.mTotalTimeVisible, prettyDates));
             pw.printPair("lastTimeVisible",
                     formatDateTime(usageStats.mLastTimeVisible, prettyDates));
+            pw.printPair("lastTimeComponentUsed",
+                    formatDateTime(usageStats.mLastTimeComponentUsed, prettyDates));
             pw.printPair("totalTimeFS",
                     formatElapsedTime(usageStats.mTotalTimeForegroundServiceUsed, prettyDates));
             pw.printPair("lastTimeFS",
@@ -1159,6 +1177,14 @@ class UserUsageStatsService {
                 return "DEVICE_SHUTDOWN";
             case Event.DEVICE_STARTUP:
                 return "DEVICE_STARTUP";
+            case Event.USER_UNLOCKED:
+                return "USER_UNLOCKED";
+            case Event.USER_STOPPED:
+                return "USER_STOPPED";
+            case Event.LOCUS_ID_SET:
+                return "LOCUS_ID_SET";
+            case Event.APP_COMPONENT_USED:
+                return "APP_COMPONENT_USED";
             default:
                 return "UNKNOWN_TYPE_" + eventType;
         }
@@ -1166,6 +1192,7 @@ class UserUsageStatsService {
 
     byte[] getBackupPayload(String key){
         checkAndGetTimeLocked();
+        persistActiveStats();
         return mDatabase.getBackupPayload(key);
     }
 

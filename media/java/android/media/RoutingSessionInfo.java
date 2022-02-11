@@ -50,6 +50,7 @@ public final class RoutingSessionInfo implements Parcelable {
 
     final String mId;
     final CharSequence mName;
+    final String mOwnerPackageName;
     final String mClientPackageName;
     @Nullable
     final String mProviderId;
@@ -71,6 +72,7 @@ public final class RoutingSessionInfo implements Parcelable {
 
         mId = builder.mId;
         mName = builder.mName;
+        mOwnerPackageName = builder.mOwnerPackageName;
         mClientPackageName = builder.mClientPackageName;
         mProviderId = builder.mProviderId;
 
@@ -96,6 +98,7 @@ public final class RoutingSessionInfo implements Parcelable {
 
         mId = ensureString(src.readString());
         mName = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(src);
+        mOwnerPackageName = src.readString();
         mClientPackageName = ensureString(src.readString());
         mProviderId = src.readString();
 
@@ -159,6 +162,15 @@ public final class RoutingSessionInfo implements Parcelable {
     }
 
     /**
+     * Gets the package name of the session owner.
+     * @hide
+     */
+    @Nullable
+    public String getOwnerPackageName() {
+        return mOwnerPackageName;
+    }
+
+    /**
      * Gets the client package name of the session
      */
     @NonNull
@@ -208,7 +220,7 @@ public final class RoutingSessionInfo implements Parcelable {
     }
 
     /**
-     * Gets information about how volume is handled on the session.
+     * Gets the information about how volume is handled on the session.
      *
      * @return {@link MediaRoute2Info#PLAYBACK_VOLUME_FIXED} or
      * {@link MediaRoute2Info#PLAYBACK_VOLUME_VARIABLE}.
@@ -263,6 +275,7 @@ public final class RoutingSessionInfo implements Parcelable {
     public void writeToParcel(@NonNull Parcel dest, int flags) {
         dest.writeString(mId);
         dest.writeCharSequence(mName);
+        dest.writeString(mOwnerPackageName);
         dest.writeString(mClientPackageName);
         dest.writeString(mProviderId);
         dest.writeStringList(mSelectedRoutes);
@@ -288,6 +301,7 @@ public final class RoutingSessionInfo implements Parcelable {
         RoutingSessionInfo other = (RoutingSessionInfo) obj;
         return Objects.equals(mId, other.mId)
                 && Objects.equals(mName, other.mName)
+                && Objects.equals(mOwnerPackageName, other.mOwnerPackageName)
                 && Objects.equals(mClientPackageName, other.mClientPackageName)
                 && Objects.equals(mProviderId, other.mProviderId)
                 && Objects.equals(mSelectedRoutes, other.mSelectedRoutes)
@@ -301,7 +315,7 @@ public final class RoutingSessionInfo implements Parcelable {
 
     @Override
     public int hashCode() {
-        return Objects.hash(mId, mName, mClientPackageName, mProviderId,
+        return Objects.hash(mId, mName, mOwnerPackageName, mClientPackageName, mProviderId,
                 mSelectedRoutes, mSelectableRoutes, mDeselectableRoutes, mTransferableRoutes,
                 mVolumeMax, mVolumeHandling, mVolume);
     }
@@ -310,19 +324,20 @@ public final class RoutingSessionInfo implements Parcelable {
     public String toString() {
         StringBuilder result = new StringBuilder()
                 .append("RoutingSessionInfo{ ")
-                .append("sessionId=").append(mId)
-                .append(", name=").append(mName)
+                .append("sessionId=").append(getId())
+                .append(", name=").append(getName())
+                .append(", clientPackageName=").append(getClientPackageName())
                 .append(", selectedRoutes={")
-                .append(String.join(",", mSelectedRoutes))
+                .append(String.join(",", getSelectedRoutes()))
                 .append("}")
                 .append(", selectableRoutes={")
-                .append(String.join(",", mSelectableRoutes))
+                .append(String.join(",", getSelectableRoutes()))
                 .append("}")
                 .append(", deselectableRoutes={")
-                .append(String.join(",", mDeselectableRoutes))
+                .append(String.join(",", getDeselectableRoutes()))
                 .append("}")
                 .append(", transferableRoutes={")
-                .append(String.join(",", mTransferableRoutes))
+                .append(String.join(",", getTransferableRoutes()))
                 .append("}")
                 .append(", volumeHandling=").append(getVolumeHandling())
                 .append(", volumeMax=").append(getVolumeMax())
@@ -356,6 +371,7 @@ public final class RoutingSessionInfo implements Parcelable {
         // TODO: Reorder these (important ones first)
         final String mId;
         CharSequence mName;
+        String mOwnerPackageName;
         String mClientPackageName;
         String mProviderId;
         final List<String> mSelectedRoutes;
@@ -436,6 +452,17 @@ public final class RoutingSessionInfo implements Parcelable {
         @NonNull
         public Builder setName(@Nullable CharSequence name) {
             mName = name;
+            return this;
+        }
+
+        /**
+         * Sets the package name of the session owner. It is expected to be called by the system.
+         *
+         * @hide
+         */
+        @NonNull
+        public Builder setOwnerPackageName(@Nullable String packageName) {
+            mOwnerPackageName = packageName;
             return this;
         }
 

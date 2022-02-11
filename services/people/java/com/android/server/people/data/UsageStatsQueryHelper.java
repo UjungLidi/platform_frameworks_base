@@ -43,17 +43,24 @@ class UsageStatsQueryHelper {
     private final Function<String, PackageData> mPackageDataGetter;
     // Activity name -> Conversation start event (LOCUS_ID_SET)
     private final Map<ComponentName, UsageEvents.Event> mConvoStartEvents = new ArrayMap<>();
+    private final EventListener mEventListener;
     private long mLastEventTimestamp;
+
+    interface EventListener {
+        void onEvent(PackageData packageData, ConversationInfo conversationInfo, Event event);
+    }
 
     /**
      * @param userId The user whose events are to be queried.
      * @param packageDataGetter The function to get {@link PackageData} with a package name.
+     * @param eventListener A listener that listens to the new event.
      */
     UsageStatsQueryHelper(@UserIdInt int userId,
-            Function<String, PackageData> packageDataGetter) {
+            Function<String, PackageData> packageDataGetter, EventListener eventListener) {
         mUsageStatsManagerInternal = getUsageStatsManagerInternal();
         mUserId = userId;
         mPackageDataGetter = packageDataGetter;
+        mEventListener = eventListener;
     }
 
     /**
@@ -137,25 +144,49 @@ class UsageStatsQueryHelper {
     }
 
     /**
-     * Queries {@link UsageStatsManagerInternal} for launch count of apps within {@code
-     * packageNameFilter} between {@code startTime} and {@code endTime}.obfuscateInstantApps
+     * Queries {@link UsageStatsManagerInternal} for usage stats of apps within {@code
+     * packageNameFilter} between {@code startTime} and {@code endTime}.
      *
-     * @return a map which keys are package names and values are app launch counts.
+     * @return a map which keys are package names and values are {@link AppUsageStatsData}.
      */
-    static Map<String, Integer> queryAppLaunchCount(@UserIdInt int userId, long startTime,
+    static Map<String, AppUsageStatsData> queryAppUsageStats(@UserIdInt int userId, long startTime,
             long endTime, Set<String> packageNameFilter) {
         List<UsageStats> stats = getUsageStatsManagerInternal().queryUsageStatsForUser(userId,
                 UsageStatsManager.INTERVAL_BEST, startTime, endTime,
                 /* obfuscateInstantApps= */ false);
-        Map<String, Integer> aggregatedStats = new ArrayMap<>();
+        Map<String, AppUsageStatsData> aggregatedStats = new ArrayMap<>();
+        if (stats == null) {
+            return aggregatedStats;
+        }
         for (UsageStats stat : stats) {
             String packageName = stat.getPackageName();
             if (packageNameFilter.contains(packageName)) {
-                aggregatedStats.put(packageName,
-                        aggregatedStats.getOrDefault(packageName, 0) + stat.getAppLaunchCount());
+                AppUsageStatsData packageStats = aggregatedStats.computeIfAbsent(packageName,
+                        (key) -> new AppUsageStatsData());
+                packageStats.incrementChosenCountBy(sumChooserCounts(stat.mChooserCounts));
+                packageStats.incrementLaunchCountBy(stat.getAppLaunchCount());
             }
         }
         return aggregatedStats;
+    }
+
+    private static int sumChooserCounts(ArrayMap<String, ArrayMap<String, Integer>> chooserCounts) {
+        int sum = 0;
+        if (chooserCounts == null) {
+            return sum;
+        }
+        int chooserCountsSize = chooserCounts.size();
+        for (int i = 0; i < chooserCountsSize; i++) {
+            ArrayMap<String, Integer> counts = chooserCounts.valueAt(i);
+            if (counts == null) {
+                continue;
+            }
+            final int annotationSize = counts.size();
+            for (int j = 0; j < annotationSize; j++) {
+                sum += counts.valueAt(j);
+            }
+        }
+        return sum;
     }
 
     private void onInAppConversationEnded(@NonNull PackageData packageData,
@@ -174,21 +205,27 @@ class UsageStatsQueryHelper {
     }
 
     private void addEventByShortcutId(PackageData packageData, String shortcutId, Event event) {
-        if (packageData.getConversationStore().getConversation(shortcutId) == null) {
+        ConversationInfo conversationInfo =
+                packageData.getConversationStore().getConversation(shortcutId);
+        if (conversationInfo == null) {
             return;
         }
         EventHistoryImpl eventHistory = packageData.getEventStore().getOrCreateEventHistory(
                 EventStore.CATEGORY_SHORTCUT_BASED, shortcutId);
         eventHistory.addEvent(event);
+        mEventListener.onEvent(packageData, conversationInfo, event);
     }
 
     private void addEventByLocusId(PackageData packageData, LocusId locusId, Event event) {
-        if (packageData.getConversationStore().getConversationByLocusId(locusId) == null) {
+        ConversationInfo conversationInfo =
+                packageData.getConversationStore().getConversationByLocusId(locusId);
+        if (conversationInfo == null) {
             return;
         }
         EventHistoryImpl eventHistory = packageData.getEventStore().getOrCreateEventHistory(
                 EventStore.CATEGORY_LOCUS_ID_BASED, locusId.getId());
         eventHistory.addEvent(event);
+        mEventListener.onEvent(packageData, conversationInfo, event);
     }
 
     private static UsageStatsManagerInternal getUsageStatsManagerInternal() {

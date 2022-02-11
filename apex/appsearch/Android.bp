@@ -12,15 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+package {
+    // See: http://go/android-license-faq
+    // A large-scale-change added 'default_applicable_licenses' to import
+    // all of the 'license_kinds' from "frameworks_base_license"
+    // to get the below license kinds:
+    //   SPDX-license-identifier-Apache-2.0
+    default_applicable_licenses: ["frameworks_base_license"],
+}
+
 apex {
     name: "com.android.appsearch",
     manifest: "apex_manifest.json",
-    java_libs: [
-        "framework-appsearch",
-        "service-appsearch",
-    ],
+    bootclasspath_fragments: ["com.android.appsearch-bootclasspath-fragment"],
+    systemserverclasspath_fragments: ["com.android.appsearch-systemserverclasspath-fragment"],
     key: "com.android.appsearch.key",
     certificate: ":com.android.appsearch.certificate",
+    updatable: false,
+    jni_libs: ["libicing"],
+    generate_hashtree: false,
 }
 
 apex_key {
@@ -34,4 +44,32 @@ android_app_certificate {
     // This will use com.android.appsearch.x509.pem (the cert) and
     // com.android.appsearch.pk8 (the private key)
     certificate: "com.android.appsearch",
+}
+
+// Encapsulate the contributions made by the com.android.appsearch to the bootclasspath.
+bootclasspath_fragment {
+    name: "com.android.appsearch-bootclasspath-fragment",
+    contents: ["framework-appsearch"],
+    apex_available: ["com.android.appsearch"],
+
+    // The bootclasspath_fragments that provide APIs on which this depends.
+    fragments: [
+        {
+            apex: "com.android.art",
+            module: "art-bootclasspath-fragment",
+        },
+    ],
+
+    // Additional stubs libraries that this fragment's contents use which are
+    // not provided by another bootclasspath_fragment.
+    additional_stubs: [
+        "android-non-updatable",
+    ],
+}
+
+// Encapsulate the contributions made by the com.android.appsearch to the systemserverclasspath.
+systemserverclasspath_fragment {
+    name: "com.android.appsearch-systemserverclasspath-fragment",
+    contents: ["service-appsearch"],
+    apex_available: ["com.android.appsearch"],
 }

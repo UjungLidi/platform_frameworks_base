@@ -43,11 +43,13 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.graphics.Bitmap;
+import android.hardware.power.Boost;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.PowerManagerInternal;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.UserHandle;
@@ -62,20 +64,29 @@ import android.view.IWindowManager;
 import com.android.internal.app.AssistUtils;
 import com.android.internal.app.IVoiceInteractionSessionShowCallback;
 import com.android.internal.app.IVoiceInteractor;
+import com.android.server.FgThread;
 import com.android.server.LocalServices;
 import com.android.server.am.AssistDataRequester;
 import com.android.server.am.AssistDataRequester.AssistDataRequesterCallbacks;
 import com.android.server.statusbar.StatusBarManagerInternal;
 import com.android.server.uri.UriGrantsManagerInternal;
+import com.android.server.wm.ActivityAssistInfo;
 
 import java.io.PrintWriter;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
 final class VoiceInteractionSessionConnection implements ServiceConnection,
         AssistDataRequesterCallbacks {
 
-    final static String TAG = "VoiceInteractionServiceManager";
+    static final String TAG = "VoiceInteractionServiceManager";
+    static final int POWER_BOOST_TIMEOUT_MS = Integer.parseInt(
+            System.getProperty("vendor.powerhal.interaction.max", "200"));
+    static final int BOOST_TIMEOUT_MS = 300;
+    // TODO: To avoid ap doesn't call hide, only 10 secs for now, need a better way to manage it
+    //  in the future.
+    static final int MAX_POWER_BOOST_TIMEOUT = 10_000;
 
     final IBinder mToken = new Binder();
     final Object mLock;
@@ -101,7 +112,47 @@ final class VoiceInteractionSessionConnection implements ServiceConnection,
     IVoiceInteractionSession mSession;
     IVoiceInteractor mInteractor;
     ArrayList<IVoiceInteractionSessionShowCallback> mPendingShowCallbacks = new ArrayList<>();
+    private List<ActivityAssistInfo> mPendingHandleAssistWithoutData = new ArrayList<>();
     AssistDataRequester mAssistDataRequester;
+    private final PowerManagerInternal mPowerManagerInternal;
+    private PowerBoostSetter mSetPowerBoostRunnable;
+    private final Handler mFgHandler;
+
+    class PowerBoostSetter implements Runnable {
+
+        private boolean mCanceled;
+        private final Instant mExpiryTime;
+
+        PowerBoostSetter(Instant expiryTime) {
+            mExpiryTime = expiryTime;
+        }
+
+        @Override
+        public void run() {
+            synchronized (mLock) {
+                if (mCanceled) {
+                    return;
+                }
+                // To avoid voice interaction service does not call hide to cancel setting
+                // power boost. We will cancel set boost when reaching the max timeout.
+                if (Instant.now().isBefore(mExpiryTime)) {
+                    mPowerManagerInternal.setPowerBoost(Boost.INTERACTION, BOOST_TIMEOUT_MS);
+                    if (mSetPowerBoostRunnable != null) {
+                        mFgHandler.postDelayed(mSetPowerBoostRunnable, POWER_BOOST_TIMEOUT_MS);
+                    }
+                } else {
+                    Slog.w(TAG, "Reset power boost INTERACTION because reaching max timeout.");
+                    mPowerManagerInternal.setPowerBoost(Boost.INTERACTION, /* durationMs */ -1);
+                }
+            }
+        }
+
+        void cancel() {
+            synchronized (mLock) {
+                mCanceled =  true;
+            }
+        }
+    }
 
     IVoiceInteractionSessionShowCallback mShowCallback =
             new IVoiceInteractionSessionShowCallback.Stub() {
@@ -150,7 +201,9 @@ final class VoiceInteractionSessionConnection implements ServiceConnection,
         mUgmInternal = LocalServices.getService(UriGrantsManagerInternal.class);
         mIWindowManager = IWindowManager.Stub.asInterface(
                 ServiceManager.getService(Context.WINDOW_SERVICE));
+        mPowerManagerInternal = LocalServices.getService(PowerManagerInternal.class);
         mAppOps = context.getSystemService(AppOpsManager.class);
+        mFgHandler = FgThread.getHandler();
         mAssistDataRequester = new AssistDataRequester(mContext, mIWindowManager,
                 (AppOpsManager) mContext.getSystemService(Context.APP_OPS_SERVICE),
                 this, mLock, OP_ASSIST_STRUCTURE, OP_ASSIST_SCREENSHOT);
@@ -165,7 +218,8 @@ final class VoiceInteractionSessionConnection implements ServiceConnection,
                         | Context.BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS, new UserHandle(mUser));
         if (mBound) {
             try {
-                mIWindowManager.addWindowToken(mToken, TYPE_VOICE_INTERACTION, DEFAULT_DISPLAY);
+                mIWindowManager.addWindowToken(mToken, TYPE_VOICE_INTERACTION, DEFAULT_DISPLAY,
+                        null /* options */);
             } catch (RemoteException e) {
                 Slog.w(TAG, "Failed adding window token", e);
             }
@@ -189,7 +243,8 @@ final class VoiceInteractionSessionConnection implements ServiceConnection,
     }
 
     public boolean showLocked(Bundle args, int flags, int disabledContext,
-            IVoiceInteractionSessionShowCallback showCallback, List<IBinder> topActivities) {
+            IVoiceInteractionSessionShowCallback showCallback,
+            List<ActivityAssistInfo> topActivities) {
         if (mBound) {
             if (!mFullyBound) {
                 mFullyBound = mContext.bindServiceAsUser(mBindIntent, mFullConnection,
@@ -204,17 +259,29 @@ final class VoiceInteractionSessionConnection implements ServiceConnection,
             mShowFlags = flags;
 
             disabledContext |= getUserDisabledShowContextLocked();
-            mAssistDataRequester.requestAssistData(topActivities,
-                    (flags & VoiceInteractionSession.SHOW_WITH_ASSIST) != 0,
-                    (flags & VoiceInteractionSession.SHOW_WITH_SCREENSHOT) != 0,
-                    (disabledContext & VoiceInteractionSession.SHOW_WITH_ASSIST) == 0,
-                    (disabledContext & VoiceInteractionSession.SHOW_WITH_SCREENSHOT) == 0,
-                    mCallingUid, mSessionComponentName.getPackageName());
 
-            boolean needDisclosure = mAssistDataRequester.getPendingDataCount() > 0
-                    || mAssistDataRequester.getPendingScreenshotCount() > 0;
-            if (needDisclosure && AssistUtils.shouldDisclose(mContext, mSessionComponentName)) {
-                mHandler.post(mShowAssistDisclosureRunnable);
+            boolean fetchData = (flags & VoiceInteractionSession.SHOW_WITH_ASSIST) != 0;
+            boolean fetchScreenshot = (flags & VoiceInteractionSession.SHOW_WITH_SCREENSHOT) != 0;
+            boolean assistDataRequestNeeded = fetchData || fetchScreenshot;
+
+            if (assistDataRequestNeeded) {
+                int topActivitiesCount = topActivities.size();
+                final ArrayList<IBinder> topActivitiesToken = new ArrayList<>(topActivitiesCount);
+                for (int i = 0; i < topActivitiesCount; i++) {
+                    topActivitiesToken.add(topActivities.get(i).getActivityToken());
+                }
+                mAssistDataRequester.requestAssistData(topActivitiesToken,
+                        fetchData,
+                        fetchScreenshot,
+                        (disabledContext & VoiceInteractionSession.SHOW_WITH_ASSIST) == 0,
+                        (disabledContext & VoiceInteractionSession.SHOW_WITH_SCREENSHOT) == 0,
+                        mCallingUid, mSessionComponentName.getPackageName());
+
+                boolean needDisclosure = mAssistDataRequester.getPendingDataCount() > 0
+                        || mAssistDataRequester.getPendingScreenshotCount() > 0;
+                if (needDisclosure && AssistUtils.shouldDisclose(mContext, mSessionComponentName)) {
+                    mHandler.post(mShowAssistDisclosureRunnable);
+                }
             }
             if (mSession != null) {
                 try {
@@ -223,10 +290,29 @@ final class VoiceInteractionSessionConnection implements ServiceConnection,
                     mShowFlags = 0;
                 } catch (RemoteException e) {
                 }
-                mAssistDataRequester.processPendingAssistData();
-            } else if (showCallback != null) {
-                mPendingShowCallbacks.add(showCallback);
+                if (assistDataRequestNeeded) {
+                    mAssistDataRequester.processPendingAssistData();
+                } else {
+                    doHandleAssistWithoutData(topActivities);
+                }
+            } else {
+                if (showCallback != null) {
+                    mPendingShowCallbacks.add(showCallback);
+                }
+                if (!assistDataRequestNeeded) {
+                    // If no data are required we are not passing trough mAssistDataRequester. As
+                    // a consequence, when a new session is delivered it is needed to process those
+                    // requests manually.
+                    mPendingHandleAssistWithoutData = topActivities;
+                }
             }
+            // remove if already existing one.
+            if (mSetPowerBoostRunnable != null) {
+                mSetPowerBoostRunnable.cancel();
+            }
+            mSetPowerBoostRunnable = new PowerBoostSetter(
+                    Instant.now().plusMillis(MAX_POWER_BOOST_TIMEOUT));
+            mFgHandler.post(mSetPowerBoostRunnable);
             mCallback.onSessionShown(this);
             return true;
         }
@@ -237,6 +323,28 @@ final class VoiceInteractionSessionConnection implements ServiceConnection,
             }
         }
         return false;
+    }
+
+    private void doHandleAssistWithoutData(List<ActivityAssistInfo> topActivities) {
+        final int activityCount = topActivities.size();
+        for (int i = 0; i < activityCount; i++) {
+            final ActivityAssistInfo topActivity = topActivities.get(i);
+            final IBinder assistToken = topActivity.getAssistToken();
+            final int taskId = topActivity.getTaskId();
+            final int activityIndex = i;
+            try {
+                mSession.handleAssist(
+                        taskId,
+                        assistToken,
+                        /* assistData = */ null,
+                        /* assistStructure = */ null,
+                        /* assistContent = */ null,
+                        activityIndex,
+                        activityCount);
+            } catch (RemoteException e) {
+                // Ignore
+            }
+        }
     }
 
     @Override
@@ -309,7 +417,7 @@ final class VoiceInteractionSessionConnection implements ServiceConnection,
         if (!"content".equals(uri.getScheme())) {
             return;
         }
-        long ident = Binder.clearCallingIdentity();
+        final long ident = Binder.clearCallingIdentity();
         try {
             // This will throw SecurityException for us.
             mUgmInternal.checkGrantUriPermission(srcUid, null,
@@ -370,6 +478,12 @@ final class VoiceInteractionSessionConnection implements ServiceConnection,
                     } catch (RemoteException e) {
                     }
                 }
+                if (mSetPowerBoostRunnable != null) {
+                    mSetPowerBoostRunnable.cancel();
+                    mSetPowerBoostRunnable = null;
+                }
+                // A negative value indicates canceling previous boost.
+                mPowerManagerInternal.setPowerBoost(Boost.INTERACTION, /* durationMs */ -1);
                 mCallback.onSessionHidden(this);
             }
             if (mFullyBound) {
@@ -427,6 +541,10 @@ final class VoiceInteractionSessionConnection implements ServiceConnection,
             } catch (RemoteException e) {
             }
             mAssistDataRequester.processPendingAssistData();
+            if (!mPendingHandleAssistWithoutData.isEmpty()) {
+                doHandleAssistWithoutData(mPendingHandleAssistWithoutData);
+                mPendingHandleAssistWithoutData.clear();
+            }
         }
         return true;
     }

@@ -598,7 +598,8 @@ final class WifiDisplayAdapter extends DisplayAdapter {
         public WifiDisplayDevice(IBinder displayToken, String name,
                 int width, int height, float refreshRate, int flags, String address,
                 Surface surface) {
-            super(WifiDisplayAdapter.this, displayToken, DISPLAY_NAME_PREFIX + address);
+            super(WifiDisplayAdapter.this, displayToken, DISPLAY_NAME_PREFIX + address,
+                    getContext());
             mName = name;
             mWidth = width;
             mHeight = height;
@@ -651,6 +652,8 @@ final class WifiDisplayAdapter extends DisplayAdapter {
                 mInfo.address = mAddress;
                 mInfo.touch = DisplayDeviceInfo.TOUCH_EXTERNAL;
                 mInfo.setAssumedDensityForExternalDisplay(mWidth, mHeight);
+                // The display is trusted since it is created by system.
+                mInfo.flags |= DisplayDeviceInfo.FLAG_TRUSTED;
             }
             return mInfo;
         }

@@ -17,15 +17,21 @@ package com.android.settingslib.media;
 
 import static android.media.MediaRoute2Info.TYPE_BLUETOOTH_A2DP;
 import static android.media.MediaRoute2Info.TYPE_BUILTIN_SPEAKER;
+import static android.media.MediaRoute2Info.TYPE_DOCK;
 import static android.media.MediaRoute2Info.TYPE_GROUP;
+import static android.media.MediaRoute2Info.TYPE_HDMI;
 import static android.media.MediaRoute2Info.TYPE_HEARING_AID;
 import static android.media.MediaRoute2Info.TYPE_REMOTE_SPEAKER;
 import static android.media.MediaRoute2Info.TYPE_REMOTE_TV;
 import static android.media.MediaRoute2Info.TYPE_UNKNOWN;
+import static android.media.MediaRoute2Info.TYPE_USB_ACCESSORY;
+import static android.media.MediaRoute2Info.TYPE_USB_DEVICE;
+import static android.media.MediaRoute2Info.TYPE_USB_HEADSET;
 import static android.media.MediaRoute2Info.TYPE_WIRED_HEADPHONES;
 import static android.media.MediaRoute2Info.TYPE_WIRED_HEADSET;
 import static android.media.MediaRoute2ProviderService.REASON_UNKNOWN_ERROR;
 
+import android.annotation.TargetApi;
 import android.app.Notification;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
@@ -33,8 +39,11 @@ import android.content.Context;
 import android.media.MediaRoute2Info;
 import android.media.MediaRouter2Manager;
 import android.media.RoutingSessionInfo;
+import android.os.Build;
 import android.text.TextUtils;
 import android.util.Log;
+
+import androidx.annotation.RequiresApi;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.settingslib.bluetooth.CachedBluetoothDevice;
@@ -48,10 +57,11 @@ import java.util.concurrent.Executors;
 /**
  * InfoMediaManager provide interface to get InfoMediaDevice list.
  */
+@RequiresApi(Build.VERSION_CODES.R)
 public class InfoMediaManager extends MediaManager {
 
     private static final String TAG = "InfoMediaManager";
-    private static final boolean DEBUG = false;
+    private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
     @VisibleForTesting
     final RouterManagerCallback mMediaRouterCallback = new RouterManagerCallback();
     @VisibleForTesting
@@ -60,6 +70,7 @@ public class InfoMediaManager extends MediaManager {
     MediaRouter2Manager mRouterManager;
     @VisibleForTesting
     String mPackageName;
+    private final boolean mVolumeAdjustmentForRemoteGroupSessions;
 
     private MediaDevice mCurrentConnectedDevice;
     private LocalBluetoothManager mBluetoothManager;
@@ -73,18 +84,23 @@ public class InfoMediaManager extends MediaManager {
         if (!TextUtils.isEmpty(packageName)) {
             mPackageName = packageName;
         }
+
+        mVolumeAdjustmentForRemoteGroupSessions = context.getResources().getBoolean(
+                com.android.internal.R.bool.config_volumeAdjustmentForRemoteGroupSessions);
     }
 
     @Override
     public void startScan() {
         mMediaDevices.clear();
         mRouterManager.registerCallback(mExecutor, mMediaRouterCallback);
+        mRouterManager.startScan();
         refreshDevices();
     }
 
     @Override
     public void stopScan() {
         mRouterManager.unregisterCallback(mMediaRouterCallback);
+        mRouterManager.stopScan();
     }
 
     /**
@@ -103,10 +119,8 @@ public class InfoMediaManager extends MediaManager {
         final List<RoutingSessionInfo> infos = mRouterManager.getActiveSessions();
         if (infos.size() > 0) {
             final RoutingSessionInfo info = infos.get(0);
-            final MediaRouter2Manager.RoutingController controller =
-                    mRouterManager.getControllerForSession(info);
+            mRouterManager.transfer(info, device.mRouteInfo);
 
-            controller.transferToRoute(device.mRouteInfo);
             isConnected = true;
         }
         return isConnected;
@@ -126,7 +140,7 @@ public class InfoMediaManager extends MediaManager {
 
         final RoutingSessionInfo info = getRoutingSessionInfo();
         if (info != null && info.getSelectableRoutes().contains(device.mRouteInfo.getId())) {
-            mRouterManager.getControllerForSession(info).selectRoute(device.mRouteInfo);
+            mRouterManager.selectRoute(info, device.mRouteInfo);
             return true;
         }
 
@@ -137,9 +151,16 @@ public class InfoMediaManager extends MediaManager {
     }
 
     private RoutingSessionInfo getRoutingSessionInfo() {
-        final List<RoutingSessionInfo> sessionInfos =
-                mRouterManager.getRoutingSessions(mPackageName);
+        return getRoutingSessionInfo(mPackageName);
+    }
 
+    private RoutingSessionInfo getRoutingSessionInfo(String packageName) {
+        final List<RoutingSessionInfo> sessionInfos =
+                mRouterManager.getRoutingSessions(packageName);
+
+        if (sessionInfos == null || sessionInfos.isEmpty()) {
+            return null;
+        }
         return sessionInfos.get(sessionInfos.size() - 1);
     }
 
@@ -157,7 +178,7 @@ public class InfoMediaManager extends MediaManager {
 
         final RoutingSessionInfo info = getRoutingSessionInfo();
         if (info != null && info.getSelectedRoutes().contains(device.mRouteInfo.getId())) {
-            mRouterManager.getControllerForSession(info).deselectRoute(device.mRouteInfo);
+            mRouterManager.deselectRoute(info, device.mRouteInfo);
             return true;
         }
 
@@ -202,8 +223,7 @@ public class InfoMediaManager extends MediaManager {
 
         final RoutingSessionInfo info = getRoutingSessionInfo();
         if (info != null) {
-            for (MediaRoute2Info route : mRouterManager.getControllerForSession(info)
-                    .getSelectableRoutes()) {
+            for (MediaRoute2Info route : mRouterManager.getSelectableRoutes(info)) {
                 deviceList.add(new InfoMediaDevice(mContext, mRouterManager,
                         route, mPackageName));
             }
@@ -211,6 +231,33 @@ public class InfoMediaManager extends MediaManager {
         }
 
         Log.w(TAG, "getSelectableMediaDevice() cannot found selectable MediaDevice from : "
+                + mPackageName);
+
+        return deviceList;
+    }
+
+    /**
+     * Get the MediaDevice list that can be removed from current media session.
+     *
+     * @return list of MediaDevice
+     */
+    List<MediaDevice> getDeselectableMediaDevice() {
+        final List<MediaDevice> deviceList = new ArrayList<>();
+        if (TextUtils.isEmpty(mPackageName)) {
+            Log.d(TAG, "getDeselectableMediaDevice() package name is null or empty!");
+            return deviceList;
+        }
+
+        final RoutingSessionInfo info = getRoutingSessionInfo();
+        if (info != null) {
+            for (MediaRoute2Info route : mRouterManager.getDeselectableRoutes(info)) {
+                deviceList.add(new InfoMediaDevice(mContext, mRouterManager,
+                        route, mPackageName));
+                Log.d(TAG, route.getName() + " is deselectable for " + mPackageName);
+            }
+            return deviceList;
+        }
+        Log.d(TAG, "getDeselectableMediaDevice() cannot found deselectable MediaDevice from : "
                 + mPackageName);
 
         return deviceList;
@@ -230,8 +277,7 @@ public class InfoMediaManager extends MediaManager {
 
         final RoutingSessionInfo info = getRoutingSessionInfo();
         if (info != null) {
-            for (MediaRoute2Info route : mRouterManager.getControllerForSession(info)
-                    .getSelectedRoutes()) {
+            for (MediaRoute2Info route : mRouterManager.getSelectedRoutes(info)) {
                 deviceList.add(new InfoMediaDevice(mContext, mRouterManager,
                         route, mPackageName));
             }
@@ -242,6 +288,15 @@ public class InfoMediaManager extends MediaManager {
                 + mPackageName);
 
         return deviceList;
+    }
+
+    void adjustSessionVolume(RoutingSessionInfo info, int volume) {
+        if (info == null) {
+            Log.w(TAG, "Unable to adjust session volume. RoutingSessionInfo is empty");
+            return;
+        }
+
+        mRouterManager.setSessionVolume(info, volume);
     }
 
     /**
@@ -324,6 +379,23 @@ public class InfoMediaManager extends MediaManager {
         return null;
     }
 
+    boolean shouldDisableMediaOutput(String packageName) {
+        if (TextUtils.isEmpty(packageName)) {
+            Log.w(TAG, "shouldDisableMediaOutput() package name is null or empty!");
+            return true;
+        }
+
+        // Disable when there is no transferable route
+        return mRouterManager.getTransferableRoutes(packageName).isEmpty();
+    }
+
+    @TargetApi(Build.VERSION_CODES.R)
+    boolean shouldEnableVolumeSeekBar(RoutingSessionInfo sessionInfo) {
+        return sessionInfo.isSystemSession() // System sessions are not remote
+                || mVolumeAdjustmentForRemoteGroupSessions
+                || sessionInfo.getSelectedRoutes().size() <= 1;
+    }
+
     private void refreshDevices() {
         mMediaDevices.clear();
         mCurrentConnectedDevice = null;
@@ -339,7 +411,7 @@ public class InfoMediaManager extends MediaManager {
         for (MediaRoute2Info route : mRouterManager.getAllRoutes()) {
             if (DEBUG) {
                 Log.d(TAG, "buildAllRoutes() route : " + route.getName() + ", volume : "
-                        + route.getVolume());
+                        + route.getVolume() + ", type : " + route.getType());
             }
             if (route.isSystemRoute()) {
                 addMediaDevice(route);
@@ -347,16 +419,45 @@ public class InfoMediaManager extends MediaManager {
         }
     }
 
+    List<RoutingSessionInfo> getActiveMediaSession() {
+        return mRouterManager.getActiveSessions();
+    }
+
     private void buildAvailableRoutes() {
-        for (MediaRoute2Info route : mRouterManager.getAvailableRoutes(mPackageName)) {
+        for (MediaRoute2Info route : getAvailableRoutes(mPackageName)) {
             if (DEBUG) {
-                Log.d(TAG, "buildAvailableRoutes() route : " + route.getName());
+                Log.d(TAG, "buildAvailableRoutes() route : " + route.getName() + ", volume : "
+                        + route.getVolume() + ", type : " + route.getType());
             }
             addMediaDevice(route);
         }
     }
 
-    private void addMediaDevice(MediaRoute2Info route) {
+    private List<MediaRoute2Info> getAvailableRoutes(String packageName) {
+        final List<MediaRoute2Info> infos = new ArrayList<>();
+        RoutingSessionInfo routingSessionInfo = getRoutingSessionInfo(packageName);
+        if (routingSessionInfo != null) {
+            infos.addAll(mRouterManager.getSelectedRoutes(routingSessionInfo));
+        }
+        final List<MediaRoute2Info> transferableRoutes =
+                mRouterManager.getTransferableRoutes(packageName);
+        for (MediaRoute2Info transferableRoute : transferableRoutes) {
+            boolean alreadyAdded = false;
+            for (MediaRoute2Info mediaRoute2Info : infos) {
+                if (TextUtils.equals(transferableRoute.getId(), mediaRoute2Info.getId())) {
+                    alreadyAdded = true;
+                    break;
+                }
+            }
+            if (!alreadyAdded) {
+                infos.add(transferableRoute);
+            }
+        }
+        return infos;
+    }
+
+    @VisibleForTesting
+    void addMediaDevice(MediaRoute2Info route) {
         final int deviceType = route.getType();
         MediaDevice mediaDevice = null;
         switch (deviceType) {
@@ -374,6 +475,11 @@ public class InfoMediaManager extends MediaManager {
                 }
                 break;
             case TYPE_BUILTIN_SPEAKER:
+            case TYPE_USB_DEVICE:
+            case TYPE_USB_HEADSET:
+            case TYPE_USB_ACCESSORY:
+            case TYPE_DOCK:
+            case TYPE_HDMI:
             case TYPE_WIRED_HEADSET:
             case TYPE_WIRED_HEADPHONES:
                 mediaDevice =
@@ -382,11 +488,13 @@ public class InfoMediaManager extends MediaManager {
             case TYPE_HEARING_AID:
             case TYPE_BLUETOOTH_A2DP:
                 final BluetoothDevice device =
-                        BluetoothAdapter.getDefaultAdapter().getRemoteDevice(route.getOriginalId());
+                        BluetoothAdapter.getDefaultAdapter().getRemoteDevice(route.getAddress());
                 final CachedBluetoothDevice cachedDevice =
                         mBluetoothManager.getCachedDeviceManager().findDevice(device);
-                mediaDevice = new BluetoothMediaDevice(mContext, cachedDevice, mRouterManager,
-                        route, mPackageName);
+                if (cachedDevice != null) {
+                    mediaDevice = new BluetoothMediaDevice(mContext, cachedDevice, mRouterManager,
+                            route, mPackageName);
+                }
                 break;
             default:
                 Log.w(TAG, "addMediaDevice() unknown device type : " + deviceType);
@@ -399,7 +507,7 @@ public class InfoMediaManager extends MediaManager {
         }
     }
 
-    class RouterManagerCallback extends MediaRouter2Manager.Callback {
+    class RouterManagerCallback implements MediaRouter2Manager.Callback {
 
         @Override
         public void onRoutesAdded(List<MediaRoute2Info> routes) {
@@ -407,7 +515,7 @@ public class InfoMediaManager extends MediaManager {
         }
 
         @Override
-        public void onControlCategoriesChanged(String packageName, List<String> controlCategories) {
+        public void onPreferredFeaturesChanged(String packageName, List<String> preferredFeatures) {
             if (TextUtils.equals(mPackageName, packageName)) {
                 refreshDevices();
             }
@@ -451,6 +559,11 @@ public class InfoMediaManager extends MediaManager {
         @Override
         public void onRequestFailed(int reason) {
             dispatchOnRequestFailed(reason);
+        }
+
+        @Override
+        public void onSessionUpdated(RoutingSessionInfo sessionInfo) {
+            dispatchDataChanged();
         }
     }
 }

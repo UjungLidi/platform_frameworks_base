@@ -3,13 +3,10 @@ package com.android.server.usage;
 import android.annotation.NonNull;
 import android.annotation.UserIdInt;
 import android.app.usage.AppStandbyInfo;
-import android.app.usage.UsageEvents;
 import android.app.usage.UsageStatsManager.StandbyBuckets;
 import android.app.usage.UsageStatsManager.SystemForcedReasons;
 import android.content.Context;
-import android.os.Looper;
-
-import com.android.internal.util.IndentingPrintWriter;
+import android.util.IndentingPrintWriter;
 
 import java.io.PrintWriter;
 import java.lang.reflect.Constructor;
@@ -22,13 +19,12 @@ public interface AppStandbyInternal {
      * TODO AppStandbyController should probably be a binder service, and then we shouldn't need
      * this method.
      */
-    static AppStandbyInternal newAppStandbyController(ClassLoader loader, Context context,
-            Looper looper) {
+    static AppStandbyInternal newAppStandbyController(ClassLoader loader, Context context) {
         try {
             final Class<?> clazz = Class.forName("com.android.server.usage.AppStandbyController",
                     true, loader);
-            final Constructor<?> ctor =  clazz.getConstructor(Context.class, Looper.class);
-            return (AppStandbyInternal) ctor.newInstance(context, looper);
+            final Constructor<?> ctor =  clazz.getConstructor(Context.class);
+            return (AppStandbyInternal) ctor.newInstance(context);
         } catch (NoSuchMethodException | InstantiationException
                 | IllegalAccessException | InvocationTargetException | ClassNotFoundException e) {
             throw new RuntimeException("Unable to instantiate AppStandbyController!", e);
@@ -43,6 +39,14 @@ public interface AppStandbyInternal {
         /** Callback to inform listeners that the idle state has changed to a new bucket. */
         public abstract void onAppIdleStateChanged(String packageName, @UserIdInt int userId,
                 boolean idle, int bucket, int reason);
+
+        /**
+         * Callback to inform listeners that the parole state has changed. This means apps are
+         * allowed to do work even if they're idle or in a low bucket.
+         */
+        public void onParoleStateChanged(boolean isParoleOn) {
+            // No-op by default
+        }
 
         /**
          * Optional callback to inform the listener that the app has transitioned into
@@ -62,8 +66,6 @@ public interface AppStandbyInternal {
      * scheduling a series of repeating checkIdleStates each time we fired off one.
      */
     void postOneTimeCheckIdleStates();
-
-    void reportEvent(UsageEvents.Event event, long elapsedRealtime, int userId);
 
     void setLastJobRunTime(String packageName, int userId, long elapsedRealtime);
 
@@ -91,6 +93,11 @@ public interface AppStandbyInternal {
      */
     boolean isAppIdleFiltered(String packageName, int appId, int userId,
             long elapsedRealtime);
+
+    /**
+     * @return true if currently app idle parole mode is on.
+     */
+    boolean isInParole();
 
     int[] getIdleUidsForUser(int userId);
 
@@ -129,6 +136,23 @@ public interface AppStandbyInternal {
     void restrictApp(@NonNull String packageName, int userId,
             @SystemForcedReasons int restrictReason);
 
+    /**
+     * Put the specified app in the
+     * {@link android.app.usage.UsageStatsManager#STANDBY_BUCKET_RESTRICTED}
+     * bucket. If it has been used by the user recently, the restriction will delayed
+     * until an appropriate time. This should only be used in cases where
+     * {@link #restrictApp(String, int, int)} is not sufficient.
+     *
+     * @param mainReason     The main reason for restricting the app. Must be either {@link
+     *                       android.app.usage.UsageStatsManager#REASON_MAIN_FORCED_BY_SYSTEM} or
+     *                       {@link android.app.usage.UsageStatsManager#REASON_MAIN_FORCED_BY_USER}.
+     *                       Calls providing any other value will be ignored.
+     * @param restrictReason The restrictReason for restricting the app. Should be one of the
+     *                       UsageStatsManager.REASON_SUB_FORCED_SYSTEM_FLAG_* reasons.
+     */
+    void restrictApp(@NonNull String packageName, int userId, int mainReason,
+            @SystemForcedReasons int restrictReason);
+
     void addActiveDeviceAdmin(String adminPkg, int userId);
 
     void setActiveAdminApps(Set<String> adminPkgs, int userId);
@@ -137,9 +161,7 @@ public interface AppStandbyInternal {
 
     void clearCarrierPrivilegedApps();
 
-    void flushToDisk(int userId);
-
-    void flushDurationsToDisk();
+    void flushToDisk();
 
     void initializeDefaultsForSystemApps(int userId);
 
@@ -149,7 +171,7 @@ public interface AppStandbyInternal {
 
     void postReportExemptedSyncStart(String packageName, int userId);
 
-    void dumpUser(IndentingPrintWriter idpw, int userId, List<String> pkgs);
+    void dumpUsers(IndentingPrintWriter idpw, int[] userIds, List<String> pkgs);
 
     void dumpState(String[] args, PrintWriter pw);
 

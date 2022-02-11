@@ -21,6 +21,8 @@ import android.os.IBinder;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 
+import com.android.internal.util.Preconditions;
+
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
@@ -43,6 +45,10 @@ import java.util.concurrent.TimeUnit;
  * empty list if there no backend service in the platform.  Use the
  * isPresent() method to determine whether a Geocoder implementation
  * exists.
+ *
+ * <p class="note"><strong>Warning:</strong> Geocoding services may provide no guarantees on
+ * availability or accuracy. Results are a best guess, and are not guaranteed to be meaningful or
+ * correct. Do not use this API for any safety-critical or regulatory compliance purpose.
  */
 public final class Geocoder {
 
@@ -77,12 +83,9 @@ public final class Geocoder {
      * @throws NullPointerException if Locale is null
      */
     public Geocoder(Context context, Locale locale) {
-        if (locale == null) {
-            throw new NullPointerException("locale == null");
-        }
         mParams = new GeocoderParams(context, locale);
-        IBinder b = ServiceManager.getService(Context.LOCATION_SERVICE);
-        mService = ILocationManager.Stub.asInterface(b);
+        mService = ILocationManager.Stub.asInterface(
+                ServiceManager.getService(Context.LOCATION_SERVICE));
     }
 
     /**
@@ -96,15 +99,15 @@ public final class Geocoder {
     }
 
     /**
-     * Returns an array of Addresses that are known to describe the
-     * area immediately surrounding the given latitude and longitude.
-     * The returned addresses will be localized for the locale
-     * provided to this class's constructor.
+     * Returns an array of Addresses that attempt to describe the area immediately surrounding the
+     * given latitude and longitude. The returned addresses should be localized for the locale
+     * provided to this class's constructor. Results may be obtained by means of a network lookup
+     * and this method may take some time to return, and so should not be called on the main thread.
      *
-     * <p> The returned values may be obtained by means of a network lookup.
-     * The results are a best guess and are not guaranteed to be meaningful or
-     * correct. It may be useful to call this method from a thread separate from your
-     * primary UI thread.
+     * <p class="note"><strong>Warning:</strong> Geocoding services may provide no guarantees on
+     * availability or accuracy. Results are a best guess, and are not guaranteed to be meaningful
+     * or correct. Do <b>NOT</b> use this API for any safety-critical or regulatory compliance
+     * purposes.
      *
      * @param latitude the latitude a point for the search
      * @param longitude the longitude a point for the search
@@ -121,13 +124,10 @@ public final class Geocoder {
      * I/O problem occurs
      */
     public List<Address> getFromLocation(double latitude, double longitude, int maxResults)
-        throws IOException {
-        if (latitude < -90.0 || latitude > 90.0) {
-            throw new IllegalArgumentException("latitude == " + latitude);
-        }
-        if (longitude < -180.0 || longitude > 180.0) {
-            throw new IllegalArgumentException("longitude == " + longitude);
-        }
+            throws IOException {
+        Preconditions.checkArgumentInRange(latitude, -90.0, 90.0, "latitude");
+        Preconditions.checkArgumentInRange(longitude, -180.0, 180.0, "longitude");
+
         try {
             GeocodeListener listener = new GeocodeListener();
             mService.getFromLocation(latitude, longitude, maxResults, mParams, listener);
@@ -138,17 +138,17 @@ public final class Geocoder {
     }
 
     /**
-     * Returns an array of Addresses that are known to describe the
-     * named location, which may be a place name such as "Dalvik,
-     * Iceland", an address such as "1600 Amphitheatre Parkway,
-     * Mountain View, CA", an airport code such as "SFO", etc..  The
-     * returned addresses will be localized for the locale provided to
-     * this class's constructor.
+     * Returns an array of Addresses that attempt to describe the named location, which may be a
+     * place name such as "Dalvik, Iceland", an address such as "1600 Amphitheatre Parkway, Mountain
+     * View, CA", an airport code such as "SFO", and so forth. The returned addresses should be
+     * localized for the locale provided to this class's constructor. Results may be obtained by
+     * means of a network lookup and this method may take some time to return, and so should not be
+     * called on the main thread.
      *
-     * <p> The query will block and returned values will be obtained by means of a network lookup.
-     * The results are a best guess and are not guaranteed to be meaningful or
-     * correct. It may be useful to call this method from a thread separate from your
-     * primary UI thread.
+     * <p class="note"><strong>Warning:</strong> Geocoding services may provide no guarantees on
+     * availability or accuracy. Results are a best guess, and are not guaranteed to be meaningful
+     * or correct. Do <b>NOT</b> use this API for any safety-critical or regulatory compliance
+     * purposes.
      *
      * @param locationName a user-supplied description of a location
      * @param maxResults max number of results to return. Smaller numbers (1 to 5) are recommended
@@ -161,35 +161,24 @@ public final class Geocoder {
      * I/O problem occurs
      */
     public List<Address> getFromLocationName(String locationName, int maxResults) throws IOException {
-        if (locationName == null) {
-            throw new IllegalArgumentException("locationName == null");
-        }
-
-        try {
-            GeocodeListener listener = new GeocodeListener();
-            mService.getFromLocationName(locationName, 0, 0, 0, 0, maxResults, mParams, listener);
-            return listener.getResults();
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getFromLocationName(locationName, maxResults, 0, 0, 0, 0);
     }
 
     /**
-     * Returns an array of Addresses that are known to describe the
-     * named location, which may be a place name such as "Dalvik,
-     * Iceland", an address such as "1600 Amphitheatre Parkway,
-     * Mountain View, CA", an airport code such as "SFO", etc..  The
-     * returned addresses will be localized for the locale provided to
-     * this class's constructor.
+     * Returns an array of Addresses that attempt to describe the named location, which may be a
+     * place name such as "Dalvik, Iceland", an address such as "1600 Amphitheatre Parkway, Mountain
+     * View, CA", an airport code such as "SFO", and so forth. The returned addresses should be
+     * localized for the locale provided to this class's constructor. Results may be obtained by
+     * means of a network lookup and this method may take some time to return, and so should not be
+     * called on the main thread.
      *
-     * <p> You may specify a bounding box for the search results by including
-     * the Latitude and Longitude of the Lower Left point and Upper Right
-     * point of the box.
+     * <p> You may specify a bounding box for the search results by including the latitude and
+     * longitude of the lower left point and upper right point of the box.
      *
-     * <p> The query will block and returned values will be obtained by means of a network lookup.
-     * The results are a best guess and are not guaranteed to be meaningful or
-     * correct. It may be useful to call this method from a thread separate from your
-     * primary UI thread.
+     * <p class="note"><strong>Warning:</strong> Geocoding services may provide no guarantees on
+     * availability or accuracy. Results are a best guess, and are not guaranteed to be meaningful
+     * or correct. Do <b>NOT</b> use this API for any safety-critical or regulatory compliance
+     * purposes.
      *
      * @param locationName a user-supplied description of a location
      * @param maxResults max number of addresses to return. Smaller numbers (1 to 5) are recommended
@@ -210,27 +199,14 @@ public final class Geocoder {
      * I/O problem occurs
      */
     public List<Address> getFromLocationName(String locationName, int maxResults,
-        double lowerLeftLatitude, double lowerLeftLongitude,
-        double upperRightLatitude, double upperRightLongitude) throws IOException {
-        if (locationName == null) {
-            throw new IllegalArgumentException("locationName == null");
-        }
-        if (lowerLeftLatitude < -90.0 || lowerLeftLatitude > 90.0) {
-            throw new IllegalArgumentException("lowerLeftLatitude == "
-                + lowerLeftLatitude);
-        }
-        if (lowerLeftLongitude < -180.0 || lowerLeftLongitude > 180.0) {
-            throw new IllegalArgumentException("lowerLeftLongitude == "
-                + lowerLeftLongitude);
-        }
-        if (upperRightLatitude < -90.0 || upperRightLatitude > 90.0) {
-            throw new IllegalArgumentException("upperRightLatitude == "
-                + upperRightLatitude);
-        }
-        if (upperRightLongitude < -180.0 || upperRightLongitude > 180.0) {
-            throw new IllegalArgumentException("upperRightLongitude == "
-                + upperRightLongitude);
-        }
+            double lowerLeftLatitude, double lowerLeftLongitude, double upperRightLatitude,
+            double upperRightLongitude) throws IOException {
+        Preconditions.checkArgument(locationName != null);
+        Preconditions.checkArgumentInRange(lowerLeftLatitude, -90.0, 90.0, "lowerLeftLatitude");
+        Preconditions.checkArgumentInRange(lowerLeftLongitude, -180.0, 180.0, "lowerLeftLongitude");
+        Preconditions.checkArgumentInRange(upperRightLatitude, -90.0, 90.0, "upperRightLatitude");
+        Preconditions.checkArgumentInRange(upperRightLongitude, -180.0, 180.0,
+                "upperRightLongitude");
 
         try {
             GeocodeListener listener = new GeocodeListener();

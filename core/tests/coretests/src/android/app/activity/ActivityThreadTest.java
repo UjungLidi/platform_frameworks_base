@@ -18,46 +18,65 @@ package android.app.activity;
 
 import static android.content.Intent.ACTION_EDIT;
 import static android.content.Intent.ACTION_VIEW;
+import static android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+import static android.content.res.Configuration.ORIENTATION_PORTRAIT;
+import static android.view.Display.INVALID_DISPLAY;
 
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.testng.Assert.assertFalse;
 
+import android.annotation.Nullable;
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.ActivityThread;
+import android.app.ActivityThread.ActivityClientRecord;
 import android.app.IApplicationThread;
 import android.app.PictureInPictureParams;
+import android.app.ResourcesManager;
 import android.app.servertransaction.ActivityConfigurationChangeItem;
 import android.app.servertransaction.ActivityRelaunchItem;
 import android.app.servertransaction.ClientTransaction;
 import android.app.servertransaction.ClientTransactionItem;
+import android.app.servertransaction.ConfigurationChangeItem;
 import android.app.servertransaction.NewIntentItem;
 import android.app.servertransaction.ResumeActivityItem;
 import android.app.servertransaction.StopActivityItem;
+import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.content.res.Resources;
+import android.graphics.Rect;
+import android.hardware.display.DisplayManager;
+import android.hardware.display.VirtualDisplay;
+import android.os.Bundle;
 import android.os.IBinder;
+import android.platform.test.annotations.Presubmit;
+import android.util.DisplayMetrics;
 import android.util.MergedConfiguration;
 import android.view.Display;
 import android.view.View;
 
-import androidx.test.InstrumentationRegistry;
+import androidx.test.filters.FlakyTest;
 import androidx.test.filters.MediumTest;
+import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.rule.ActivityTestRule;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.content.ReferrerIntent;
 
+import org.junit.After;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * Test for verifying {@link android.app.ActivityThread} class.
@@ -66,7 +85,9 @@ import java.util.concurrent.CountDownLatch;
  */
 @RunWith(AndroidJUnit4.class)
 @MediumTest
+@Presubmit
 public class ActivityThreadTest {
+    private static final int TIMEOUT_SEC = 10;
 
     // The first sequence number to try with. Use a large number to avoid conflicts with the first a
     // few sequence numbers the framework used to launch the test activity.
@@ -75,6 +96,16 @@ public class ActivityThreadTest {
     private final ActivityTestRule<TestActivity> mActivityTestRule =
             new ActivityTestRule<>(TestActivity.class, true /* initialTouchMode */,
                     false /* launchActivity */);
+
+    private ArrayList<VirtualDisplay> mCreatedVirtualDisplays;
+
+    @After
+    public void tearDown() {
+        if (mCreatedVirtualDisplays != null) {
+            mCreatedVirtualDisplays.forEach(VirtualDisplay::release);
+            mCreatedVirtualDisplays = null;
+        }
+    }
 
     @Test
     public void testDoubleRelaunch() throws Exception {
@@ -103,11 +134,12 @@ public class ActivityThreadTest {
         final ActivityThread activityThread = activity.getActivityThread();
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             activityThread.executeTransaction(newResumeTransaction(activity));
-            assertNull(activityThread.performResumeActivity(activity.getActivityToken(),
-                    true /* finalStateRequest */, "test"));
+            final ActivityClientRecord r = getActivityClientRecord(activity);
+            assertFalse(activityThread.performResumeActivity(r, true /* finalStateRequest */,
+                    "test"));
 
-            assertNull(activityThread.performResumeActivity(activity.getActivityToken(),
-                    false /* finalStateRequest */, "test"));
+            assertFalse(activityThread.performResumeActivity(r, false /* finalStateRequest */,
+                    "test"));
         });
     }
 
@@ -153,30 +185,33 @@ public class ActivityThreadTest {
     }
 
     @Test
-    public void testHandleActivity_assetsChanged() {
+    public void testRecreateActivity() {
+        relaunchActivityAndAssertPreserveWindow(Activity::recreate);
+    }
+
+    private void relaunchActivityAndAssertPreserveWindow(Consumer<Activity> relaunch) {
         final TestActivity activity = mActivityTestRule.launchActivity(new Intent());
+        final ActivityThread activityThread = activity.getActivityThread();
 
         final IBinder[] token = new IBinder[1];
         final View[] decorView = new View[1];
 
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            final ActivityThread activityThread = activity.getActivityThread();
-
             token[0] = activity.getActivityToken();
             decorView[0] = activity.getWindow().getDecorView();
 
-            // Relaunches all activities
-            activityThread.handleApplicationInfoChanged(activity.getApplicationInfo());
+            relaunch.accept(activity);
         });
 
         final View[] newDecorView = new View[1];
-        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            final ActivityThread activityThread = activity.getActivityThread();
+        final Activity[] newActivity = new Activity[1];
 
-            final Activity newActivity = activityThread.getActivity(token[0]);
-            newDecorView[0] = activity.getWindow().getDecorView();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            newActivity[0] = activityThread.getActivity(token[0]);
+            newDecorView[0] = newActivity[0].getWindow().getDecorView();
         });
 
+        assertNotEquals("Activity must be relaunched", activity, newActivity[0]);
         assertEquals("Window must be preserved", decorView[0], newDecorView[0]);
     }
 
@@ -217,7 +252,7 @@ public class ActivityThreadTest {
     }
 
     @Test
-    public void testHandleActivityConfigurationChanged_PickNewerPendingConfiguration() {
+    public void testHandleActivityConfigurationChanged_SkipWhenNewerConfigurationPending() {
         final TestActivity activity = mActivityTestRule.launchActivity(new Intent());
 
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
@@ -229,23 +264,88 @@ public class ActivityThreadTest {
 
             final ActivityThread activityThread = activity.getActivityThread();
 
-            final Configuration pendingConfig = new Configuration();
-            pendingConfig.orientation = orientation == Configuration.ORIENTATION_LANDSCAPE
-                    ? Configuration.ORIENTATION_PORTRAIT
-                    : Configuration.ORIENTATION_LANDSCAPE;
-            pendingConfig.seq = seq + 2;
-            activityThread.updatePendingActivityConfiguration(activity.getActivityToken(),
-                    pendingConfig);
+            final Configuration newerConfig = new Configuration();
+            newerConfig.orientation = orientation == ORIENTATION_LANDSCAPE
+                    ? ORIENTATION_PORTRAIT : ORIENTATION_LANDSCAPE;
+            newerConfig.seq = seq + 2;
+            final ActivityClientRecord r = getActivityClientRecord(activity);
+            activityThread.updatePendingActivityConfiguration(r, newerConfig);
 
-            final Configuration newConfig = new Configuration();
-            newConfig.orientation = orientation;
-            newConfig.seq = seq + 1;
+            final Configuration olderConfig = new Configuration();
+            olderConfig.orientation = orientation;
+            olderConfig.seq = seq + 1;
 
-            activityThread.handleActivityConfigurationChanged(activity.getActivityToken(),
-                    newConfig, Display.INVALID_DISPLAY);
+            activityThread.handleActivityConfigurationChanged(r, olderConfig, INVALID_DISPLAY);
+            assertEquals(numOfConfig, activity.mNumOfConfigChanges);
+            assertEquals(olderConfig.orientation, activity.mConfig.orientation);
+
+            activityThread.handleActivityConfigurationChanged(r, newerConfig, INVALID_DISPLAY);
             assertEquals(numOfConfig + 1, activity.mNumOfConfigChanges);
-            assertEquals(pendingConfig.orientation, activity.mConfig.orientation);
+            assertEquals(newerConfig.orientation, activity.mConfig.orientation);
         });
+    }
+
+    @Test
+    @FlakyTest(bugId = 194242735)
+    public void testHandleActivityConfigurationChanged_EnsureUpdatesProcessedInOrder()
+            throws Exception {
+        final TestActivity activity = mActivityTestRule.launchActivity(new Intent());
+
+        final ActivityThread activityThread = activity.getActivityThread();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            final Configuration config = new Configuration();
+            config.seq = BASE_SEQ;
+            config.orientation = ORIENTATION_PORTRAIT;
+
+            activityThread.handleActivityConfigurationChanged(getActivityClientRecord(activity),
+                    config, INVALID_DISPLAY);
+        });
+
+        final IApplicationThread appThread = activityThread.getApplicationThread();
+        final int numOfConfig = activity.mNumOfConfigChanges;
+
+        final Configuration processConfigLandscape = new Configuration();
+        processConfigLandscape.windowConfiguration.setBounds(new Rect(0, 0, 100, 60));
+        processConfigLandscape.seq = BASE_SEQ + 1;
+
+        final Configuration activityConfigLandscape = new Configuration();
+        activityConfigLandscape.windowConfiguration.setBounds(new Rect(0, 0, 100, 50));
+        activityConfigLandscape.seq = BASE_SEQ + 2;
+
+        final Configuration processConfigPortrait = new Configuration();
+        processConfigPortrait.windowConfiguration.setBounds(new Rect(0, 0, 60, 100));
+        processConfigPortrait.seq = BASE_SEQ + 3;
+
+        final Configuration activityConfigPortrait = new Configuration();
+        activityConfigPortrait.windowConfiguration.setBounds(new Rect(0, 0, 50, 100));
+        activityConfigPortrait.seq = BASE_SEQ + 4;
+
+        activity.mConfigLatch = new CountDownLatch(1);
+        activity.mTestLatch = new CountDownLatch(1);
+
+        ClientTransaction transaction = newTransaction(activityThread, null);
+        transaction.addCallback(ConfigurationChangeItem.obtain(processConfigLandscape));
+        appThread.scheduleTransaction(transaction);
+
+        transaction = newTransaction(activityThread, activity.getActivityToken());
+        transaction.addCallback(ActivityConfigurationChangeItem.obtain(activityConfigLandscape));
+        transaction.addCallback(ConfigurationChangeItem.obtain(processConfigPortrait));
+        transaction.addCallback(ActivityConfigurationChangeItem.obtain(activityConfigPortrait));
+        appThread.scheduleTransaction(transaction);
+
+        activity.mTestLatch.await(TIMEOUT_SEC, TimeUnit.SECONDS);
+        activity.mConfigLatch.countDown();
+
+        activity.mConfigLatch = null;
+        activity.mTestLatch = null;
+
+        // Check display metrics, bounds should match the portrait activity bounds.
+        final Rect bounds = activity.getWindowManager().getCurrentWindowMetrics().getBounds();
+        assertEquals(activityConfigPortrait.windowConfiguration.getBounds(), bounds);
+
+        // Ensure that Activity#onConfigurationChanged() not be called because the changes in
+        // WindowConfiguration shouldn't be reported.
+        assertEquals(numOfConfig, activity.mNumOfConfigChanges);
     }
 
     @Test
@@ -257,10 +357,10 @@ public class ActivityThreadTest {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             final Configuration config = new Configuration();
             config.seq = BASE_SEQ;
-            config.orientation = Configuration.ORIENTATION_PORTRAIT;
+            config.orientation = ORIENTATION_PORTRAIT;
 
-            activityThread.handleActivityConfigurationChanged(activity.getActivityToken(),
-                    config, Display.INVALID_DISPLAY);
+            activityThread.handleActivityConfigurationChanged(getActivityClientRecord(activity),
+                    config, INVALID_DISPLAY);
         });
 
         final int numOfConfig = activity.mNumOfConfigChanges;
@@ -271,27 +371,27 @@ public class ActivityThreadTest {
 
         Configuration config = new Configuration();
         config.seq = BASE_SEQ + 1;
-        config.smallestScreenWidthDp = 100;
+        config.orientation = ORIENTATION_LANDSCAPE;
         appThread.scheduleTransaction(newActivityConfigTransaction(activity, config));
 
         // Wait until the main thread is performing the configuration change for the configuration
         // with sequence number BASE_SEQ + 1 before proceeding. This is to mimic the situation where
         // the activity takes very long time to process configuration changes.
-        activity.mTestLatch.await();
+        activity.mTestLatch.await(TIMEOUT_SEC, TimeUnit.SECONDS);
 
         config = new Configuration();
         config.seq = BASE_SEQ + 2;
-        config.smallestScreenWidthDp = 200;
+        config.orientation = ORIENTATION_PORTRAIT;
         appThread.scheduleTransaction(newActivityConfigTransaction(activity, config));
 
         config = new Configuration();
         config.seq = BASE_SEQ + 3;
-        config.smallestScreenWidthDp = 300;
+        config.orientation = ORIENTATION_LANDSCAPE;
         appThread.scheduleTransaction(newActivityConfigTransaction(activity, config));
 
         config = new Configuration();
         config.seq = BASE_SEQ + 4;
-        config.smallestScreenWidthDp = 400;
+        config.orientation = ORIENTATION_PORTRAIT;
         appThread.scheduleTransaction(newActivityConfigTransaction(activity, config));
 
         activity.mConfigLatch.countDown();
@@ -303,7 +403,207 @@ public class ActivityThreadTest {
         // Only two more configuration changes: one with seq BASE_SEQ + 1; another with seq
         // BASE_SEQ + 4. Configurations scheduled in between should be dropped.
         assertEquals(numOfConfig + 2, activity.mNumOfConfigChanges);
-        assertEquals(400, activity.mConfig.smallestScreenWidthDp);
+        assertEquals(ORIENTATION_PORTRAIT, activity.mConfig.orientation);
+    }
+
+    @Test
+    public void testOrientationChanged_DoesntOverrideVirtualDisplayOrientation() {
+        final TestActivity activity = mActivityTestRule.launchActivity(new Intent());
+        final ActivityThread activityThread = activity.getActivityThread();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            Context appContext = activity.getApplication();
+            Configuration originalAppConfig =
+                    new Configuration(appContext.getResources().getConfiguration());
+
+            int virtualDisplayWidth;
+            int virtualDisplayHeight;
+            if (originalAppConfig.orientation == ORIENTATION_PORTRAIT) {
+                virtualDisplayWidth = 100;
+                virtualDisplayHeight = 200;
+            } else {
+                virtualDisplayWidth = 200;
+                virtualDisplayHeight = 100;
+            }
+            final Display virtualDisplay = createVirtualDisplay(appContext,
+                    virtualDisplayWidth, virtualDisplayHeight);
+            Context virtualDisplayContext = appContext.createDisplayContext(virtualDisplay);
+            int originalVirtualDisplayOrientation = virtualDisplayContext.getResources()
+                    .getConfiguration().orientation;
+
+
+            // Perform global config change and verify there is no config change in derived display
+            // context.
+            Configuration newAppConfig = new Configuration(originalAppConfig);
+            newAppConfig.seq++;
+            newAppConfig.orientation = newAppConfig.orientation == ORIENTATION_PORTRAIT
+                    ? ORIENTATION_LANDSCAPE : ORIENTATION_PORTRAIT;
+
+            activityThread.updatePendingConfiguration(newAppConfig);
+            activityThread.handleConfigurationChanged(newAppConfig);
+
+            try {
+                assertEquals("Virtual display orientation must not change when process"
+                                + " configuration orientation changes.",
+                        originalVirtualDisplayOrientation,
+                        virtualDisplayContext.getResources().getConfiguration().orientation);
+            } finally {
+                // Make sure to reset the process config to prevent side effects to other
+                // tests.
+                Configuration activityThreadConfig = activityThread.getConfiguration();
+                activityThreadConfig.seq = originalAppConfig.seq - 1;
+
+                Configuration resourceManagerConfig = ResourcesManager.getInstance()
+                        .getConfiguration();
+                resourceManagerConfig.seq = originalAppConfig.seq - 1;
+
+                activityThread.updatePendingConfiguration(originalAppConfig);
+                activityThread.handleConfigurationChanged(originalAppConfig);
+            }
+        });
+    }
+
+    @Test
+    public void testActivityOrientationChanged_DoesntOverrideVirtualDisplayOrientation() {
+        final TestActivity activity = mActivityTestRule.launchActivity(new Intent());
+        final ActivityThread activityThread = activity.getActivityThread();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            Configuration originalActivityConfig =
+                    new Configuration(activity.getResources().getConfiguration());
+
+            int virtualDisplayWidth;
+            int virtualDisplayHeight;
+            if (originalActivityConfig.orientation == ORIENTATION_PORTRAIT) {
+                virtualDisplayWidth = 100;
+                virtualDisplayHeight = 200;
+            } else {
+                virtualDisplayWidth = 200;
+                virtualDisplayHeight = 100;
+            }
+            final Display virtualDisplay = createVirtualDisplay(activity,
+                    virtualDisplayWidth, virtualDisplayHeight);
+            Context virtualDisplayContext = activity.createDisplayContext(virtualDisplay);
+            int originalVirtualDisplayOrientation = virtualDisplayContext.getResources()
+                    .getConfiguration().orientation;
+
+            // Perform activity config change and verify there is no config change in derived
+            // display context.
+            Configuration newActivityConfig = new Configuration(originalActivityConfig);
+            newActivityConfig.seq++;
+            newActivityConfig.orientation = newActivityConfig.orientation == ORIENTATION_PORTRAIT
+                    ? ORIENTATION_LANDSCAPE : ORIENTATION_PORTRAIT;
+
+            final ActivityClientRecord r = getActivityClientRecord(activity);
+            activityThread.updatePendingActivityConfiguration(r, newActivityConfig);
+            activityThread.handleActivityConfigurationChanged(r, newActivityConfig,
+                    INVALID_DISPLAY);
+
+            assertEquals("Virtual display orientation must not change when activity"
+                            + " configuration orientation changes.",
+                    originalVirtualDisplayOrientation,
+                    virtualDisplayContext.getResources().getConfiguration().orientation);
+        });
+    }
+
+    @Test
+    @FlakyTest(bugId = 176134235)
+    public void testHandleConfigurationChanged_DoesntOverrideActivityConfig() {
+        final TestActivity activity = mActivityTestRule.launchActivity(new Intent());
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            final Configuration oldActivityConfig =
+                    new Configuration(activity.getResources().getConfiguration());
+            final DisplayMetrics oldActivityMetrics = new DisplayMetrics();
+            activity.getDisplay().getMetrics(oldActivityMetrics);
+            final Resources oldAppResources = activity.getApplication().getResources();
+            final Configuration oldAppConfig =
+                    new Configuration(oldAppResources.getConfiguration());
+            final DisplayMetrics oldApplicationMetrics = new DisplayMetrics();
+            oldApplicationMetrics.setTo(oldAppResources.getDisplayMetrics());
+            assertEquals("Process config must match the top activity config by default",
+                    0, oldActivityConfig.diffPublicOnly(oldAppConfig));
+            assertEquals("Process config must match the top activity config by default",
+                    oldActivityMetrics, oldApplicationMetrics);
+
+            // Update the application configuration separately from activity config
+            final Configuration newAppConfig = new Configuration(oldAppConfig);
+            newAppConfig.densityDpi += 100;
+            newAppConfig.screenHeightDp += 100;
+            final Rect newBounds = new Rect(newAppConfig.windowConfiguration.getAppBounds());
+            newBounds.bottom += 100;
+            newAppConfig.windowConfiguration.setAppBounds(newBounds);
+            newAppConfig.windowConfiguration.setBounds(newBounds);
+            newAppConfig.seq++;
+
+            final ActivityThread activityThread = activity.getActivityThread();
+            activityThread.handleConfigurationChanged(newAppConfig);
+
+            // Verify that application config update was applied, but didn't change activity config.
+            assertEquals("Activity config must not change if the process config changes",
+                    oldActivityConfig, activity.getResources().getConfiguration());
+
+            final DisplayMetrics newActivityMetrics = new DisplayMetrics();
+            activity.getDisplay().getMetrics(newActivityMetrics);
+            assertEquals("Activity display size must not change if the process config changes",
+                    oldActivityMetrics, newActivityMetrics);
+            final Resources newAppResources = activity.getApplication().getResources();
+            assertEquals("Application config must be updated",
+                    newAppConfig, newAppResources.getConfiguration());
+            final DisplayMetrics newApplicationMetrics = new DisplayMetrics();
+            newApplicationMetrics.setTo(newAppResources.getDisplayMetrics());
+            assertNotEquals("Application display size must be updated after config update",
+                    oldApplicationMetrics, newApplicationMetrics);
+            assertNotEquals("Application display size must be updated after config update",
+                    newActivityMetrics, newApplicationMetrics);
+        });
+    }
+
+    @Test
+    public void testHandleProcessConfigurationChanged_DependOnProcessState() {
+        final ActivityThread activityThread = ActivityThread.currentActivityThread();
+        final Configuration origConfig = activityThread.getConfiguration();
+        final int newDpi = origConfig.densityDpi + 10;
+        final Configuration newConfig = new Configuration(origConfig);
+        newConfig.seq++;
+        newConfig.densityDpi = newDpi;
+
+        activityThread.updateProcessState(ActivityManager.PROCESS_STATE_CACHED_ACTIVITY,
+                false /* fromIPC */);
+
+        applyProcessConfiguration(activityThread, newConfig);
+        try {
+            // In the cached state, the configuration is only set as pending and not applied.
+            assertEquals(origConfig.densityDpi, activityThread.getConfiguration().densityDpi);
+            assertTrue(activityThread.isCachedProcessState());
+        } finally {
+            // The foreground state is the default state of instrumentation.
+            activityThread.updateProcessState(ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE,
+                    false /* fromIPC */);
+        }
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
+        try {
+            // The state becomes non-cached, the pending configuration should be applied.
+            assertEquals(newConfig.densityDpi, activityThread.getConfiguration().densityDpi);
+            assertFalse(activityThread.isCachedProcessState());
+        } finally {
+            // Restore to the original configuration.
+            activityThread.getConfiguration().seq = origConfig.seq - 1;
+            applyProcessConfiguration(activityThread, origConfig);
+        }
+    }
+
+    private static void applyProcessConfiguration(ActivityThread thread, Configuration config) {
+        final ClientTransaction clientTransaction = newTransaction(thread,
+                null /* activityToken */);
+        clientTransaction.addCallback(ConfigurationChangeItem.obtain(config));
+        final IApplicationThread appThread = thread.getApplicationThread();
+        try {
+            appThread.scheduleTransaction(clientTransaction);
+        } catch (Exception ignored) {
+        }
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
     }
 
     @Test
@@ -314,14 +614,15 @@ public class ActivityThreadTest {
         rIntents.add(new ReferrerIntent(new Intent(), "android.app.activity"));
 
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            activityThread.executeTransaction(newNewIntentTransaction(activity, rIntents, false));
-        });
-        assertThat(activity.isResumed()).isFalse();
-
-        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             activityThread.executeTransaction(newNewIntentTransaction(activity, rIntents, true));
         });
         assertThat(activity.isResumed()).isTrue();
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            activityThread.executeTransaction(newStopTransaction(activity));
+            activityThread.executeTransaction(newNewIntentTransaction(activity, rIntents, false));
+        });
+        assertThat(activity.isResumed()).isFalse();
     }
 
     @Test
@@ -330,9 +631,10 @@ public class ActivityThreadTest {
         startIntent.putExtra(TestActivity.PIP_REQUESTED_OVERRIDE_ENTER, true);
         final TestActivity activity = mActivityTestRule.launchActivity(startIntent);
         final ActivityThread activityThread = activity.getActivityThread();
+        final ActivityClientRecord r = getActivityClientRecord(activity);
 
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            activityThread.handlePictureInPictureRequested(activity.getActivityToken());
+            activityThread.handlePictureInPictureRequested(r);
         });
 
         assertTrue(activity.pipRequested());
@@ -345,9 +647,10 @@ public class ActivityThreadTest {
         startIntent.putExtra(TestActivity.PIP_REQUESTED_OVERRIDE_SKIP, true);
         final TestActivity activity = mActivityTestRule.launchActivity(startIntent);
         final ActivityThread activityThread = activity.getActivityThread();
+        final ActivityClientRecord r = getActivityClientRecord(activity);
 
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            activityThread.handlePictureInPictureRequested(activity.getActivityToken());
+            activityThread.handlePictureInPictureRequested(r);
         });
 
         assertTrue(activity.pipRequested());
@@ -358,9 +661,10 @@ public class ActivityThreadTest {
     public void testHandlePictureInPictureRequested_notOverridden() {
         final TestActivity activity = mActivityTestRule.launchActivity(new Intent());
         final ActivityThread activityThread = activity.getActivityThread();
+        final ActivityClientRecord r = getActivityClientRecord(activity);
 
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            activityThread.handlePictureInPictureRequested(activity.getActivityToken());
+            activityThread.handlePictureInPictureRequested(r);
         });
 
         assertTrue(activity.pipRequested());
@@ -369,8 +673,9 @@ public class ActivityThreadTest {
     }
 
     /**
-     * Calls {@link ActivityThread#handleActivityConfigurationChanged(IBinder, Configuration, int)}
-     * to try to push activity configuration to the activity for the given sequence number.
+     * Calls {@link ActivityThread#handleActivityConfigurationChanged(ActivityClientRecord,
+     * Configuration, int)} to try to push activity configuration to the activity for the given
+     * sequence number.
      * <p>
      * It uses orientation to push the configuration and it tries a different orientation if the
      * first attempt doesn't make through, to rule out the possibility that the previous
@@ -383,25 +688,41 @@ public class ActivityThreadTest {
      */
     private int applyConfigurationChange(TestActivity activity, int seq) {
         final ActivityThread activityThread = activity.getActivityThread();
+        final ActivityClientRecord r = getActivityClientRecord(activity);
 
         final int numOfConfig = activity.mNumOfConfigChanges;
         Configuration config = new Configuration();
-        config.orientation = Configuration.ORIENTATION_PORTRAIT;
+        config.orientation = ORIENTATION_PORTRAIT;
         config.seq = seq;
-        activityThread.handleActivityConfigurationChanged(activity.getActivityToken(), config,
-                Display.INVALID_DISPLAY);
+        activityThread.handleActivityConfigurationChanged(r, config, INVALID_DISPLAY);
 
         if (activity.mNumOfConfigChanges > numOfConfig) {
             return config.seq;
         }
 
         config = new Configuration();
-        config.orientation = Configuration.ORIENTATION_LANDSCAPE;
+        config.orientation = ORIENTATION_LANDSCAPE;
         config.seq = seq + 1;
-        activityThread.handleActivityConfigurationChanged(activity.getActivityToken(), config,
-                Display.INVALID_DISPLAY);
+        activityThread.handleActivityConfigurationChanged(r, config, INVALID_DISPLAY);
 
         return config.seq;
+    }
+
+    private Display createVirtualDisplay(Context context, int w, int h) {
+        final DisplayManager dm = context.getSystemService(DisplayManager.class);
+        final VirtualDisplay virtualDisplay = dm.createVirtualDisplay("virtual-display", w, h,
+                200 /* densityDpi */, null /* surface */, 0 /* flags */);
+        if (mCreatedVirtualDisplays == null) {
+            mCreatedVirtualDisplays = new ArrayList<>();
+        }
+        mCreatedVirtualDisplays.add(virtualDisplay);
+        return virtualDisplay.getDisplay();
+    }
+
+    private static ActivityClientRecord getActivityClientRecord(Activity activity) {
+        final ActivityThread thread = activity.getActivityThread();
+        final IBinder token = activity.getActivityToken();
+        return thread.getActivityClient(token);
     }
 
     private static ClientTransaction newRelaunchResumeTransaction(Activity activity) {
@@ -457,8 +778,12 @@ public class ActivityThreadTest {
     }
 
     private static ClientTransaction newTransaction(Activity activity) {
-        final IApplicationThread appThread = activity.getActivityThread().getApplicationThread();
-        return ClientTransaction.obtain(appThread, activity.getActivityToken());
+        return newTransaction(activity.getActivityThread(), activity.getActivityToken());
+    }
+
+    private static ClientTransaction newTransaction(ActivityThread activityThread,
+            @Nullable IBinder activityToken) {
+        return ClientTransaction.obtain(activityThread.getApplicationThread(), activityToken);
     }
 
     // Test activity
@@ -486,6 +811,14 @@ public class ActivityThreadTest {
         volatile CountDownLatch mConfigLatch;
 
         @Override
+        protected void onCreate(Bundle savedInstanceState) {
+            super.onCreate(savedInstanceState);
+            getWindow().getDecorView().setKeepScreenOn(true);
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        }
+
+        @Override
         public void onConfigurationChanged(Configuration config) {
             super.onConfigurationChanged(config);
             mConfig.setTo(config);
@@ -496,7 +829,7 @@ public class ActivityThreadTest {
                     mTestLatch.countDown();
                 }
                 try {
-                    mConfigLatch.await();
+                    mConfigLatch.await(TIMEOUT_SEC, TimeUnit.SECONDS);
                 } catch (InterruptedException e) {
                     throw new IllegalStateException(e);
                 }

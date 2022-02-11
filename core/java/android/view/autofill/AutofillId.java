@@ -73,9 +73,14 @@ public final class AutofillId implements Parcelable {
     }
 
     /** @hide */
+    @NonNull
+    @TestApi
     public static AutofillId withoutSession(@NonNull AutofillId id) {
         final int flags = id.mFlags & ~FLAG_HAS_SESSION;
-        return new AutofillId(flags, id.mViewId, id.mVirtualLongId, NO_SESSION);
+        final long virtualChildId =
+                ((id.mFlags & FLAG_IS_VIRTUAL_LONG) != 0) ? id.mVirtualLongId
+                        : id.mVirtualIntId;
+        return new AutofillId(flags, id.mViewId, virtualChildId, NO_SESSION);
     }
 
     /** @hide */
@@ -138,6 +143,7 @@ public final class AutofillId implements Parcelable {
      *
      * @hide
      */
+    @TestApi
     public boolean isNonVirtual() {
         return !isVirtualInt() && !isVirtualLong();
     }
@@ -180,7 +186,7 @@ public final class AutofillId implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         if (this == obj) return true;
         if (obj == null) return false;
         if (getClass() != obj.getClass()) return false;

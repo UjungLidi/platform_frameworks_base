@@ -126,7 +126,7 @@ public class UsageStatsDatabaseTest {
 
         mIntervalStats.majorVersion = 7;
         mIntervalStats.minorVersion = 8;
-        mIntervalStats.beginTime = time;
+        mIntervalStats.beginTime = time - 1;
         mIntervalStats.interactiveTracker.count = 2;
         mIntervalStats.interactiveTracker.duration = 111111;
         mIntervalStats.nonInteractiveTracker.count = 3;
@@ -261,6 +261,7 @@ public class UsageStatsDatabaseTest {
         // mEndTimeStamp is based on the enclosing IntervalStats, don't bother checking
         assertEquals(us1.mLastTimeUsed, us2.mLastTimeUsed);
         assertEquals(us1.mLastTimeVisible, us2.mLastTimeVisible);
+        assertEquals(us1.mLastTimeComponentUsed, us2.mLastTimeComponentUsed);
         assertEquals(us1.mTotalTimeInForeground, us2.mTotalTimeInForeground);
         assertEquals(us1.mTotalTimeVisible, us2.mTotalTimeVisible);
         assertEquals(us1.mLastTimeForegroundServiceUsed, us2.mLastTimeForegroundServiceUsed);

@@ -16,13 +16,20 @@
 
 package android.view;
 
+import static android.view.InsetsController.DEBUG;
 import static android.view.SyncRtSurfaceTransactionApplier.applyParams;
 
+import android.annotation.Nullable;
 import android.annotation.UiThread;
+import android.content.res.CompatibilityInfo;
 import android.graphics.Rect;
 import android.os.Handler;
+import android.os.Trace;
+import android.util.Log;
 import android.util.SparseArray;
+import android.util.proto.ProtoOutputStream;
 import android.view.InsetsController.AnimationType;
+import android.view.InsetsController.LayoutInsetsDuringAnimation;
 import android.view.SyncRtSurfaceTransactionApplier.SurfaceParams;
 import android.view.WindowInsets.Type.InsetsType;
 import android.view.WindowInsetsAnimation.Bounds;
@@ -36,10 +43,10 @@ import android.view.animation.Interpolator;
  */
 public class InsetsAnimationThreadControlRunner implements InsetsAnimationControlRunner {
 
+    private static final String TAG = "InsetsAnimThreadRunner";
     private final InsetsAnimationControlImpl mControl;
     private final InsetsAnimationControlCallbacks mOuterCallbacks;
     private final Handler mMainThreadHandler;
-    private final InsetsState mState = new InsetsState();
     private final InsetsAnimationControlCallbacks mCallbacks =
             new InsetsAnimationControlCallbacks() {
 
@@ -55,11 +62,19 @@ public class InsetsAnimationThreadControlRunner implements InsetsAnimationContro
 
         @Override
         public void scheduleApplyChangeInsets(InsetsAnimationControlRunner runner) {
-            mControl.applyChangeInsets(mState);
+            synchronized (mControl) {
+                // This reads the surface position on the animation thread, but the surface position
+                // would be updated on the UI thread, so we need this critical section.
+                // See: updateSurfacePosition.
+                mControl.applyChangeInsets(null /* outState */);
+            }
         }
 
         @Override
         public void notifyFinished(InsetsAnimationControlRunner runner, boolean shown) {
+            Trace.asyncTraceEnd(Trace.TRACE_TAG_VIEW,
+                    "InsetsAsyncAnimation: " + WindowInsets.Type.toString(runner.getTypes()),
+                    runner.getTypes());
             releaseControls(mControl.getControls());
             mMainThreadHandler.post(() ->
                     mOuterCallbacks.notifyFinished(InsetsAnimationThreadControlRunner.this, shown));
@@ -67,33 +82,50 @@ public class InsetsAnimationThreadControlRunner implements InsetsAnimationContro
 
         @Override
         public void applySurfaceParams(SurfaceParams... params) {
+            if (DEBUG) Log.d(TAG, "applySurfaceParams");
             SurfaceControl.Transaction t = new SurfaceControl.Transaction();
             for (int i = params.length - 1; i >= 0; i--) {
                 SyncRtSurfaceTransactionApplier.SurfaceParams surfaceParams = params[i];
                 applyParams(t, surfaceParams, mTmpFloat9);
             }
+            t.setFrameTimelineVsync(Choreographer.getSfInstance().getVsyncId());
             t.apply();
             t.close();
         }
 
         @Override
         public void releaseSurfaceControlFromRt(SurfaceControl sc) {
+            if (DEBUG) Log.d(TAG, "releaseSurfaceControlFromRt");
             // Since we don't push the SurfaceParams to the RT we can release directly
             sc.release();
+        }
+
+        @Override
+        public void reportPerceptible(int types, boolean perceptible) {
+            mMainThreadHandler.post(() -> mOuterCallbacks.reportPerceptible(types, perceptible));
         }
     };
 
     @UiThread
-    public InsetsAnimationThreadControlRunner(SparseArray<InsetsSourceControl> controls, Rect frame,
-            InsetsState state, WindowInsetsAnimationControlListener listener,
-            @InsetsType int types,
-            InsetsAnimationControlCallbacks controller, long durationMs, Interpolator interpolator,
-            @AnimationType int animationType, Handler mainThreadHandler) {
+    public InsetsAnimationThreadControlRunner(SparseArray<InsetsSourceControl> controls,
+            @Nullable Rect frame, InsetsState state, WindowInsetsAnimationControlListener listener,
+            @InsetsType int types, InsetsAnimationControlCallbacks controller, long durationMs,
+            Interpolator interpolator, @AnimationType int animationType,
+            @LayoutInsetsDuringAnimation int layoutInsetsDuringAnimation,
+            CompatibilityInfo.Translator translator, Handler mainThreadHandler) {
         mMainThreadHandler = mainThreadHandler;
         mOuterCallbacks = controller;
-        mControl = new InsetsAnimationControlImpl(controls, frame, state, listener,
-                types, mCallbacks, durationMs, interpolator, animationType);
-        InsetsAnimationThread.getHandler().post(() -> listener.onReady(mControl, types));
+        mControl = new InsetsAnimationControlImpl(controls, frame, state, listener, types,
+                mCallbacks, durationMs, interpolator, animationType, layoutInsetsDuringAnimation,
+                translator);
+        InsetsAnimationThread.getHandler().post(() -> {
+            if (mControl.isCancelled()) {
+                return;
+            }
+            Trace.asyncTraceBegin(Trace.TRACE_TAG_VIEW,
+                    "InsetsAsyncAnimation: " + WindowInsets.Type.toString(types), types);
+            listener.onReady(mControl, types);
+        });
     }
 
     private void releaseControls(SparseArray<InsetsSourceControl> controls) {
@@ -102,19 +134,38 @@ public class InsetsAnimationThreadControlRunner implements InsetsAnimationContro
         }
     }
 
-    private SparseArray<InsetsSourceControl> copyControls(
-            SparseArray<InsetsSourceControl> controls) {
-        SparseArray<InsetsSourceControl> copy = new SparseArray<>(controls.size());
-        for (int i = 0; i < controls.size(); i++) {
-            copy.append(controls.keyAt(i), new InsetsSourceControl(controls.valueAt(i)));
-        }
-        return copy;
+    @Override
+    @UiThread
+    public void dumpDebug(ProtoOutputStream proto, long fieldId) {
+        mControl.dumpDebug(proto, fieldId);
     }
 
     @Override
     @UiThread
     public int getTypes() {
         return mControl.getTypes();
+    }
+
+    @Override
+    @UiThread
+    public int getControllingTypes() {
+        return mControl.getControllingTypes();
+    }
+
+    @Override
+    @UiThread
+    public void notifyControlRevoked(@InsetsType int types) {
+        mControl.notifyControlRevoked(types);
+    }
+
+    @Override
+    @UiThread
+    public void updateSurfacePosition(SparseArray<InsetsSourceControl> controls) {
+        synchronized (mControl) {
+            // This is called from the UI thread, however, the surface position will be used on the
+            // animation thread, so we need this critical section. See: scheduleApplyChangeInsets.
+            mControl.updateSurfacePosition(controls);
+        }
     }
 
     @Override

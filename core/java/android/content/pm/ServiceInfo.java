@@ -121,7 +121,8 @@ public class ServiceInfo extends ComponentInfo
     /**
      * Constant corresponding to <code>phoneCall</code> in
      * the {@link android.R.attr#foregroundServiceType} attribute.
-     * Ongoing phone call or video conference.
+     * Ongoing operations related to phone calls, video conferencing,
+     * or similar interactive communication.
      */
     public static final int FOREGROUND_SERVICE_TYPE_PHONE_CALL = 1 << 2;
 
@@ -244,7 +245,7 @@ public class ServiceInfo extends ComponentInfo
 
     public void writeToParcel(Parcel dest, int parcelableFlags) {
         super.writeToParcel(dest, parcelableFlags);
-        dest.writeString(permission);
+        dest.writeString8(permission);
         dest.writeInt(flags);
         dest.writeInt(mForegroundServiceType);
     }
@@ -261,7 +262,7 @@ public class ServiceInfo extends ComponentInfo
 
     private ServiceInfo(Parcel source) {
         super(source);
-        permission = source.readString();
+        permission = source.readString8();
         flags = source.readInt();
         mForegroundServiceType = source.readInt();
     }

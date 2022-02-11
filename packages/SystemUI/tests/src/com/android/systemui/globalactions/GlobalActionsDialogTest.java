@@ -16,9 +16,14 @@
 
 package com.android.systemui.globalactions;
 
-import static junit.framework.Assert.assertEquals;
+import static com.android.internal.widget.LockPatternUtils.StrongAuthTracker.STRONG_AUTH_NOT_REQUIRED;
+
+import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
@@ -28,39 +33,47 @@ import static org.mockito.Mockito.when;
 import android.app.IActivityManager;
 import android.app.admin.DevicePolicyManager;
 import android.app.trust.TrustManager;
-import android.content.ContentResolver;
+import android.content.pm.PackageManager;
+import android.content.pm.UserInfo;
 import android.content.res.Resources;
+import android.graphics.Color;
 import android.media.AudioManager;
-import android.net.ConnectivityManager;
+import android.os.Handler;
+import android.os.RemoteException;
 import android.os.UserManager;
 import android.service.dreams.IDreamManager;
-import android.telephony.TelephonyManager;
 import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
-import android.util.FeatureFlagUtils;
 import android.view.IWindowManager;
+import android.view.View;
+import android.view.WindowManagerPolicyConstants;
+import android.widget.FrameLayout;
 
 import androidx.test.filters.SmallTest;
 
+import com.android.internal.colorextraction.ColorExtractor;
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.UiEventLogger;
 import com.android.internal.statusbar.IStatusBarService;
 import com.android.internal.widget.LockPatternUtils;
+import com.android.keyguard.KeyguardUpdateMonitor;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.broadcast.BroadcastDispatcher;
 import com.android.systemui.colorextraction.SysuiColorExtractor;
-import com.android.systemui.controls.controller.ControlsController;
-import com.android.systemui.controls.management.ControlsListingController;
-import com.android.systemui.controls.ui.ControlsUiController;
+import com.android.systemui.model.SysUiState;
 import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.plugins.GlobalActions;
-import com.android.systemui.statusbar.BlurUtils;
-import com.android.systemui.statusbar.NotificationShadeDepthController;
-import com.android.systemui.statusbar.phone.NotificationShadeWindowController;
+import com.android.systemui.plugins.GlobalActionsPanelPlugin;
+import com.android.systemui.settings.UserTracker;
+import com.android.systemui.statusbar.NotificationShadeWindowController;
+import com.android.systemui.statusbar.phone.StatusBar;
 import com.android.systemui.statusbar.policy.ConfigurationController;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
+import com.android.systemui.telephony.TelephonyListenerManager;
 import com.android.systemui.util.RingerModeLiveData;
 import com.android.systemui.util.RingerModeTracker;
+import com.android.systemui.util.settings.GlobalSettings;
+import com.android.systemui.util.settings.SecureSettings;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -68,12 +81,18 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.util.List;
 import java.util.concurrent.Executor;
+import java.util.regex.Pattern;
 
 @SmallTest
 @RunWith(AndroidTestingRunner.class)
-@TestableLooper.RunWithLooper()
+@TestableLooper.RunWithLooper(setAsMainLooper = true)
 public class GlobalActionsDialogTest extends SysuiTestCase {
+    private static final long UI_TIMEOUT_MILLIS = 5000; // 5 sec
+    private static final Pattern CANCEL_BUTTON =
+            Pattern.compile("cancel", Pattern.CASE_INSENSITIVE);
+
     private GlobalActionsDialog mGlobalActionsDialog;
 
     @Mock private GlobalActions.GlobalActionsManager mWindowManagerFuncs;
@@ -82,9 +101,8 @@ public class GlobalActionsDialogTest extends SysuiTestCase {
     @Mock private DevicePolicyManager mDevicePolicyManager;
     @Mock private LockPatternUtils mLockPatternUtils;
     @Mock private BroadcastDispatcher mBroadcastDispatcher;
-    @Mock private ConnectivityManager mConnectivityManager;
-    @Mock private TelephonyManager mTelephonyManager;
-    @Mock private ContentResolver mContentResolver;
+    @Mock private TelephonyListenerManager mTelephonyListenerManager;
+    @Mock private GlobalSettings mGlobalSettings;
     @Mock private Resources mResources;
     @Mock private ConfigurationController mConfigurationController;
     @Mock private ActivityStarter mActivityStarter;
@@ -93,19 +111,23 @@ public class GlobalActionsDialogTest extends SysuiTestCase {
     @Mock private TrustManager mTrustManager;
     @Mock private IActivityManager mActivityManager;
     @Mock private MetricsLogger mMetricsLogger;
-    @Mock private NotificationShadeDepthController mDepthController;
     @Mock private SysuiColorExtractor mColorExtractor;
     @Mock private IStatusBarService mStatusBarService;
-    @Mock private BlurUtils mBlurUtils;
     @Mock private NotificationShadeWindowController mNotificationShadeWindowController;
-    @Mock private ControlsUiController mControlsUiController;
     @Mock private IWindowManager mWindowManager;
     @Mock private Executor mBackgroundExecutor;
-    @Mock private ControlsListingController mControlsListingController;
-    @Mock private ControlsController mControlsController;
     @Mock private UiEventLogger mUiEventLogger;
     @Mock private RingerModeTracker mRingerModeTracker;
     @Mock private RingerModeLiveData mRingerModeLiveData;
+    @Mock private SysUiState mSysUiState;
+    @Mock GlobalActionsPanelPlugin mWalletPlugin;
+    @Mock GlobalActionsPanelPlugin.PanelViewController mWalletController;
+    @Mock private Handler mHandler;
+    @Mock private UserTracker mUserTracker;
+    @Mock private PackageManager mPackageManager;
+    @Mock private SecureSettings mSecureSettings;
+    @Mock private StatusBar mStatusBar;
+    @Mock private KeyguardUpdateMonitor mKeyguardUpdateMonitor;
 
     private TestableLooper mTestableLooper;
 
@@ -116,6 +138,9 @@ public class GlobalActionsDialogTest extends SysuiTestCase {
         allowTestableLooperAsMainThread();
 
         when(mRingerModeTracker.getRingerMode()).thenReturn(mRingerModeLiveData);
+        when(mResources.getConfiguration()).thenReturn(
+                getContext().getResources().getConfiguration());
+
         mGlobalActionsDialog = new GlobalActionsDialog(mContext,
                 mWindowManagerFuncs,
                 mAudioManager,
@@ -123,9 +148,9 @@ public class GlobalActionsDialogTest extends SysuiTestCase {
                 mDevicePolicyManager,
                 mLockPatternUtils,
                 mBroadcastDispatcher,
-                mConnectivityManager,
-                mTelephonyManager,
-                mContentResolver,
+                mTelephonyListenerManager,
+                mGlobalSettings,
+                mSecureSettings,
                 null,
                 mResources,
                 mConfigurationController,
@@ -136,27 +161,39 @@ public class GlobalActionsDialogTest extends SysuiTestCase {
                 mActivityManager,
                 null,
                 mMetricsLogger,
-                mDepthController,
                 mColorExtractor,
                 mStatusBarService,
-                mBlurUtils,
                 mNotificationShadeWindowController,
-                mControlsUiController,
                 mWindowManager,
                 mBackgroundExecutor,
-                mControlsListingController,
-                mControlsController,
                 mUiEventLogger,
-                mRingerModeTracker
+                mRingerModeTracker,
+                mSysUiState,
+                mHandler,
+                mPackageManager,
+                mStatusBar,
+                mKeyguardUpdateMonitor
         );
         mGlobalActionsDialog.setZeroDialogPressDelayForTesting();
+
+        ColorExtractor.GradientColors backdropColors = new ColorExtractor.GradientColors();
+        backdropColors.setMainColor(Color.BLACK);
+        when(mColorExtractor.getNeutralColors()).thenReturn(backdropColors);
+        when(mSysUiState.setFlag(anyInt(), anyBoolean())).thenReturn(mSysUiState);
     }
 
     @Test
-    public void testShouldLogVisibility() {
+    public void testShouldLogShow() {
         mGlobalActionsDialog.onShow(null);
         mTestableLooper.processAllMessages();
         verifyLogPosted(GlobalActionsDialog.GlobalActionsEvent.GA_POWER_MENU_OPEN);
+    }
+
+    @Test
+    public void testShouldLogDismiss() {
+        mGlobalActionsDialog.onDismiss(mGlobalActionsDialog.mDialog);
+        mTestableLooper.processAllMessages();
+        verifyLogPosted(GlobalActionsDialog.GlobalActionsEvent.GA_POWER_MENU_CLOSE);
     }
 
     @Test
@@ -192,12 +229,25 @@ public class GlobalActionsDialogTest extends SysuiTestCase {
     }
 
     @Test
-    public void testShouldLogScreenshotLongPress() {
-        FeatureFlagUtils.setEnabled(mContext, FeatureFlagUtils.SCREENRECORD_LONG_PRESS, true);
+    public void testShouldShowScreenshot() {
+        mContext.getOrCreateTestableResources().addOverride(
+                com.android.internal.R.integer.config_navBarInteractionMode,
+                WindowManagerPolicyConstants.NAV_BAR_MODE_2BUTTON);
+
         GlobalActionsDialog.ScreenshotAction screenshotAction =
                 mGlobalActionsDialog.makeScreenshotActionForTesting();
-        screenshotAction.onLongPress();
-        verifyLogPosted(GlobalActionsDialog.GlobalActionsEvent.GA_SCREENSHOT_LONG_PRESS);
+        assertThat(screenshotAction.shouldShow()).isTrue();
+    }
+
+    @Test
+    public void testShouldNotShowScreenshot() {
+        mContext.getOrCreateTestableResources().addOverride(
+                com.android.internal.R.integer.config_navBarInteractionMode,
+                WindowManagerPolicyConstants.NAV_BAR_MODE_3BUTTON);
+
+        GlobalActionsDialog.ScreenshotAction screenshotAction =
+                mGlobalActionsDialog.makeScreenshotActionForTesting();
+        assertThat(screenshotAction.shouldShow()).isFalse();
     }
 
     private void verifyLogPosted(GlobalActionsDialog.GlobalActionsEvent event) {
@@ -206,8 +256,16 @@ public class GlobalActionsDialogTest extends SysuiTestCase {
                 .log(event);
     }
 
+    @SafeVarargs
+    private static <T> void assertItemsOfType(List<T> stuff, Class<? extends T>... classes) {
+        assertThat(stuff).hasSize(classes.length);
+        for (int i = 0; i < stuff.size(); i++) {
+            assertThat(stuff.get(i)).isInstanceOf(classes[i]);
+        }
+    }
+
     @Test
-    public void testCreateActionItems_maxThree() {
+    public void testCreateActionItems_maxThree_noOverflow() {
         mGlobalActionsDialog = spy(mGlobalActionsDialog);
         // allow 3 items to be shown
         doReturn(3).when(mGlobalActionsDialog).getMaxShownPowerItems();
@@ -217,13 +275,135 @@ public class GlobalActionsDialogTest extends SysuiTestCase {
                 GlobalActionsDialog.GLOBAL_ACTION_KEY_EMERGENCY,
                 GlobalActionsDialog.GLOBAL_ACTION_KEY_POWER,
                 GlobalActionsDialog.GLOBAL_ACTION_KEY_RESTART,
-                GlobalActionsDialog.GLOBAL_ACTION_KEY_SCREENSHOT,
         };
         doReturn(actions).when(mGlobalActionsDialog).getDefaultActions();
         mGlobalActionsDialog.createActionItems();
 
-        assertEquals(3, mGlobalActionsDialog.mItems.size());
-        assertEquals(1, mGlobalActionsDialog.mOverflowItems.size());
+        assertItemsOfType(mGlobalActionsDialog.mItems,
+                GlobalActionsDialog.EmergencyAction.class,
+                GlobalActionsDialog.ShutDownAction.class,
+                GlobalActionsDialog.RestartAction.class);
+        assertThat(mGlobalActionsDialog.mOverflowItems).isEmpty();
+        assertThat(mGlobalActionsDialog.mPowerItems).isEmpty();
+    }
+
+    @Test
+    public void testCreateActionItems_maxThree_condensePower() {
+        mGlobalActionsDialog = spy(mGlobalActionsDialog);
+        // allow 3 items to be shown
+        doReturn(3).when(mGlobalActionsDialog).getMaxShownPowerItems();
+        // ensure items are not blocked by keyguard or device provisioning
+        doReturn(true).when(mGlobalActionsDialog).shouldShowAction(any());
+        // make sure lockdown action will be shown
+        doReturn(true).when(mGlobalActionsDialog).shouldDisplayLockdown(any());
+        String[] actions = {
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_EMERGENCY,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_LOCKDOWN,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_POWER,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_RESTART,
+        };
+        doReturn(actions).when(mGlobalActionsDialog).getDefaultActions();
+        mGlobalActionsDialog.createActionItems();
+
+        assertItemsOfType(mGlobalActionsDialog.mItems,
+                GlobalActionsDialog.EmergencyAction.class,
+                GlobalActionsDialog.LockDownAction.class,
+                GlobalActionsDialog.PowerOptionsAction.class);
+        assertThat(mGlobalActionsDialog.mOverflowItems).isEmpty();
+        assertItemsOfType(mGlobalActionsDialog.mPowerItems,
+                GlobalActionsDialog.ShutDownAction.class,
+                GlobalActionsDialog.RestartAction.class);
+    }
+
+    @Test
+    public void testCreateActionItems_maxThree_condensePower_splitPower() {
+        mGlobalActionsDialog = spy(mGlobalActionsDialog);
+        // allow 3 items to be shown
+        doReturn(3).when(mGlobalActionsDialog).getMaxShownPowerItems();
+        // make sure lockdown action will be shown
+        doReturn(true).when(mGlobalActionsDialog).shouldDisplayLockdown(any());
+        // make sure bugreport also shown
+        doReturn(true).when(mGlobalActionsDialog).shouldDisplayBugReport(any());
+        // ensure items are not blocked by keyguard or device provisioning
+        doReturn(true).when(mGlobalActionsDialog).shouldShowAction(any());
+        String[] actions = {
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_EMERGENCY,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_LOCKDOWN,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_POWER,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_BUGREPORT,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_RESTART,
+        };
+        doReturn(actions).when(mGlobalActionsDialog).getDefaultActions();
+        mGlobalActionsDialog.createActionItems();
+
+        assertItemsOfType(mGlobalActionsDialog.mItems,
+                GlobalActionsDialog.EmergencyAction.class,
+                GlobalActionsDialog.LockDownAction.class,
+                GlobalActionsDialog.PowerOptionsAction.class);
+        assertItemsOfType(mGlobalActionsDialog.mOverflowItems,
+                GlobalActionsDialog.BugReportAction.class);
+        assertItemsOfType(mGlobalActionsDialog.mPowerItems,
+                GlobalActionsDialog.ShutDownAction.class,
+                GlobalActionsDialog.RestartAction.class);
+    }
+
+    @Test
+    public void testCreateActionItems_maxFour_condensePower() {
+        mGlobalActionsDialog = spy(mGlobalActionsDialog);
+        // allow 3 items to be shown
+        doReturn(4).when(mGlobalActionsDialog).getMaxShownPowerItems();
+        // make sure lockdown action will be shown
+        doReturn(true).when(mGlobalActionsDialog).shouldDisplayLockdown(any());
+        // ensure items are not blocked by keyguard or device provisioning
+        doReturn(true).when(mGlobalActionsDialog).shouldShowAction(any());
+        String[] actions = {
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_EMERGENCY,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_LOCKDOWN,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_POWER,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_RESTART,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_SCREENSHOT
+        };
+        doReturn(actions).when(mGlobalActionsDialog).getDefaultActions();
+        mGlobalActionsDialog.createActionItems();
+
+        assertItemsOfType(mGlobalActionsDialog.mItems,
+                GlobalActionsDialog.EmergencyAction.class,
+                GlobalActionsDialog.LockDownAction.class,
+                GlobalActionsDialog.PowerOptionsAction.class,
+                GlobalActionsDialog.ScreenshotAction.class);
+        assertThat(mGlobalActionsDialog.mOverflowItems).isEmpty();
+        assertItemsOfType(mGlobalActionsDialog.mPowerItems,
+                GlobalActionsDialog.ShutDownAction.class,
+                GlobalActionsDialog.RestartAction.class);
+    }
+
+    @Test
+    public void testCreateActionItems_maxThree_doNotCondensePower() {
+        mGlobalActionsDialog = spy(mGlobalActionsDialog);
+        // allow 3 items to be shown
+        doReturn(3).when(mGlobalActionsDialog).getMaxShownPowerItems();
+        // make sure lockdown action will be shown
+        doReturn(true).when(mGlobalActionsDialog).shouldDisplayLockdown(any());
+        // make sure bugreport is also shown
+        doReturn(true).when(mGlobalActionsDialog).shouldDisplayBugReport(any());
+        // ensure items are not blocked by keyguard or device provisioning
+        doReturn(true).when(mGlobalActionsDialog).shouldShowAction(any());
+        String[] actions = {
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_EMERGENCY,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_POWER,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_BUGREPORT,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_LOCKDOWN,
+        };
+        doReturn(actions).when(mGlobalActionsDialog).getDefaultActions();
+        mGlobalActionsDialog.createActionItems();
+
+        assertItemsOfType(mGlobalActionsDialog.mItems,
+                GlobalActionsDialog.EmergencyAction.class,
+                GlobalActionsDialog.ShutDownAction.class,
+                GlobalActionsDialog.BugReportAction.class);
+        assertItemsOfType(mGlobalActionsDialog.mOverflowItems,
+                GlobalActionsDialog.LockDownAction.class);
+        assertThat(mGlobalActionsDialog.mPowerItems).isEmpty();
     }
 
     @Test
@@ -233,35 +413,163 @@ public class GlobalActionsDialogTest extends SysuiTestCase {
         doReturn(Integer.MAX_VALUE).when(mGlobalActionsDialog).getMaxShownPowerItems();
         // ensure items are not blocked by keyguard or device provisioning
         doReturn(true).when(mGlobalActionsDialog).shouldShowAction(any());
+        // make sure lockdown action will be shown
+        doReturn(true).when(mGlobalActionsDialog).shouldDisplayLockdown(any());
         String[] actions = {
                 GlobalActionsDialog.GLOBAL_ACTION_KEY_EMERGENCY,
                 GlobalActionsDialog.GLOBAL_ACTION_KEY_POWER,
                 GlobalActionsDialog.GLOBAL_ACTION_KEY_RESTART,
-                GlobalActionsDialog.GLOBAL_ACTION_KEY_SCREENSHOT,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_LOCKDOWN,
         };
         doReturn(actions).when(mGlobalActionsDialog).getDefaultActions();
         mGlobalActionsDialog.createActionItems();
 
-        assertEquals(4, mGlobalActionsDialog.mItems.size());
-        assertEquals(0, mGlobalActionsDialog.mOverflowItems.size());
+        assertItemsOfType(mGlobalActionsDialog.mItems,
+                GlobalActionsDialog.EmergencyAction.class,
+                GlobalActionsDialog.ShutDownAction.class,
+                GlobalActionsDialog.RestartAction.class,
+                GlobalActionsDialog.LockDownAction.class);
+        assertThat(mGlobalActionsDialog.mOverflowItems).isEmpty();
+        assertThat(mGlobalActionsDialog.mPowerItems).isEmpty();
     }
 
     @Test
-    public void testCreateActionItems_maxThree_itemNotShown() {
+    public void testCreateActionItems_maxThree_lockdownDisabled_doesNotShowLockdown() {
         mGlobalActionsDialog = spy(mGlobalActionsDialog);
         // allow only 3 items to be shown
         doReturn(3).when(mGlobalActionsDialog).getMaxShownPowerItems();
+        // make sure lockdown action will NOT be shown
+        doReturn(false).when(mGlobalActionsDialog).shouldDisplayLockdown(any());
         String[] actions = {
                 GlobalActionsDialog.GLOBAL_ACTION_KEY_EMERGENCY,
-                // screenshot blocked because device not provisioned
-                GlobalActionsDialog.GLOBAL_ACTION_KEY_SCREENSHOT,
+                // lockdown action not allowed
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_LOCKDOWN,
                 GlobalActionsDialog.GLOBAL_ACTION_KEY_POWER,
                 GlobalActionsDialog.GLOBAL_ACTION_KEY_RESTART,
         };
         doReturn(actions).when(mGlobalActionsDialog).getDefaultActions();
         mGlobalActionsDialog.createActionItems();
 
-        assertEquals(3, mGlobalActionsDialog.mItems.size());
-        assertEquals(0, mGlobalActionsDialog.mOverflowItems.size());
+        assertItemsOfType(mGlobalActionsDialog.mItems,
+                GlobalActionsDialog.EmergencyAction.class,
+                GlobalActionsDialog.ShutDownAction.class,
+                GlobalActionsDialog.RestartAction.class);
+        assertThat(mGlobalActionsDialog.mOverflowItems).isEmpty();
+        assertThat(mGlobalActionsDialog.mPowerItems).isEmpty();
+    }
+
+    @Test
+    public void testCreateActionItems_shouldShowAction_excludeBugReport() {
+        mGlobalActionsDialog = spy(mGlobalActionsDialog);
+        // allow only 3 items to be shown
+        doReturn(3).when(mGlobalActionsDialog).getMaxShownPowerItems();
+        doReturn(true).when(mGlobalActionsDialog).shouldDisplayBugReport(any());
+        // exclude bugreport in shouldShowAction to demonstrate how any button can be removed
+        doAnswer(
+                invocation -> !(invocation.getArgument(0)
+                        instanceof GlobalActionsDialog.BugReportAction))
+                .when(mGlobalActionsDialog).shouldShowAction(any());
+
+        String[] actions = {
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_EMERGENCY,
+                // bugreport action not allowed
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_BUGREPORT,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_POWER,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_RESTART,
+        };
+        doReturn(actions).when(mGlobalActionsDialog).getDefaultActions();
+        mGlobalActionsDialog.createActionItems();
+
+        assertItemsOfType(mGlobalActionsDialog.mItems,
+                GlobalActionsDialog.EmergencyAction.class,
+                GlobalActionsDialog.ShutDownAction.class,
+                GlobalActionsDialog.RestartAction.class);
+        assertThat(mGlobalActionsDialog.mOverflowItems).isEmpty();
+        assertThat(mGlobalActionsDialog.mPowerItems).isEmpty();
+    }
+
+    @Test
+    public void testShouldShowLockScreenMessage() throws RemoteException {
+        mGlobalActionsDialog = spy(mGlobalActionsDialog);
+        mGlobalActionsDialog.mDialog = null;
+        when(mKeyguardStateController.isUnlocked()).thenReturn(false);
+        when(mActivityManager.getCurrentUser()).thenReturn(newUserInfo());
+        when(mLockPatternUtils.getStrongAuthForUser(anyInt())).thenReturn(STRONG_AUTH_NOT_REQUIRED);
+        mGlobalActionsDialog.mShowLockScreenCards = false;
+        setupDefaultActions();
+        when(mWalletPlugin.onPanelShown(any(), anyBoolean())).thenReturn(mWalletController);
+        when(mWalletController.getPanelContent()).thenReturn(new FrameLayout(mContext));
+
+        mGlobalActionsDialog.showOrHideDialog(false, true, mWalletPlugin);
+
+        GlobalActionsDialog.ActionsDialog dialog =
+                (GlobalActionsDialog.ActionsDialog) mGlobalActionsDialog.mDialog;
+        assertThat(dialog).isNotNull();
+        assertThat(dialog.mLockMessageContainer.getVisibility()).isEqualTo(View.VISIBLE);
+
+        // Dismiss the dialog so that it does not pollute other tests
+        mGlobalActionsDialog.showOrHideDialog(false, true, mWalletPlugin);
+    }
+
+    @Test
+    public void testShouldNotShowLockScreenMessage_whenWalletShownOnLockScreen()
+            throws RemoteException {
+        mGlobalActionsDialog = spy(mGlobalActionsDialog);
+        mGlobalActionsDialog.mDialog = null;
+        when(mKeyguardStateController.isUnlocked()).thenReturn(false);
+        when(mActivityManager.getCurrentUser()).thenReturn(newUserInfo());
+        when(mLockPatternUtils.getStrongAuthForUser(anyInt())).thenReturn(STRONG_AUTH_NOT_REQUIRED);
+        mGlobalActionsDialog.mShowLockScreenCards = true;
+        setupDefaultActions();
+        when(mWalletPlugin.onPanelShown(any(), anyBoolean())).thenReturn(mWalletController);
+        when(mWalletController.getPanelContent()).thenReturn(new FrameLayout(mContext));
+
+        mGlobalActionsDialog.showOrHideDialog(false, true, mWalletPlugin);
+
+        GlobalActionsDialog.ActionsDialog dialog =
+                (GlobalActionsDialog.ActionsDialog) mGlobalActionsDialog.mDialog;
+        assertThat(dialog).isNotNull();
+        assertThat(dialog.mLockMessageContainer.getVisibility()).isEqualTo(View.GONE);
+
+        // Dismiss the dialog so that it does not pollute other tests
+        mGlobalActionsDialog.showOrHideDialog(false, true, mWalletPlugin);
+    }
+
+    @Test
+    public void testShouldNotShowLockScreenMessage_whenWalletBothDisabled()
+            throws RemoteException {
+        mGlobalActionsDialog = spy(mGlobalActionsDialog);
+        mGlobalActionsDialog.mDialog = null;
+        when(mKeyguardStateController.isUnlocked()).thenReturn(false);
+
+        when(mActivityManager.getCurrentUser()).thenReturn(newUserInfo());
+        when(mLockPatternUtils.getStrongAuthForUser(anyInt())).thenReturn(STRONG_AUTH_NOT_REQUIRED);
+        mGlobalActionsDialog.mShowLockScreenCards = true;
+        setupDefaultActions();
+        when(mWalletPlugin.onPanelShown(any(), anyBoolean())).thenReturn(mWalletController);
+        when(mWalletController.getPanelContent()).thenReturn(null);
+
+        mGlobalActionsDialog.showOrHideDialog(false, true, mWalletPlugin);
+
+        GlobalActionsDialog.ActionsDialog dialog =
+                (GlobalActionsDialog.ActionsDialog) mGlobalActionsDialog.mDialog;
+        assertThat(dialog).isNotNull();
+        assertThat(dialog.mLockMessageContainer.getVisibility()).isEqualTo(View.GONE);
+
+        // Dismiss the dialog so that it does not pollute other tests
+        mGlobalActionsDialog.showOrHideDialog(false, true, mWalletPlugin);
+    }
+
+    private UserInfo newUserInfo() {
+        return new UserInfo(0, null, null, UserInfo.FLAG_PRIMARY, null);
+    }
+
+    private void setupDefaultActions() {
+        String[] actions = {
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_EMERGENCY,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_POWER,
+                GlobalActionsDialog.GLOBAL_ACTION_KEY_RESTART,
+        };
+        doReturn(actions).when(mGlobalActionsDialog).getDefaultActions();
     }
 }

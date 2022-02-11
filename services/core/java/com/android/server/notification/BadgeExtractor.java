@@ -17,6 +17,7 @@ package com.android.server.notification;
 
 import static android.app.NotificationManager.Policy.SUPPRESSED_EFFECT_BADGE;
 
+import android.app.Notification;
 import android.content.Context;
 import android.util.Slog;
 
@@ -61,6 +62,20 @@ public class BadgeExtractor implements NotificationSignalExtractor {
             record.setShowBadge(false);
         }
 
+        Notification.BubbleMetadata metadata = record.getNotification().getBubbleMetadata();
+        if (metadata != null && metadata.isNotificationSuppressed()) {
+            record.setShowBadge(false);
+        }
+
+        if (mConfig.isMediaNotificationFilteringEnabled()) {
+            final Notification notif = record.getNotification();
+            if (notif.hasMediaSession()) {
+                if (notif.isStyle(Notification.DecoratedMediaCustomViewStyle.class)
+                        || notif.isStyle(Notification.MediaStyle.class)) {
+                    record.setShowBadge(false);
+                }
+            }
+        }
         return null;
     }
 

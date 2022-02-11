@@ -32,6 +32,7 @@ import android.service.notification.StatusBarNotification;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.statusbar.StatusBarState;
@@ -44,12 +45,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * Provides heads-up and pulsing state for notification entries.
  */
-@Singleton
+@SysUISingleton
 public class NotificationInterruptStateProviderImpl implements NotificationInterruptStateProvider {
     private static final String TAG = "InterruptionStateProvider";
     private static final boolean DEBUG = true; //false;
@@ -146,14 +146,6 @@ public class NotificationInterruptStateProviderImpl implements NotificationInter
             return false;
         }
 
-        if (!entry.isBubble()) {
-            if (DEBUG) {
-                Log.d(TAG, "No bubble up: notification " + sbn.getKey()
-                        + " is bubble? " + entry.isBubble());
-            }
-            return false;
-        }
-
         if (entry.getBubbleMetadata() == null
                 || (entry.getBubbleMetadata().getShortcutId() == null
                     && entry.getBubbleMetadata().getIntent() == null)) {
@@ -203,6 +195,13 @@ public class NotificationInterruptStateProviderImpl implements NotificationInter
         }
 
         if (!canAlertAwakeCommon(entry)) {
+            return false;
+        }
+
+        if (isSnoozedPackage(sbn)) {
+            if (DEBUG_HEADS_UP) {
+                Log.d(TAG, "No alerting: snoozed package: " + sbn.getKey());
+            }
             return false;
         }
 
@@ -336,6 +335,14 @@ public class NotificationInterruptStateProviderImpl implements NotificationInter
                 return false;
             }
         }
+
+        if (entry.hasJustLaunchedFullScreenIntent()) {
+            if (DEBUG_HEADS_UP) {
+                Log.d(TAG, "No alerting: recent fullscreen: " + sbn.getKey());
+            }
+            return false;
+        }
+
         return true;
     }
 
@@ -357,21 +364,6 @@ public class NotificationInterruptStateProviderImpl implements NotificationInter
                 return false;
             }
         }
-
-        if (isSnoozedPackage(sbn)) {
-            if (DEBUG_HEADS_UP) {
-                Log.d(TAG, "No alerting: snoozed package: " + sbn.getKey());
-            }
-            return false;
-        }
-
-        if (entry.hasJustLaunchedFullScreenIntent()) {
-            if (DEBUG_HEADS_UP) {
-                Log.d(TAG, "No alerting: recent fullscreen: " + sbn.getKey());
-            }
-            return false;
-        }
-
         return true;
     }
 

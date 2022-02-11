@@ -70,7 +70,7 @@ public class ResolverListController {
             UserHandle userHandle) {
         this(context, pm, targetIntent, referrerPackage, launchedFromUid, userHandle,
                     new ResolverRankerServiceResolverComparator(
-                        context, targetIntent, referrerPackage, null));
+                        context, targetIntent, referrerPackage, null, null));
     }
 
     public ResolverListController(
@@ -375,6 +375,13 @@ public class ResolverListController {
     @VisibleForTesting
     public float getScore(DisplayResolveInfo target) {
         return mResolverComparator.getScore(target.getResolvedComponentName());
+    }
+
+    /**
+     * Returns the app share score of the given {@code componentName}.
+     */
+    public float getScore(ComponentName componentName) {
+        return mResolverComparator.getScore(componentName);
     }
 
     /**

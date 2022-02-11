@@ -18,6 +18,7 @@ package com.android.server.pm.parsing;
 
 import android.annotation.NonNull;
 import android.content.pm.PackageParserCacheHelper;
+import android.os.FileUtils;
 import android.os.Parcel;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -78,7 +79,6 @@ public class PackageCacher {
         final PackageParserCacheHelper.ReadHelper helper = new PackageParserCacheHelper.ReadHelper(p);
         helper.startAndInstall();
 
-        // TODO(b/135203078): Hide PackageImpl constructor?
         ParsedPackage pkg = new PackageImpl(p);
 
         p.recycle();
@@ -195,6 +195,20 @@ public class PackageCacher {
             }
         } catch (Throwable e) {
             Slog.w(TAG, "Error saving package cache.", e);
+        }
+    }
+
+    /**
+     * Delete the cache files for the given {@code packageFile}.
+     */
+    public void cleanCachedResult(@NonNull File packageFile) {
+        final String packageName = packageFile.getName();
+        final File[] files = FileUtils.listFilesOrEmpty(mCacheDir,
+                (dir, name) -> name.startsWith(packageName));
+        for (File file : files) {
+            if (!file.delete()) {
+                Slog.e(TAG, "Unable to clean cache file: " + file);
+            }
         }
     }
 }

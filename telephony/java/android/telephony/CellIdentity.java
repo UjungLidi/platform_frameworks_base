@@ -37,7 +37,7 @@ import java.util.UUID;
 public abstract class CellIdentity implements Parcelable {
 
     /** @hide */
-    public static final int INVALID_CHANNEL_NUMBER = -1;
+    public static final int INVALID_CHANNEL_NUMBER = Integer.MAX_VALUE;
 
     /**
      * parameters for validation
@@ -45,8 +45,10 @@ public abstract class CellIdentity implements Parcelable {
      */
     public static final int MCC_LENGTH = 3;
 
-    private static final int MNC_MIN_LENGTH = 2;
-    private static final int MNC_MAX_LENGTH = 3;
+    /** @hide */
+    public static final int MNC_MIN_LENGTH = 2;
+    /** @hide */
+    public static final int MNC_MAX_LENGTH = 3;
 
     // Log tag
     /** @hide */
@@ -207,7 +209,7 @@ public abstract class CellIdentity implements Parcelable {
     }
 
     /** @hide */
-    protected String getPlmn() {
+    public @Nullable String getPlmn() {
         if (mMccStr == null || mMncStr == null) return null;
         return mMccStr + mMncStr;
     }

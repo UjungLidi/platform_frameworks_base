@@ -21,12 +21,12 @@ import static android.os.UserManager.USER_TYPE_PROFILE_MANAGED;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import android.app.PropertyInvalidatedCache;
 import android.content.pm.UserInfo;
 import android.os.Looper;
 import android.os.ServiceSpecificException;
 import android.os.UserHandle;
 import android.os.UserManager;
-import android.os.UserManagerInternal;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.MediumTest;
@@ -60,6 +60,9 @@ public class UserManagerServiceCreateProfileTest {
         if (Looper.myLooper() == null) {
             Looper.prepare();
         }
+        // Disable binder caches in this process.
+        PropertyInvalidatedCache.disableForTestMode();
+
         LocalServices.removeServiceForTest(UserManagerInternal.class);
         mUserManagerService = new UserManagerService(InstrumentationRegistry.getContext());
 

@@ -17,6 +17,7 @@
 //#define LOG_NDEBUG 0
 #define LOG_TAG "SoundPool::Stream"
 #include <utils/Log.h>
+#include <android/content/AttributionSourceState.h>
 
 #include "Stream.h"
 
@@ -105,7 +106,7 @@ void Stream::setRate(int32_t streamID, float rate)
     if (streamID == mStreamID) {
         mRate = rate;
         if (mAudioTrack != nullptr && mSound != nullptr) {
-            const uint32_t sampleRate = uint32_t(float(mSound->getSampleRate()) * rate + 0.5);
+            const auto sampleRate = (uint32_t)lround(double(mSound->getSampleRate()) * rate);
             mAudioTrack->setSampleRate(sampleRate);
         }
     }
@@ -203,7 +204,7 @@ void Stream::stop()
 void Stream::stop_l()
 {
     if (mState != IDLE) {
-        ALOGV("%s: track streamID: %d", __func__, (int)mStreamID);
+        ALOGV("%s: track(%p) streamID: %d", __func__, mAudioTrack.get(), (int)mStreamID);
         if (mAudioTrack != nullptr) {
             mAudioTrack->stop();
         }
@@ -214,8 +215,11 @@ void Stream::stop_l()
 
 void Stream::clearAudioTrack()
 {
+    sp<AudioTrack> release;  // release outside of lock.
+    std::lock_guard lock(mLock);
     // This will invoke the destructor which waits for the AudioTrack thread to join,
     // and is currently the only safe way to ensure there are no callbacks afterwards.
+    release = mAudioTrack;  // or std::swap if we had move semantics.
     mAudioTrack.clear();
 }
 
@@ -229,7 +233,7 @@ Stream* Stream::playPairStream() {
     LOG_ALWAYS_FATAL_IF(pairStream == nullptr, "No pair stream!");
     sp<AudioTrack> releaseTracks[2];
     {
-        ALOGV("%s: track streamID: %d", __func__, (int)mStreamID);
+        ALOGV("%s: track streamID: %d", __func__, (int)getStreamID());
         // TODO: Do we really want to force a simultaneous synchronization between
         // the stream and its pair?
 
@@ -288,7 +292,7 @@ void Stream::play_l(const std::shared_ptr<Sound>& sound, int32_t nextStreamID,
         const audio_stream_type_t streamType =
                 AudioSystem::attributesToStreamType(*mStreamManager->getAttributes());
         const int32_t channelCount = sound->getChannelCount();
-        const uint32_t sampleRate = uint32_t(float(sound->getSampleRate()) * rate + 0.5);
+        const auto sampleRate = (uint32_t)lround(double(sound->getSampleRate()) * rate);
         size_t frameCount = 0;
 
         if (loop) {
@@ -307,14 +311,15 @@ void Stream::play_l(const std::shared_ptr<Sound>& sound, int32_t nextStreamID,
                         __func__, mAudioTrack.get(), sound->getSoundID());
             }
         }
-        if (newTrack == 0) {
+        if (newTrack == nullptr) {
             // mToggle toggles each time a track is started on a given stream.
             // The toggle is concatenated with the Stream address and passed to AudioTrack
             // as callback user data. This enables the detection of callbacks received from the old
             // audio track while the new one is being started and avoids processing them with
             // wrong audio audio buffer size  (mAudioBufferSize)
             auto toggle = mToggle ^ 1;
-            void* userData = (void*)((uintptr_t)this | toggle);
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            void* userData = reinterpret_cast<void*>((uintptr_t)this | toggle);
             audio_channel_mask_t soundChannelMask = sound->getChannelMask();
             // When sound contains a valid channel mask, use it as is.
             // Otherwise, use stream count to calculate channel mask.
@@ -323,14 +328,21 @@ void Stream::play_l(const std::shared_ptr<Sound>& sound, int32_t nextStreamID,
 
             // do not create a new audio track if current track is compatible with sound parameters
 
+            android::content::AttributionSourceState attributionSource;
+            attributionSource.packageName = mStreamManager->getOpPackageName();
+            attributionSource.token = sp<BBinder>::make();
+            // TODO b/182469354 make consistent with AudioRecord, add util for native source
             newTrack = new AudioTrack(streamType, sampleRate, sound->getFormat(),
                     channelMask, sound->getIMemory(), AUDIO_OUTPUT_FLAG_FAST,
                     staticCallback, userData,
                     0 /*default notification frames*/, AUDIO_SESSION_ALLOCATE,
                     AudioTrack::TRANSFER_DEFAULT,
-                    nullptr /*offloadInfo*/, -1 /*uid*/, -1 /*pid*/,
-                    mStreamManager->getAttributes());
-
+                    nullptr /*offloadInfo*/, attributionSource,
+                    mStreamManager->getAttributes(),
+                    false /*doNotReconnect*/, 1.0f /*maxRequiredSpeed*/);
+            // Set caller name so it can be logged in destructor.
+            // MediaMetricsConstants.h: AMEDIAMETRICS_PROP_CALLERNAME_VALUE_SOUNDPOOL
+            newTrack->setCallerName("soundpool");
             oldTrack = mAudioTrack;
             status = newTrack->initCheck();
             if (status != NO_ERROR) {
@@ -378,17 +390,18 @@ exit:
 /* static */
 void Stream::staticCallback(int event, void* user, void* info)
 {
-    const uintptr_t userAsInt = (uintptr_t)user;
-    Stream* stream = reinterpret_cast<Stream*>(userAsInt & ~1);
-    stream->callback(event, info, userAsInt & 1, 0 /* tries */);
+    const auto userAsInt = (uintptr_t)user;
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    auto stream = reinterpret_cast<Stream*>(userAsInt & ~1);
+    stream->callback(event, info, int(userAsInt & 1), 0 /* tries */);
 }
 
 void Stream::callback(int event, void* info, int toggle, int tries)
 {
-    ALOGV("%s streamID %d", __func__, (int)mStreamID);
     int32_t activeStreamIDToRestart = 0;
     {
         std::unique_lock lock(mLock);
+        ALOGV("%s track(%p) streamID %d", __func__, mAudioTrack.get(), (int)mStreamID);
 
         if (mAudioTrack == nullptr) {
             // The AudioTrack is either with this stream or its pair.
@@ -398,6 +411,7 @@ void Stream::callback(int event, void* info, int toggle, int tries)
             // logic here.
             if (tries < 3) {
                 lock.unlock();
+                ALOGV("%s streamID %d going to pair stream", __func__, (int)mStreamID);
                 getPairStream()->callback(event, info, toggle, tries + 1);
             } else {
                 ALOGW("%s streamID %d cannot find track", __func__, (int)mStreamID);
@@ -444,8 +458,9 @@ void Stream::callback(int event, void* info, int toggle, int tries)
 
 void Stream::dump() const
 {
+    // TODO: consider std::try_lock() - ok for now for ALOGV.
     ALOGV("mPairStream=%p, mState=%d, mStreamID=%d, mSoundID=%d, mPriority=%d, mLoop=%d",
-            getPairStream(), mState, (int)mStreamID, mSoundID, mPriority, mLoop);
+            getPairStream(), mState, (int)getStreamID(), getSoundID(), mPriority, mLoop);
 }
 
 } // namespace android::soundpool

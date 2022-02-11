@@ -34,6 +34,7 @@ import androidx.test.filters.SmallTest;
 
 import com.android.internal.view.AppearanceRegion;
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.navigationbar.NavigationModeController;
 import com.android.systemui.statusbar.policy.BatteryController;
 
 import org.junit.Before;
@@ -56,7 +57,7 @@ public class LightBarControllerTest extends SysuiTestCase {
         when(mStatusBarIconController.getTransitionsController()).thenReturn(
                 mLightBarTransitionsController);
         mLightBarController = new LightBarController(mContext, mStatusBarIconController,
-                mock(BatteryController.class));
+                mock(BatteryController.class), mock(NavigationModeController.class));
     }
 
     @Test

@@ -19,9 +19,11 @@ package android.view.accessibility;
 import static android.accessibilityservice.AccessibilityServiceInfo.FLAG_ENABLE_ACCESSIBILITY_VOLUME;
 
 import android.Manifest;
+import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.accessibilityservice.AccessibilityServiceInfo.FeedbackType;
 import android.accessibilityservice.AccessibilityShortcutInfo;
+import android.annotation.ColorInt;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -59,6 +61,7 @@ import android.view.IWindow;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent.EventType;
 
+import com.android.internal.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IntPair;
 
@@ -108,10 +111,13 @@ public final class AccessibilityManager {
     public static final int STATE_FLAG_REQUEST_MULTI_FINGER_GESTURES = 0x00000010;
 
     /** @hide */
+    public static final int STATE_FLAG_ACCESSIBILITY_TRACING_ENABLED = 0x00000020;
+
+    /** @hide */
     public static final int DALTONIZER_DISABLED = -1;
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final int DALTONIZER_SIMULATE_MONOCHROMACY = 0;
 
     /** @hide */
@@ -124,7 +130,7 @@ public final class AccessibilityManager {
      * Activity action: Launch UI to manage which accessibility service or feature is assigned
      * to the navigation bar Accessibility button.
      * <p>
-     * Input: {@link #EXTRA_SHORTCUT_TYPE} is the shortcut type.
+     * Input: Nothing.
      * </p>
      * <p>
      * Output: Nothing.
@@ -137,16 +143,7 @@ public final class AccessibilityManager {
             "com.android.internal.intent.action.CHOOSE_ACCESSIBILITY_BUTTON";
 
     /**
-     * Used as an int extra field in {@link #ACTION_CHOOSE_ACCESSIBILITY_BUTTON} intent to specify
-     * the shortcut type.
-     *
-     * @hide
-     */
-    public static final String EXTRA_SHORTCUT_TYPE =
-            "com.android.internal.intent.extra.SHORTCUT_TYPE";
-
-    /**
-     * Used as an int value for {@link #EXTRA_SHORTCUT_TYPE} to represent the accessibility button
+     * Used as an int value for accessibility chooser activity to represent the accessibility button
      * shortcut type.
      *
      * @hide
@@ -154,7 +151,7 @@ public final class AccessibilityManager {
     public static final int ACCESSIBILITY_BUTTON = 0;
 
     /**
-     * Used as an int value for {@link #EXTRA_SHORTCUT_TYPE} to represent hardware key shortcut,
+     * Used as an int value for accessibility chooser activity to represent hardware key shortcut,
      * such as volume key button.
      *
      * @hide
@@ -238,9 +235,17 @@ public final class AccessibilityManager {
     @UnsupportedAppUsage(trackingBug = 123768939L)
     boolean mIsHighTextContrastEnabled;
 
+    // Whether accessibility tracing is enabled or not
+    boolean mIsAccessibilityTracingEnabled = false;
+
     AccessibilityPolicy mAccessibilityPolicy;
 
     private int mPerformingAction = 0;
+
+    /** The stroke width of the focus rectangle in pixels */
+    private int mFocusStrokeWidth;
+    /** The color of the focus rectangle */
+    private int mFocusColor;
 
     @UnsupportedAppUsage
     private final ArrayMap<AccessibilityStateChangeListener, Handler>
@@ -419,6 +424,13 @@ public final class AccessibilityManager {
         public void setRelevantEventTypes(int eventTypes) {
             mRelevantEventTypes = eventTypes;
         }
+
+        @Override
+        public void setFocusAppearance(int strokeWidth, int color) {
+            synchronized (mLock) {
+                updateFocusAppearanceLocked(strokeWidth, color);
+            }
+        }
     };
 
     /**
@@ -466,6 +478,7 @@ public final class AccessibilityManager {
         mHandler = new Handler(context.getMainLooper(), mCallback);
         mUserId = userId;
         synchronized (mLock) {
+            initialFocusAppearanceLocked(context.getResources());
             tryConnectToServiceLocked(service);
         }
     }
@@ -473,18 +486,26 @@ public final class AccessibilityManager {
     /**
      * Create an instance.
      *
+     * @param context A {@link Context}.
      * @param handler The handler to use
      * @param service An interface to the backing service.
      * @param userId User id under which to run.
+     * @param serviceConnect {@code true} to connect the service or
+     *                       {@code false} not to connect the service.
      *
      * @hide
      */
-    public AccessibilityManager(Handler handler, IAccessibilityManager service, int userId) {
+    @VisibleForTesting
+    public AccessibilityManager(Context context, Handler handler, IAccessibilityManager service,
+            int userId, boolean serviceConnect) {
         mCallback = new MyCallback();
         mHandler = handler;
         mUserId = userId;
         synchronized (mLock) {
-            tryConnectToServiceLocked(service);
+            initialFocusAppearanceLocked(context.getResources());
+            if (serviceConnect) {
+                tryConnectToServiceLocked(service);
+            }
         }
     }
 
@@ -493,6 +514,25 @@ public final class AccessibilityManager {
      */
     public IAccessibilityManagerClient getClient() {
         return mClient;
+    }
+
+    /**
+     * Unregisters the IAccessibilityManagerClient from the backing service
+     * @hide
+     */
+    public boolean removeClient() {
+        synchronized (mLock) {
+            IAccessibilityManager service = getServiceLocked();
+            if (service == null) {
+                return false;
+            }
+            try {
+                return service.removeClient(mClient, mUserId);
+            } catch (RemoteException re) {
+                Log.e(LOG_TAG, "AccessibilityManagerService is dead", re);
+            }
+        }
+        return false;
     }
 
     /**
@@ -615,7 +655,7 @@ public final class AccessibilityManager {
             // it is possible that this manager is in the same process as the service but
             // client using it is called through Binder from another process. Example: MMS
             // app adds a SMS notification and the NotificationManagerService calls this method
-            long identityToken = Binder.clearCallingIdentity();
+            final long identityToken = Binder.clearCallingIdentity();
             try {
                 service.sendAccessibilityEvent(dispatchedEvent, userId);
             } finally {
@@ -963,6 +1003,43 @@ public final class AccessibilityManager {
     }
 
     /**
+     * Gets the strokeWidth of the focus rectangle. This value can be set by
+     * {@link AccessibilityService}.
+     *
+     * @return The strokeWidth of the focus rectangle in pixels.
+     *
+     */
+    public int getAccessibilityFocusStrokeWidth() {
+        synchronized (mLock) {
+            return mFocusStrokeWidth;
+        }
+    }
+
+    /**
+     * Gets the color of the focus rectangle. This value can be set by
+     * {@link AccessibilityService}.
+     *
+     * @return The color of the focus rectangle.
+     *
+     */
+    public @ColorInt int getAccessibilityFocusColor() {
+        synchronized (mLock) {
+            return mFocusColor;
+        }
+    }
+
+    /**
+     * Gets accessibility tracing enabled state.
+     *
+     * @hide
+     */
+    public boolean isAccessibilityTracingEnabled() {
+        synchronized (mLock) {
+            return mIsAccessibilityTracingEnabled;
+        }
+    }
+
+    /**
      * Get the preparers that are registered for an accessibility ID
      *
      * @param id The ID of interest
@@ -1156,6 +1233,8 @@ public final class AccessibilityManager {
                 (stateFlags & STATE_FLAG_TOUCH_EXPLORATION_ENABLED) != 0;
         final boolean highTextContrastEnabled =
                 (stateFlags & STATE_FLAG_HIGH_TEXT_CONTRAST_ENABLED) != 0;
+        final boolean accessibilityTracingEnabled =
+                (stateFlags & STATE_FLAG_ACCESSIBILITY_TRACING_ENABLED) != 0;
 
         final boolean wasEnabled = isEnabled();
         final boolean wasTouchExplorationEnabled = mIsTouchExplorationEnabled;
@@ -1177,6 +1256,8 @@ public final class AccessibilityManager {
         if (wasHighTextContrastEnabled != highTextContrastEnabled) {
             notifyHighTextContrastStateChanged();
         }
+
+        updateAccessibilityTracingState(accessibilityTracingEnabled);
     }
 
     /**
@@ -1258,7 +1339,6 @@ public final class AccessibilityManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(Manifest.permission.MANAGE_ACCESSIBILITY)
     public void performAccessibilityShortcut() {
         performAccessibilityShortcut(null);
@@ -1561,6 +1641,7 @@ public final class AccessibilityManager {
             setStateLocked(IntPair.first(userStateAndRelevantEvents));
             mRelevantEventTypes = IntPair.second(userStateAndRelevantEvents);
             updateUiTimeout(service.getRecommendedTimeoutMillis());
+            updateFocusAppearanceLocked(service.getFocusStrokeWidth(), service.getFocusColor());
             mService = service;
         } catch (RemoteException re) {
             Log.e(LOG_TAG, "AccessibilityManagerService is dead", re);
@@ -1634,6 +1715,15 @@ public final class AccessibilityManager {
     }
 
     /**
+     * Update mIsAccessibilityTracingEnabled.
+     */
+    private void updateAccessibilityTracingState(boolean enabled) {
+        synchronized (mLock) {
+            mIsAccessibilityTracingEnabled = enabled;
+        }
+    }
+
+    /**
      * Update interactive and non-interactive UI timeout.
      *
      * @param uiTimeout A pair of {@code int}s. First integer for interactive one, and second
@@ -1642,6 +1732,40 @@ public final class AccessibilityManager {
     private void updateUiTimeout(long uiTimeout) {
         mInteractiveUiTimeout = IntPair.first(uiTimeout);
         mNonInteractiveUiTimeout = IntPair.second(uiTimeout);
+    }
+
+    /**
+     * Updates the stroke width and color of the focus rectangle.
+     *
+     * @param strokeWidth The strokeWidth of the focus rectangle.
+     * @param color The color of the focus rectangle.
+     */
+    private void updateFocusAppearanceLocked(int strokeWidth, int color) {
+        if (mFocusStrokeWidth == strokeWidth && mFocusColor == color) {
+            return;
+        }
+        mFocusStrokeWidth = strokeWidth;
+        mFocusColor = color;
+    }
+
+    /**
+     * Sets the stroke width and color of the focus rectangle to default value.
+     *
+     * @param resource The resources.
+     */
+    private void initialFocusAppearanceLocked(Resources resource) {
+        try {
+            mFocusStrokeWidth = resource.getDimensionPixelSize(
+                    R.dimen.accessibility_focus_highlight_stroke_width);
+            mFocusColor = resource.getColor(R.color.accessibility_focus_highlight_color);
+        } catch (Resources.NotFoundException re) {
+            // Sets the stroke width and color to default value by hardcoded for making
+            // the Talkback can work normally.
+            mFocusStrokeWidth = (int) (4 * resource.getDisplayMetrics().density);
+            mFocusColor = 0xbf39b500;
+            Log.e(LOG_TAG, "Error while initialing the focus appearance data then setting to"
+                    + " default value by hardcoded", re);
+        }
     }
 
     /**

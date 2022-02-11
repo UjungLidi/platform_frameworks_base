@@ -284,12 +284,7 @@ public final class GnssStatus implements Parcelable {
      * Gets the carrier frequency of the signal tracked.
      *
      * <p>For example it can be the GPS central frequency for L1 = 1575.45 MHz, or L2 = 1227.60
-     * MHz, L5 = 1176.45 MHz, varying GLO channels, etc. If the field is not set, it is the primary
-     * common use central frequency, e.g. L1 = 1575.45 MHz for GPS.
-     *
-     * For an L1, L5 receiver tracking a satellite on L1 and L5 at the same time, two measurements
-     * will be reported for this same satellite, in one all the values related to L1 will be
-     * filled, and in the other all of the values related to L5 will be filled.
+     * MHz, L5 = 1176.45 MHz, varying GLO channels, etc.
      *
      * <p>The value is only available if {@link #hasCarrierFrequencyHz(int satelliteIndex)} is
      * {@code true}.
@@ -391,20 +386,10 @@ public final class GnssStatus implements Parcelable {
             float[] basebandCn0DbHzs = new float[svCount];
             for (int i = 0; i < svCount; i++) {
                 svidWithFlags[i] = in.readInt();
-            }
-            for (int i = 0; i < svCount; i++) {
                 cn0DbHzs[i] = in.readFloat();
-            }
-            for (int i = 0; i < svCount; i++) {
                 elevations[i] = in.readFloat();
-            }
-            for (int i = 0; i < svCount; i++) {
                 azimuths[i] = in.readFloat();
-            }
-            for (int i = 0; i < svCount; i++) {
                 carrierFrequencies[i] = in.readFloat();
-            }
-            for (int i = 0; i < svCount; i++) {
                 basebandCn0DbHzs[i] = in.readFloat();
             }
 
@@ -428,20 +413,10 @@ public final class GnssStatus implements Parcelable {
         parcel.writeInt(mSvCount);
         for (int i = 0; i < mSvCount; i++) {
             parcel.writeInt(mSvidWithFlags[i]);
-        }
-        for (int i = 0; i < mSvCount; i++) {
             parcel.writeFloat(mCn0DbHzs[i]);
-        }
-        for (int i = 0; i < mSvCount; i++) {
             parcel.writeFloat(mElevations[i]);
-        }
-        for (int i = 0; i < mSvCount; i++) {
             parcel.writeFloat(mAzimuths[i]);
-        }
-        for (int i = 0; i < mSvCount; i++) {
             parcel.writeFloat(mCarrierFrequencies[i]);
-        }
-        for (int i = 0; i < mSvCount; i++) {
             parcel.writeFloat(mBasebandCn0DbHzs[i]);
         }
     }

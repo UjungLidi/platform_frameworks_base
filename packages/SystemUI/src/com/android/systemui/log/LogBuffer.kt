@@ -17,7 +17,6 @@
 package com.android.systemui.log
 
 import android.util.Log
-import com.android.systemui.dump.DumpManager
 import com.android.systemui.log.dagger.LogModule
 import java.io.PrintWriter
 import java.text.SimpleDateFormat
@@ -58,7 +57,7 @@ import java.util.Locale
  * In either case, `level` can be any of `verbose`, `debug`, `info`, `warn`, `error`, `assert`, or
  * the first letter of any of the previous.
  *
- * Buffers are provided by [LogModule].
+ * Buffers are provided by [LogModule]. Instances should be created using a [LogBufferFactory].
  *
  * @param name The name of this buffer
  * @param maxLogs The maximum number of messages to keep in memory at any one time, including the
@@ -74,9 +73,8 @@ class LogBuffer(
 ) {
     private val buffer: ArrayDeque<LogMessageImpl> = ArrayDeque()
 
-    fun attach(dumpManager: DumpManager) {
-        dumpManager.registerBuffer(name, this)
-    }
+    var frozen = false
+        private set
 
     /**
      * Logs a message to the log buffer
@@ -112,9 +110,11 @@ class LogBuffer(
         initializer: LogMessage.() -> Unit,
         noinline printer: LogMessage.() -> String
     ) {
-        val message = obtain(tag, level, printer)
-        initializer(message)
-        push(message)
+        if (!frozen) {
+            val message = obtain(tag, level, printer)
+            initializer(message)
+            push(message)
+        }
     }
 
     /**
@@ -139,17 +139,16 @@ class LogBuffer(
      *
      * In general, you should call [log] or [document] instead of this method.
      */
+    @Synchronized
     fun obtain(
         tag: String,
         level: LogLevel,
         printer: (LogMessage) -> String
     ): LogMessageImpl {
-        val message = synchronized(buffer) {
-            if (buffer.size > maxLogs - poolSize) {
-                buffer.removeFirst()
-            } else {
-                LogMessageImpl.create()
-            }
+        val message = when {
+            frozen -> LogMessageImpl.create()
+            buffer.size > maxLogs - poolSize -> buffer.removeFirst()
+            else -> LogMessageImpl.create()
         }
         message.reset(tag, level, System.currentTimeMillis(), printer)
         return message
@@ -158,40 +157,65 @@ class LogBuffer(
     /**
      * Pushes a message into buffer, possibly evicting an older message if the buffer is full.
      */
+    @Synchronized
     fun push(message: LogMessage) {
-        synchronized(buffer) {
-            if (buffer.size == maxLogs) {
-                Log.e(TAG, "LogBuffer $name has exceeded its pool size")
-                buffer.removeFirst()
-            }
-            buffer.add(message as LogMessageImpl)
-            if (logcatEchoTracker.isBufferLoggable(name, message.level) ||
-                    logcatEchoTracker.isTagLoggable(message.tag, message.level)) {
-                echoToLogcat(message)
-            }
+        if (frozen) {
+            return
+        }
+        if (buffer.size == maxLogs) {
+            Log.e(TAG, "LogBuffer $name has exceeded its pool size")
+            buffer.removeFirst()
+        }
+        buffer.add(message as LogMessageImpl)
+        if (logcatEchoTracker.isBufferLoggable(name, message.level) ||
+                logcatEchoTracker.isTagLoggable(message.tag, message.level)) {
+            echoToLogcat(message)
         }
     }
 
     /** Converts the entire buffer to a newline-delimited string */
+    @Synchronized
     fun dump(pw: PrintWriter, tailLength: Int) {
-        synchronized(buffer) {
-            val start = if (tailLength <= 0) { 0 } else { buffer.size - tailLength }
+        val start = if (tailLength <= 0) { 0 } else { buffer.size - tailLength }
 
-            for ((i, message) in buffer.withIndex()) {
-                if (i >= start) {
-                    dumpMessage(message, pw)
-                }
+        for ((i, message) in buffer.withIndex()) {
+            if (i >= start) {
+                dumpMessage(message, pw)
             }
+        }
+    }
+
+    /**
+     * "Freezes" the contents of the buffer, making them immutable until [unfreeze] is called.
+     * Calls to [log], [document], [obtain], and [push] will not affect the buffer and will return
+     * dummy values if necessary.
+     */
+    @Synchronized
+    fun freeze() {
+        if (!frozen) {
+            log(TAG, LogLevel.DEBUG, { str1 = name }, { "$str1 frozen" })
+            frozen = true
+        }
+    }
+
+    /**
+     * Undoes the effects of calling [freeze].
+     */
+    @Synchronized
+    fun unfreeze() {
+        if (frozen) {
+            log(TAG, LogLevel.DEBUG, { str1 = name }, { "$str1 unfrozen" })
+            frozen = false
         }
     }
 
     private fun dumpMessage(message: LogMessage, pw: PrintWriter) {
         pw.print(DATE_FORMAT.format(message.timestamp))
         pw.print(" ")
-        pw.print(message.level)
+        pw.print(message.level.shortString)
         pw.print(" ")
         pw.print(message.tag)
-        pw.print(" ")
+        pw.print(": ")
         pw.println(message.printer(message))
     }
 
@@ -209,4 +233,4 @@ class LogBuffer(
 }
 
 private const val TAG = "LogBuffer"
-private val DATE_FORMAT = SimpleDateFormat("MM-dd HH:mm:ss.S", Locale.US)
+private val DATE_FORMAT = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)

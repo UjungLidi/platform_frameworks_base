@@ -51,8 +51,6 @@ public class TaskResizingAlgorithm {
     public static final int CTRL_BOTTOM = 0x8;
 
     // The minimal aspect ratio which needs to be met to count as landscape (or 1/.. for portrait).
-    // Note: We do not use the 1.33 from the CDD here since the user is allowed to use what ever
-    // aspect he desires.
     @VisibleForTesting
     public static final float MIN_ASPECT = 1.2f;
 
@@ -91,14 +89,14 @@ public class TaskResizingAlgorithm {
         int width = right - left;
         int height = bottom - top;
         if ((ctrlType & CTRL_LEFT) != 0) {
-            width = Math.max(minVisibleWidth, width - deltaX);
+            width = Math.max(minVisibleWidth, Math.min(width - deltaX, maxVisibleSize.x));
         } else if ((ctrlType & CTRL_RIGHT) != 0) {
-            width = Math.max(minVisibleWidth, width + deltaX);
+            width = Math.max(minVisibleWidth, Math.min(width + deltaX, maxVisibleSize.x));
         }
         if ((ctrlType & CTRL_TOP) != 0) {
-            height = Math.max(minVisibleHeight, height - deltaY);
+            height = Math.max(minVisibleHeight, Math.min(height - deltaY, maxVisibleSize.y));
         } else if ((ctrlType & CTRL_BOTTOM) != 0) {
-            height = Math.max(minVisibleHeight, height + deltaY);
+            height = Math.max(minVisibleHeight, Math.min(height + deltaY, maxVisibleSize.y));
         }
 
         // If we have to preserve the orientation - check that we are doing so.

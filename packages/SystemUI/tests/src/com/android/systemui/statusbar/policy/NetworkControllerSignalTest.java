@@ -23,8 +23,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import android.content.Intent;
-import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
+import android.net.wifi.WifiInfo;
+import android.os.Handler;
 import android.os.Looper;
 import android.telephony.CellSignalStrength;
 import android.telephony.ServiceState;
@@ -37,8 +38,11 @@ import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper.RunWithLooper;
 
 import com.android.settingslib.graph.SignalDrawable;
+import com.android.settingslib.mobile.TelephonyIcons;
 import com.android.settingslib.net.DataUsageController;
 import com.android.systemui.R;
+import com.android.systemui.dump.DumpManager;
+import com.android.systemui.util.CarrierConfigTracker;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -46,6 +50,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 @SmallTest
@@ -56,15 +61,43 @@ public class NetworkControllerSignalTest extends NetworkControllerBaseTest {
     @Test
     public void testNoIconWithoutMobile() {
         // Turn off mobile network support.
-        when(mMockCm.isNetworkSupported(ConnectivityManager.TYPE_MOBILE)).thenReturn(false);
+        when(mMockTm.isDataCapable()).thenReturn(false);
         // Create a new NetworkController as this is currently handled in constructor.
-        mNetworkController = new NetworkControllerImpl(mContext, mMockCm, mMockTm, mMockWm,
-                mMockNsm, mMockSm, mConfig, Looper.getMainLooper(), mCallbackHandler,
+        mNetworkController = new NetworkControllerImpl(mContext, mMockCm, mMockTm,
+                mTelephonyListenerManager, mMockWm, mMockNsm, mMockSm, mConfig,
+                Looper.getMainLooper(), mFakeExecutor, mCallbackHandler,
                 mock(AccessPointControllerImpl.class), mock(DataUsageController.class),
-                mMockSubDefaults, mock(DeviceProvisionedController.class), mMockBd);
+                mMockSubDefaults, mock(DeviceProvisionedController.class), mMockBd,
+                mDemoModeController, mock(CarrierConfigTracker.class), mFeatureFlags,
+                mock(DumpManager.class));
         setupNetworkController();
 
         verifyLastMobileDataIndicators(false, -1, 0);
+    }
+
+    @Test
+    public void testServiceStateInitialState() throws Exception {
+        // Verify that NetworkControllerImpl pulls the service state from Telephony upon
+        // initialization rather than relying on the sticky behavior of ACTION_SERVICE_STATE
+
+        when(mServiceState.isEmergencyOnly()).thenReturn(true);
+        when(mMockTm.getServiceState()).thenReturn(mServiceState);
+        when(mMockSm.getCompleteActiveSubscriptionInfoList()).thenReturn(Collections.emptyList());
+
+        mNetworkController = new NetworkControllerImpl(mContext, mMockCm, mMockTm,
+                mTelephonyListenerManager, mMockWm, mMockNsm, mMockSm, mConfig,
+                Looper.getMainLooper(), mFakeExecutor, mCallbackHandler,
+                mock(AccessPointControllerImpl.class), mock(DataUsageController.class),
+                mMockSubDefaults, mock(DeviceProvisionedController.class), mMockBd,
+                mDemoModeController, mock(CarrierConfigTracker.class), mFeatureFlags,
+                mock(DumpManager.class));
+        mNetworkController.registerListeners();
+
+        // Wait for the main looper to execute the previous command
+        Handler mainThreadHandler = new Handler(Looper.getMainLooper());
+        waitForIdleSync(mainThreadHandler);
+
+        verifyEmergencyOnly(true);
     }
 
     @Test
@@ -118,12 +151,15 @@ public class NetworkControllerSignalTest extends NetworkControllerBaseTest {
     @Test
     public void testNoSimlessIconWithoutMobile() {
         // Turn off mobile network support.
-        when(mMockCm.isNetworkSupported(ConnectivityManager.TYPE_MOBILE)).thenReturn(false);
+        when(mMockTm.isDataCapable()).thenReturn(false);
         // Create a new NetworkController as this is currently handled in constructor.
-        mNetworkController = new NetworkControllerImpl(mContext, mMockCm, mMockTm, mMockWm,
-                mMockNsm, mMockSm, mConfig, Looper.getMainLooper(), mCallbackHandler,
+        mNetworkController = new NetworkControllerImpl(mContext, mMockCm, mMockTm,
+                mTelephonyListenerManager, mMockWm, mMockNsm, mMockSm, mConfig,
+                Looper.getMainLooper(), mFakeExecutor, mCallbackHandler,
                 mock(AccessPointControllerImpl.class), mock(DataUsageController.class),
-                mMockSubDefaults, mock(DeviceProvisionedController.class), mMockBd);
+                mMockSubDefaults, mock(DeviceProvisionedController.class), mMockBd,
+                mDemoModeController, mock(CarrierConfigTracker.class), mFeatureFlags,
+                mock(DumpManager.class));
         setupNetworkController();
 
         // No Subscriptions.
@@ -144,7 +180,8 @@ public class NetworkControllerSignalTest extends NetworkControllerBaseTest {
                     testStrength, DEFAULT_ICON);
 
             // Verify low inet number indexing.
-            setConnectivityViaBroadcast(NetworkCapabilities.TRANSPORT_CELLULAR, false, true);
+            setConnectivityViaCallbackInNetworkController(
+                    NetworkCapabilities.TRANSPORT_CELLULAR, false, true, null);
             verifyLastMobileDataIndicators(true,
                     testStrength, DEFAULT_ICON, false, false);
         }
@@ -231,8 +268,10 @@ public class NetworkControllerSignalTest extends NetworkControllerBaseTest {
     @Test
     public void testNoBangWithWifi() {
         setupDefaultSignal();
-        setConnectivityViaBroadcast(mMobileSignalController.mTransportType, false, false);
-        setConnectivityViaBroadcast(NetworkCapabilities.TRANSPORT_WIFI, true, true);
+        setConnectivityViaCallbackInNetworkController(
+                mMobileSignalController.mTransportType, false, false, null);
+        setConnectivityViaCallbackInNetworkController(
+                NetworkCapabilities.TRANSPORT_WIFI, true, true, mock(WifiInfo.class));
 
         verifyLastMobileDataIndicators(true, DEFAULT_LEVEL, 0);
     }

@@ -33,16 +33,18 @@ import android.os.Process;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
-import android.os.UserManagerInternal;
 import android.provider.Settings;
-import android.provider.Settings.Global;
 import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
 import android.util.Log;
 import android.util.Slog;
 import android.util.SparseArray;
+import android.util.TypedXmlPullParser;
+import android.util.TypedXmlSerializer;
 
 import com.android.internal.util.Preconditions;
+import com.android.internal.util.XmlUtils;
+import com.android.server.BundleUtils;
 import com.android.server.LocalServices;
 
 import com.google.android.collect.Sets;
@@ -136,8 +138,15 @@ public class UserRestrictionsUtils {
             UserManager.DISALLOW_AMBIENT_DISPLAY,
             UserManager.DISALLOW_CONFIG_SCREEN_TIMEOUT,
             UserManager.DISALLOW_PRINTING,
-            UserManager.DISALLOW_CONFIG_PRIVATE_DNS
+            UserManager.DISALLOW_CONFIG_PRIVATE_DNS,
+            UserManager.DISALLOW_MICROPHONE_TOGGLE,
+            UserManager.DISALLOW_CAMERA_TOGGLE
     });
+
+    public static final Set<String> DEPRECATED_USER_RESTRICTIONS = Sets.newArraySet(
+            UserManager.DISALLOW_ADD_MANAGED_PROFILE,
+            UserManager.DISALLOW_REMOVE_MANAGED_PROFILE
+    );
 
     /**
      * Set of user restriction which we don't want to persist.
@@ -173,7 +182,9 @@ public class UserRestrictionsUtils {
      */
     private static final Set<String> DEVICE_OWNER_ONLY_RESTRICTIONS = Sets.newArraySet(
             UserManager.DISALLOW_USER_SWITCH,
-            UserManager.DISALLOW_CONFIG_PRIVATE_DNS
+            UserManager.DISALLOW_CONFIG_PRIVATE_DNS,
+            UserManager.DISALLOW_MICROPHONE_TOGGLE,
+            UserManager.DISALLOW_CAMERA_TOGGLE
     );
 
     /**
@@ -206,30 +217,9 @@ public class UserRestrictionsUtils {
      */
     private static final Set<String> PROFILE_OWNER_ORGANIZATION_OWNED_GLOBAL_RESTRICTIONS =
             Sets.newArraySet(
-                    UserManager.DISALLOW_CONFIG_DATE_TIME,
-                    UserManager.DISALLOW_CAMERA,
-                    UserManager.DISALLOW_ADD_USER,
-                    UserManager.DISALLOW_BLUETOOTH,
-                    UserManager.DISALLOW_BLUETOOTH_SHARING,
-                    UserManager.DISALLOW_CONFIG_BLUETOOTH,
-                    UserManager.DISALLOW_CONFIG_CELL_BROADCASTS,
-                    UserManager.DISALLOW_CONFIG_LOCATION,
-                    UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS,
-                    UserManager.DISALLOW_CONFIG_PRIVATE_DNS,
-                    UserManager.DISALLOW_CONFIG_TETHERING,
-                    UserManager.DISALLOW_CONFIG_WIFI,
-                    UserManager.DISALLOW_CONTENT_CAPTURE,
-                    UserManager.DISALLOW_CONTENT_SUGGESTIONS,
-                    UserManager.DISALLOW_DATA_ROAMING,
-                    UserManager.DISALLOW_DEBUGGING_FEATURES,
-                    UserManager.DISALLOW_SAFE_BOOT,
-                    UserManager.DISALLOW_SHARE_LOCATION,
-                    UserManager.DISALLOW_SMS,
-                    UserManager.DISALLOW_USB_FILE_TRANSFER,
                     UserManager.DISALLOW_AIRPLANE_MODE,
-                    UserManager.DISALLOW_MOUNT_PHYSICAL_MEDIA,
-                    UserManager.DISALLOW_OUTGOING_CALLS,
-                    UserManager.DISALLOW_UNMUTE_MICROPHONE
+                    UserManager.DISALLOW_CONFIG_DATE_TIME,
+                    UserManager.DISALLOW_CONFIG_PRIVATE_DNS
     );
 
     /**
@@ -237,7 +227,28 @@ public class UserRestrictionsUtils {
      * set on the parent profile instance to apply them on the personal profile.
      */
     private static final Set<String> PROFILE_OWNER_ORGANIZATION_OWNED_LOCAL_RESTRICTIONS =
-            Sets.newArraySet();
+            Sets.newArraySet(
+                    UserManager.DISALLOW_CONFIG_BLUETOOTH,
+                    UserManager.DISALLOW_CONFIG_LOCATION,
+                    UserManager.DISALLOW_CONFIG_WIFI,
+                    UserManager.DISALLOW_CONTENT_CAPTURE,
+                    UserManager.DISALLOW_CONTENT_SUGGESTIONS,
+                    UserManager.DISALLOW_DEBUGGING_FEATURES,
+                    UserManager.DISALLOW_SHARE_LOCATION,
+                    UserManager.DISALLOW_OUTGOING_CALLS,
+                    UserManager.DISALLOW_CAMERA,
+                    UserManager.DISALLOW_BLUETOOTH,
+                    UserManager.DISALLOW_BLUETOOTH_SHARING,
+                    UserManager.DISALLOW_CONFIG_CELL_BROADCASTS,
+                    UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS,
+                    UserManager.DISALLOW_CONFIG_TETHERING,
+                    UserManager.DISALLOW_DATA_ROAMING,
+                    UserManager.DISALLOW_SAFE_BOOT,
+                    UserManager.DISALLOW_SMS,
+                    UserManager.DISALLOW_USB_FILE_TRANSFER,
+                    UserManager.DISALLOW_MOUNT_PHYSICAL_MEDIA,
+                    UserManager.DISALLOW_UNMUTE_MICROPHONE
+    );
 
     /**
      * User restrictions that default to {@code true} for managed profile owners.
@@ -322,6 +333,11 @@ public class UserRestrictionsUtils {
 
     public static void writeRestrictions(@NonNull XmlSerializer serializer,
             @Nullable Bundle restrictions, @NonNull String tag) throws IOException {
+        writeRestrictions(XmlUtils.makeTyped(serializer), restrictions, tag);
+    }
+
+    public static void writeRestrictions(@NonNull TypedXmlSerializer serializer,
+            @Nullable Bundle restrictions, @NonNull String tag) throws IOException {
         if (restrictions == null) {
             return;
         }
@@ -333,7 +349,7 @@ public class UserRestrictionsUtils {
             }
             if (USER_RESTRICTIONS.contains(key)) {
                 if (restrictions.getBoolean(key)) {
-                    serializer.attribute(null, key, "true");
+                    serializer.attributeBoolean(null, key, true);
                 }
                 continue;
             }
@@ -343,16 +359,24 @@ public class UserRestrictionsUtils {
     }
 
     public static void readRestrictions(XmlPullParser parser, Bundle restrictions) {
+        readRestrictions(XmlUtils.makeTyped(parser), restrictions);
+    }
+
+    public static void readRestrictions(TypedXmlPullParser parser, Bundle restrictions) {
         restrictions.clear();
         for (String key : USER_RESTRICTIONS) {
-            final String value = parser.getAttributeValue(null, key);
-            if (value != null) {
-                restrictions.putBoolean(key, Boolean.parseBoolean(value));
+            final boolean value = parser.getAttributeBoolean(null, key, false);
+            if (value) {
+                restrictions.putBoolean(key, true);
             }
         }
     }
 
     public static Bundle readRestrictions(XmlPullParser parser) {
+        return readRestrictions(XmlUtils.makeTyped(parser));
+    }
+
+    public static Bundle readRestrictions(TypedXmlPullParser parser) {
         final Bundle result = new Bundle();
         readRestrictions(parser, result);
         return result;
@@ -365,27 +389,12 @@ public class UserRestrictionsUtils {
         return in != null ? in : new Bundle();
     }
 
-    public static boolean isEmpty(@Nullable Bundle in) {
-        return (in == null) || (in.size() == 0);
-    }
-
     /**
      * Returns {@code true} if given bundle is not null and contains {@code true} for a given
      * restriction.
      */
     public static boolean contains(@Nullable Bundle in, String restriction) {
         return in != null && in.getBoolean(restriction);
-    }
-
-    /**
-     * Creates a copy of the {@code in} Bundle.  If {@code in} is null, it'll return an empty
-     * bundle.
-     *
-     * <p>The resulting {@link Bundle} is always writable. (i.e. it won't return
-     * {@link Bundle#EMPTY})
-     */
-    public static @NonNull Bundle clone(@Nullable Bundle in) {
-        return (in != null) ? new Bundle(in) : new Bundle();
     }
 
     public static void merge(@NonNull Bundle dest, @Nullable Bundle in) {
@@ -464,10 +473,10 @@ public class UserRestrictionsUtils {
         if (a == b) {
             return true;
         }
-        if (isEmpty(a)) {
-            return isEmpty(b);
+        if (BundleUtils.isEmpty(a)) {
+            return BundleUtils.isEmpty(b);
         }
-        if (isEmpty(b)) {
+        if (BundleUtils.isEmpty(b)) {
             return false;
         }
         for (String key : a.keySet()) {
@@ -650,15 +659,6 @@ public class UserRestrictionsUtils {
                                 Settings.Secure.DOZE_DOUBLE_TAP_GESTURE, 0, userId);
                     }
                     break;
-                case UserManager.DISALLOW_CONFIG_LOCATION:
-                    // When DISALLOW_CONFIG_LOCATION is set on any user, we undo the global
-                    // kill switch.
-                    if (newValue) {
-                        android.provider.Settings.Global.putString(
-                                context.getContentResolver(),
-                                Global.LOCATION_GLOBAL_KILL_SWITCH, "0");
-                    }
-                    break;
                 case UserManager.DISALLOW_APPS_CONTROL:
                     // Intentional fall-through
                 case UserManager.DISALLOW_UNINSTALL_APPS:
@@ -721,7 +721,7 @@ public class UserRestrictionsUtils {
             case android.provider.Settings.Secure.ALWAYS_ON_VPN_APP:
             case android.provider.Settings.Secure.ALWAYS_ON_VPN_LOCKDOWN:
             case android.provider.Settings.Secure.ALWAYS_ON_VPN_LOCKDOWN_WHITELIST:
-                // Whitelist system uid (ConnectivityService) and root uid to change always-on vpn
+                // Allowlist system uid (ConnectivityService) and root uid to change always-on vpn
                 final int appId = UserHandle.getAppId(callingUid);
                 if (appId == Process.SYSTEM_UID || appId == Process.ROOT_UID) {
                     return false;
@@ -752,14 +752,6 @@ public class UserRestrictionsUtils {
                     return false;
                 }
                 restriction = UserManager.DISALLOW_AMBIENT_DISPLAY;
-                break;
-
-            case android.provider.Settings.Global.LOCATION_GLOBAL_KILL_SWITCH:
-                if ("0".equals(value)) {
-                    return false;
-                }
-                restriction = UserManager.DISALLOW_CONFIG_LOCATION;
-                checkAllUser = true;
                 break;
 
             case android.provider.Settings.System.SCREEN_BRIGHTNESS:

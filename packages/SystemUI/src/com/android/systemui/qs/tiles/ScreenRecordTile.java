@@ -17,14 +17,29 @@
 package com.android.systemui.qs.tiles;
 
 import android.content.Intent;
+import android.os.Handler;
+import android.os.Looper;
 import android.service.quicksettings.Tile;
+import android.text.TextUtils;
 import android.util.Log;
+import android.view.View;
+import android.widget.Switch;
 
+import androidx.annotation.Nullable;
+
+import com.android.internal.logging.MetricsLogger;
 import com.android.systemui.R;
+import com.android.systemui.dagger.qualifiers.Background;
+import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.plugins.qs.QSTile;
+import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
 import com.android.systemui.screenrecord.RecordingController;
+import com.android.systemui.statusbar.phone.KeyguardDismissUtil;
 
 import javax.inject.Inject;
 
@@ -35,14 +50,28 @@ public class ScreenRecordTile extends QSTileImpl<QSTile.BooleanState>
         implements RecordingController.RecordingStateChangeCallback {
     private static final String TAG = "ScreenRecordTile";
     private RecordingController mController;
+    private KeyguardDismissUtil mKeyguardDismissUtil;
     private long mMillisUntilFinished = 0;
     private Callback mCallback = new Callback();
 
     @Inject
-    public ScreenRecordTile(QSHost host, RecordingController controller) {
-        super(host);
+    public ScreenRecordTile(
+            QSHost host,
+            @Background Looper backgroundLooper,
+            @Main Handler mainHandler,
+            FalsingManager falsingManager,
+            MetricsLogger metricsLogger,
+            StatusBarStateController statusBarStateController,
+            ActivityStarter activityStarter,
+            QSLogger qsLogger,
+            RecordingController controller,
+            KeyguardDismissUtil keyguardDismissUtil
+    ) {
+        super(host, backgroundLooper, mainHandler, falsingManager, metricsLogger,
+                statusBarStateController, activityStarter, qsLogger);
         mController = controller;
         mController.observe(this, mCallback);
+        mKeyguardDismissUtil = keyguardDismissUtil;
     }
 
     @Override
@@ -54,13 +83,13 @@ public class ScreenRecordTile extends QSTileImpl<QSTile.BooleanState>
     }
 
     @Override
-    protected void handleClick() {
+    protected void handleClick(@Nullable View view) {
         if (mController.isStarting()) {
             cancelCountdown();
         } else if (mController.isRecording()) {
             stopRecording();
         } else {
-            startCountdown();
+            mUiHandler.post(() -> showPrompt());
         }
         refreshState();
     }
@@ -73,21 +102,23 @@ public class ScreenRecordTile extends QSTileImpl<QSTile.BooleanState>
         state.value = isRecording || isStarting;
         state.state = (isRecording || isStarting) ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE;
         state.label = mContext.getString(R.string.quick_settings_screen_record_label);
+        state.icon = ResourceIcon.get(R.drawable.ic_screenrecord);
+        // Show expand icon when clicking will open a dialog
+        state.forceExpandIcon = state.state == Tile.STATE_INACTIVE;
 
         if (isRecording) {
-            state.icon = ResourceIcon.get(R.drawable.ic_qs_screenrecord);
             state.secondaryLabel = mContext.getString(R.string.quick_settings_screen_record_stop);
         } else if (isStarting) {
             // round, since the timer isn't exact
             int countdown = (int) Math.floorDiv(mMillisUntilFinished + 500, 1000);
-            // TODO update icon
-            state.icon = ResourceIcon.get(R.drawable.ic_qs_screenrecord);
             state.secondaryLabel = String.format("%d...", countdown);
         } else {
-            // TODO update icon
-            state.icon = ResourceIcon.get(R.drawable.ic_qs_screenrecord);
             state.secondaryLabel = mContext.getString(R.string.quick_settings_screen_record_start);
         }
+        state.contentDescription = TextUtils.isEmpty(state.secondaryLabel)
+                ? state.label
+                : TextUtils.concat(state.label, ", ", state.secondaryLabel);
+        state.expandedAccessibilityClassName = Switch.class.getName();
     }
 
     @Override
@@ -105,11 +136,15 @@ public class ScreenRecordTile extends QSTileImpl<QSTile.BooleanState>
         return mContext.getString(R.string.quick_settings_screen_record_label);
     }
 
-    private void startCountdown() {
-        Log.d(TAG, "Starting countdown");
-        // Close QS, otherwise the permission dialog appears beneath it
+    private void showPrompt() {
+        // Close QS, otherwise the dialog appears beneath it
         getHost().collapsePanels();
-        mController.launchRecordPrompt();
+        Intent intent = mController.getPromptIntent();
+        ActivityStarter.OnDismissAction dismissAction = () -> {
+            mHost.getUserContext().startActivity(intent);
+            return false;
+        };
+        mKeyguardDismissUtil.executeWhenUnlocked(dismissAction, false, false);
     }
 
     private void cancelCountdown() {
@@ -118,7 +153,6 @@ public class ScreenRecordTile extends QSTileImpl<QSTile.BooleanState>
     }
 
     private void stopRecording() {
-        Log.d(TAG, "Stopping recording from tile");
         mController.stopRecording();
     }
 

@@ -18,6 +18,7 @@ package com.android.systemui.statusbar.phone;
 
 import static java.lang.Float.isNaN;
 
+import android.annotation.CallSuper;
 import android.content.Context;
 import android.os.Bundle;
 import android.os.Parcelable;
@@ -52,6 +53,13 @@ public abstract class PanelBar extends FrameLayout {
     public void go(int state) {
         if (DEBUG) LOG("go state: %d -> %d", mState, state);
         mState = state;
+        if (mPanel != null) {
+            mPanel.setIsShadeOpening(state == STATE_OPENING);
+        }
+    }
+
+    protected boolean isShadeOpening() {
+        return mState == STATE_OPENING;
     }
 
     @Override
@@ -155,7 +163,13 @@ public abstract class PanelBar extends FrameLayout {
         return mPanel == null || mPanel.getView().dispatchTouchEvent(event);
     }
 
-    public abstract void panelScrimMinFractionChanged(float minFraction);
+    /**
+     * Percentage of panel expansion offset, caused by pulling down on a heads-up.
+     */
+    @CallSuper
+    public void onPanelMinFractionChanged(float minFraction) {
+        mPanel.setMinFraction(minFraction);
+    }
 
     /**
      * @param frac the fraction from the expansion in [0, 1]
@@ -205,7 +219,6 @@ public abstract class PanelBar extends FrameLayout {
         } else {
             pv.resetViews(false /* animate */);
             pv.setExpandedFraction(0); // just in case
-            pv.cancelPeek();
         }
         if (DEBUG) LOG("collapsePanel: animate=%s waiting=%s", animate, waiting);
         if (!waiting && mState != STATE_CLOSED) {

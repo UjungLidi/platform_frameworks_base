@@ -126,9 +126,19 @@ class LocalAnimationAdapter implements AnimationAdapter {
         /**
          * @return {@code true} if we need to wake-up SurfaceFlinger earlier during this animation.
          *
-         * @see Transaction#setEarlyWakeup
+         * @see Transaction#setEarlyWakeupStart and Transaction#setEarlyWakeupEnd
          */
         default boolean needsEarlyWakeup() { return false; }
+
+        /**
+         * @return The fraction of the animation, returns 1 if duration is 0.
+         *
+         * @param currentPlayTime The current play time.
+         */
+        default float getFraction(float currentPlayTime) {
+            final float duration = getDuration();
+            return duration > 0 ? currentPlayTime / duration : 1.0f;
+        }
 
         void dump(PrintWriter pw, String prefix);
 

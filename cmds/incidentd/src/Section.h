@@ -24,7 +24,7 @@
 #include <map>
 
 #include <android/os/IIncidentDumpCallback.h>
-
+#include <log/log_read.h>
 #include <utils/String16.h>
 #include <utils/String8.h>
 #include <utils/Vector.h>
@@ -207,7 +207,7 @@ public:
     virtual status_t BlockingCall(unique_fd& pipeWriteFd) const;
 
 private:
-    const sp<IIncidentDumpCallback>& mCallback;
+    const sp<IIncidentDumpCallback> mCallback;
 };
 
 

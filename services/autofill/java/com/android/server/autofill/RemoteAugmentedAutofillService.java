@@ -25,6 +25,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.app.AppGlobals;
+import android.content.ClipData;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -48,17 +49,15 @@ import android.view.autofill.AutofillManager;
 import android.view.autofill.AutofillValue;
 import android.view.autofill.IAutoFillManagerClient;
 import android.view.inputmethod.InlineSuggestionsRequest;
-import android.view.inputmethod.InlineSuggestionsResponse;
 
 import com.android.internal.infra.AbstractRemoteService;
 import com.android.internal.infra.AndroidFuture;
 import com.android.internal.infra.ServiceConnector;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
 import com.android.internal.os.IResultReceiver;
-import com.android.server.autofill.ui.InlineSuggestionFactory;
+import com.android.server.autofill.ui.InlineFillUi;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
@@ -75,8 +74,9 @@ final class RemoteAugmentedAutofillService
     private final int mRequestTimeoutMs;
     private final ComponentName mComponentName;
     private final RemoteAugmentedAutofillServiceCallbacks mCallbacks;
+    private final AutofillUriGrantsManager mUriGrantsManager;
 
-    RemoteAugmentedAutofillService(Context context, ComponentName serviceName,
+    RemoteAugmentedAutofillService(Context context, int serviceUid, ComponentName serviceName,
             int userId, RemoteAugmentedAutofillServiceCallbacks callbacks,
             boolean bindInstantServiceAllowed, boolean verbose, int idleUnbindTimeoutMs,
             int requestTimeoutMs) {
@@ -88,6 +88,7 @@ final class RemoteAugmentedAutofillService
         mRequestTimeoutMs = requestTimeoutMs;
         mComponentName = serviceName;
         mCallbacks = callbacks;
+        mUriGrantsManager = new AutofillUriGrantsManager(serviceUid);
 
         // Bind right away.
         connect();
@@ -122,6 +123,10 @@ final class RemoteAugmentedAutofillService
         return mComponentName;
     }
 
+    public AutofillUriGrantsManager getAutofillUriGrantsManager() {
+        return mUriGrantsManager;
+    }
+
     @Override // from ServiceConnector.Impl
     protected void onServiceConnectionStatusChanged(
             IAugmentedAutofillService service, boolean connected) {
@@ -146,12 +151,12 @@ final class RemoteAugmentedAutofillService
      * Called by {@link Session} to request augmented autofill.
      */
     public void onRequestAutofillLocked(int sessionId, @NonNull IAutoFillManagerClient client,
-            int taskId, @NonNull ComponentName activityComponent, @NonNull AutofillId focusedId,
-            @Nullable AutofillValue focusedValue,
+            int taskId, @NonNull ComponentName activityComponent, @NonNull IBinder activityToken,
+            @NonNull AutofillId focusedId, @Nullable AutofillValue focusedValue,
             @Nullable InlineSuggestionsRequest inlineSuggestionsRequest,
-            @Nullable Function<InlineSuggestionsResponse, Boolean> inlineSuggestionsCallback,
+            @Nullable Function<InlineFillUi, Boolean> inlineSuggestionsCallback,
             @NonNull Runnable onErrorCallback,
-            @Nullable RemoteInlineSuggestionRenderService remoteRenderService) {
+            @Nullable RemoteInlineSuggestionRenderService remoteRenderService, int userId) {
         long requestTime = SystemClock.elapsedRealtime();
         AtomicReference<ICancellationSignal> cancellationRef = new AtomicReference<>();
 
@@ -169,13 +174,17 @@ final class RemoteAugmentedAutofillService
                             new IFillCallback.Stub() {
                                 @Override
                                 public void onSuccess(@Nullable List<Dataset> inlineSuggestionsData,
-                                        @Nullable Bundle clientState) {
+                                        @Nullable Bundle clientState, boolean showingFillWindow) {
                                     mCallbacks.resetLastResponse();
                                     maybeRequestShowInlineSuggestions(sessionId,
                                             inlineSuggestionsRequest, inlineSuggestionsData,
-                                            clientState, focusedId, inlineSuggestionsCallback,
-                                            client, onErrorCallback, remoteRenderService);
-                                    requestAutofill.complete(null);
+                                            clientState, focusedId, focusedValue,
+                                            inlineSuggestionsCallback, client, onErrorCallback,
+                                            remoteRenderService, userId,
+                                            activityComponent, activityToken);
+                                    if (!showingFillWindow) {
+                                        requestAutofill.complete(null);
+                                    }
                                 }
 
                                 @Override
@@ -239,55 +248,116 @@ final class RemoteAugmentedAutofillService
     private void maybeRequestShowInlineSuggestions(int sessionId,
             @Nullable InlineSuggestionsRequest request,
             @Nullable List<Dataset> inlineSuggestionsData, @Nullable Bundle clientState,
-            @NonNull AutofillId focusedId,
-            @Nullable Function<InlineSuggestionsResponse, Boolean> inlineSuggestionsCallback,
+            @NonNull AutofillId focusedId, @Nullable AutofillValue focusedValue,
+            @Nullable Function<InlineFillUi, Boolean> inlineSuggestionsCallback,
             @NonNull IAutoFillManagerClient client, @NonNull Runnable onErrorCallback,
-            @Nullable RemoteInlineSuggestionRenderService remoteRenderService) {
+            @Nullable RemoteInlineSuggestionRenderService remoteRenderService,
+            int userId,
+            @NonNull ComponentName targetActivity, @NonNull IBinder targetActivityToken) {
         if (inlineSuggestionsData == null || inlineSuggestionsData.isEmpty()
                 || inlineSuggestionsCallback == null || request == null
                 || remoteRenderService == null) {
+            // If it was an inline request and the response doesn't have any inline suggestions,
+            // we will send an empty response to IME.
+            if (inlineSuggestionsCallback != null && request != null) {
+                inlineSuggestionsCallback.apply(InlineFillUi.emptyUi(focusedId));
+            }
             return;
         }
         mCallbacks.setLastResponse(sessionId);
 
-        final InlineSuggestionsResponse inlineSuggestionsResponse =
-                InlineSuggestionFactory.createAugmentedInlineSuggestionsResponse(
-                        request, inlineSuggestionsData, focusedId,
-                        new InlineSuggestionFactory.InlineSuggestionUiCallback() {
+        final String filterText =
+                focusedValue != null && focusedValue.isText()
+                        ? focusedValue.getTextValue().toString() : null;
+
+        final InlineFillUi.InlineFillUiInfo inlineFillUiInfo =
+                new InlineFillUi.InlineFillUiInfo(request, focusedId, filterText,
+                        remoteRenderService, userId, sessionId);
+
+        final InlineFillUi inlineFillUi =
+                InlineFillUi.forAugmentedAutofill(
+                        inlineFillUiInfo, inlineSuggestionsData,
+                        new InlineFillUi.InlineSuggestionUiCallback() {
                             @Override
-                            public void autofill(Dataset dataset) {
+                            public void autofill(Dataset dataset, int datasetIndex) {
+                                if (dataset.getAuthentication() != null) {
+                                    mCallbacks.logAugmentedAutofillAuthenticationSelected(sessionId,
+                                            dataset.getId(), clientState);
+                                    final IntentSender action = dataset.getAuthentication();
+                                    final int authenticationId =
+                                            AutofillManager.makeAuthenticationId(
+                                                    Session.AUGMENTED_AUTOFILL_REQUEST_ID,
+                                                    datasetIndex);
+                                    final Intent fillInIntent = new Intent();
+                                    fillInIntent.putExtra(AutofillManager.EXTRA_CLIENT_STATE,
+                                            clientState);
+                                    try {
+                                        client.authenticate(sessionId, authenticationId, action,
+                                                fillInIntent, false);
+                                    } catch (RemoteException e) {
+                                        Slog.w(TAG, "Error starting auth flow");
+                                        inlineSuggestionsCallback.apply(
+                                                InlineFillUi.emptyUi(focusedId));
+                                    }
+                                    return;
+                                }
                                 mCallbacks.logAugmentedAutofillSelected(sessionId,
                                         dataset.getId(), clientState);
                                 try {
                                     final ArrayList<AutofillId> fieldIds = dataset.getFieldIds();
-                                    final int size = fieldIds.size();
-                                    final boolean hideHighlight = size == 1
-                                            && fieldIds.get(0).equals(focusedId);
-                                    client.autofill(sessionId, fieldIds, dataset.getFieldValues(),
-                                            hideHighlight);
-                                    inlineSuggestionsCallback.apply(new InlineSuggestionsResponse(
-                                            Collections.EMPTY_LIST));
+                                    final ClipData content = dataset.getFieldContent();
+                                    if (content != null) {
+                                        mUriGrantsManager.grantUriPermissions(targetActivity,
+                                                targetActivityToken, userId, content);
+                                        final AutofillId fieldId = fieldIds.get(0);
+                                        if (sDebug) {
+                                            Slog.d(TAG, "Calling client autofillContent(): "
+                                                    + "id=" + fieldId + ", content=" + content);
+                                        }
+                                        client.autofillContent(sessionId, fieldId, content);
+                                    } else {
+                                        final int size = fieldIds.size();
+                                        final boolean hideHighlight = size == 1
+                                                && fieldIds.get(0).equals(focusedId);
+                                        if (sDebug) {
+                                            Slog.d(TAG, "Calling client autofill(): "
+                                                    + "ids=" + fieldIds
+                                                    + ", values=" + dataset.getFieldValues());
+                                        }
+                                        client.autofill(
+                                                sessionId,
+                                                fieldIds,
+                                                dataset.getFieldValues(),
+                                                hideHighlight);
+                                    }
+                                    inlineSuggestionsCallback.apply(
+                                            InlineFillUi.emptyUi(focusedId));
                                 } catch (RemoteException e) {
                                     Slog.w(TAG, "Encounter exception autofilling the values");
                                 }
                             }
 
                             @Override
-                            public void startIntentSender(IntentSender intentSender,
-                                    Intent intent) {
+                            public void authenticate(int requestId, int datasetIndex) {
+                                Slog.e(TAG, "authenticate not implemented for augmented autofill");
+                            }
+
+                            @Override
+                            public void startIntentSender(IntentSender intentSender) {
                                 try {
-                                    client.startIntentSender(intentSender, intent);
+                                    client.startIntentSender(intentSender, new Intent());
                                 } catch (RemoteException e) {
                                     Slog.w(TAG, "RemoteException starting intent sender");
                                 }
                             }
-                        }, onErrorCallback, remoteRenderService);
 
-        if (inlineSuggestionsResponse == null) {
-            Slog.w(TAG, "InlineSuggestionFactory created null response");
-            return;
-        }
-        if (inlineSuggestionsCallback.apply(inlineSuggestionsResponse)) {
+                            @Override
+                            public void onError() {
+                                onErrorCallback.run();
+                            }
+                        });
+
+        if (inlineSuggestionsCallback.apply(inlineFillUi)) {
             mCallbacks.logAugmentedAutofillShown(sessionId, clientState);
         }
     }
@@ -315,5 +385,8 @@ final class RemoteAugmentedAutofillService
 
         void logAugmentedAutofillSelected(int sessionId, @Nullable String suggestionId,
                 @Nullable Bundle clientState);
+
+        void logAugmentedAutofillAuthenticationSelected(int sessionId,
+                @Nullable String suggestionId, @Nullable Bundle clientState);
     }
 }

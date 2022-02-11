@@ -28,6 +28,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.os.CancellationSignal;
 
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.collection.inflation.NotificationRowBinder;
@@ -41,7 +42,6 @@ import java.util.Map;
 import java.util.Set;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * {@link NotifBindPipeline} is responsible for converting notifications from their data form to
@@ -77,7 +77,7 @@ import javax.inject.Singleton;
  * views and assumes that a row is given to it when it's inflated.
  */
 @MainThread
-@Singleton
+@SysUISingleton
 public final class NotifBindPipeline {
     private final Map<NotificationEntry, BindEntry> mBindEntries = new ArrayMap<>();
     private final NotifBindPipelineLogger mLogger;
@@ -115,6 +115,9 @@ public final class NotifBindPipeline {
         mLogger.logManagedRow(entry.getKey());
 
         final BindEntry bindEntry = getBindEntry(entry);
+        if (bindEntry == null) {
+            return;
+        }
         bindEntry.row = row;
         if (bindEntry.invalidated) {
             requestPipelineRun(entry);
@@ -151,12 +154,14 @@ public final class NotifBindPipeline {
      * the real work once rather than repeatedly start and cancel it.
      */
     private void requestPipelineRun(NotificationEntry entry) {
+        mLogger.logRequestPipelineRun(entry.getKey());
+
         final BindEntry bindEntry = getBindEntry(entry);
         if (bindEntry.row == null) {
             // Row is not managed yet but may be soon. Stop for now.
+            mLogger.logRequestPipelineRowNotSet(entry.getKey());
             return;
         }
-        mLogger.logRequestPipelineRun(entry.getKey());
 
         // Abort any existing pipeline run
         mStage.abortStage(entry, bindEntry.row);
@@ -223,11 +228,6 @@ public final class NotifBindPipeline {
 
     private @NonNull BindEntry getBindEntry(NotificationEntry entry) {
         final BindEntry bindEntry = mBindEntries.get(entry);
-        if (bindEntry == null) {
-            throw new IllegalStateException(
-                    String.format("Attempting bind on an inactive notification. key: %s",
-                            entry.getKey()));
-        }
         return bindEntry;
     }
 

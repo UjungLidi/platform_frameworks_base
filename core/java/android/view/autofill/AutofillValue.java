@@ -18,7 +18,6 @@ package android.view.autofill;
 
 import static android.view.View.AUTOFILL_TYPE_DATE;
 import static android.view.View.AUTOFILL_TYPE_LIST;
-import static android.view.View.AUTOFILL_TYPE_RICH_CONTENT;
 import static android.view.View.AUTOFILL_TYPE_TEXT;
 import static android.view.View.AUTOFILL_TYPE_TOGGLE;
 import static android.view.autofill.Helper.sDebug;
@@ -26,7 +25,6 @@ import static android.view.autofill.Helper.sVerbose;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.content.ClipData;
 import android.os.Looper;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -65,7 +63,7 @@ public final class AutofillValue implements Parcelable {
      * @throws IllegalStateException if the value is not a text value
      */
     @NonNull public CharSequence getTextValue() {
-        Preconditions.checkState(isText(), "value must be a text value, not type=" + mType);
+        Preconditions.checkState(isText(), "value must be a text value, not type=%d", mType);
         return (CharSequence) mValue;
     }
 
@@ -86,7 +84,7 @@ public final class AutofillValue implements Parcelable {
      * @throws IllegalStateException if the value is not a toggle value
      */
     public boolean getToggleValue() {
-        Preconditions.checkState(isToggle(), "value must be a toggle value, not type=" + mType);
+        Preconditions.checkState(isToggle(), "value must be a toggle value, not type=%d", mType);
         return (Boolean) mValue;
     }
 
@@ -107,7 +105,7 @@ public final class AutofillValue implements Parcelable {
      * @throws IllegalStateException if the value is not a list value
      */
     public int getListValue() {
-        Preconditions.checkState(isList(), "value must be a list value, not type=" + mType);
+        Preconditions.checkState(isList(), "value must be a list value, not type=%d", mType);
         return (Integer) mValue;
     }
 
@@ -128,7 +126,7 @@ public final class AutofillValue implements Parcelable {
      * @throws IllegalStateException if the value is not a date value
      */
     public long getDateValue() {
-        Preconditions.checkState(isDate(), "value must be a date value, not type=" + mType);
+        Preconditions.checkState(isDate(), "value must be a date value, not type=%d", mType);
         return (Long) mValue;
     }
 
@@ -139,28 +137,6 @@ public final class AutofillValue implements Parcelable {
      */
     public boolean isDate() {
         return mType == AUTOFILL_TYPE_DATE;
-    }
-
-    /**
-     * Gets the value to autofill a field that accepts rich content (text, images, etc).
-     *
-     * <p>See {@link View#AUTOFILL_TYPE_RICH_CONTENT} for more info.</p>
-     *
-     * @throws IllegalStateException if the value is not a content value
-     */
-    public @NonNull ClipData getRichContentValue() {
-        Preconditions.checkState(isRichContent(),
-                "value must be a rich content value, not type=" + mType);
-        return (ClipData) mValue;
-    }
-
-    /**
-     * Checks if this is a rich content value (represented by {@link ClipData}).
-     *
-     * <p>See {@link View#AUTOFILL_TYPE_RICH_CONTENT} for more info.</p>
-     */
-    public boolean isRichContent() {
-        return mType == AUTOFILL_TYPE_RICH_CONTENT;
     }
 
     /**
@@ -184,7 +160,7 @@ public final class AutofillValue implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         if (this == obj) return true;
         if (obj == null) return false;
         if (getClass() != obj.getClass()) return false;
@@ -208,10 +184,6 @@ public final class AutofillValue implements Parcelable {
                 .append(", value=");
         if (isText()) {
             Helper.appendRedacted(string, (CharSequence) mValue);
-        } else if (isRichContent()) {
-            string.append("{");
-            getRichContentValue().getDescription().toShortStringTypesOnly(string);
-            string.append("}");
         } else {
             string.append(mValue);
         }
@@ -244,9 +216,6 @@ public final class AutofillValue implements Parcelable {
             case AUTOFILL_TYPE_DATE:
                 parcel.writeLong((Long) mValue);
                 break;
-            case AUTOFILL_TYPE_RICH_CONTENT:
-                ((ClipData) mValue).writeToParcel(parcel, flags);
-                break;
         }
     }
 
@@ -266,9 +235,6 @@ public final class AutofillValue implements Parcelable {
                 break;
             case AUTOFILL_TYPE_DATE:
                 mValue = parcel.readLong();
-                break;
-            case AUTOFILL_TYPE_RICH_CONTENT:
-                mValue = ClipData.CREATOR.createFromParcel(parcel);
                 break;
             default:
                 throw new IllegalArgumentException("type=" + mType + " not valid");
@@ -336,16 +302,5 @@ public final class AutofillValue implements Parcelable {
      */
     public static AutofillValue forDate(long value) {
         return new AutofillValue(AUTOFILL_TYPE_DATE, value);
-    }
-
-    /**
-     * Creates a new {@link AutofillValue} to autofill a {@link View} that accepts rich content
-     * (text, images, etc).
-     *
-     * <p>See {@link View#AUTOFILL_TYPE_RICH_CONTENT} for more info.
-     */
-    public static @NonNull AutofillValue forRichContent(@NonNull ClipData value) {
-        Objects.requireNonNull(value.getDescription(), "clip description must not be null");
-        return new AutofillValue(AUTOFILL_TYPE_RICH_CONTENT, value);
     }
 }

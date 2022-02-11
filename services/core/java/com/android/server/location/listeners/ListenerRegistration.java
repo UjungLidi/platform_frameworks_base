@@ -16,109 +16,64 @@
 
 package com.android.server.location.listeners;
 
-
-import static com.android.internal.util.ConcurrentUtils.DIRECT_EXECUTOR;
-
-import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.location.util.identity.CallerIdentity;
-import android.os.Process;
 
-import com.android.server.FgThread;
+import com.android.internal.listeners.ListenerExecutor;
 
 import java.util.Objects;
 import java.util.concurrent.Executor;
 
 /**
  * A listener registration object which holds data associated with the listener, such as an optional
- * request, and the identity of the listener owner.
+ * request, and an executor responsible for listener invocations.
  *
- * @param <TRequest>  request type
- * @param <TListener> listener type
+ * @param <TListener>          listener type
  */
-public class ListenerRegistration<TRequest, TListener> {
-
-    /**
-     * An listener operation to perform.
-     *
-     * @param <TListener> listener type
-     */
-    public interface ListenerOperation<TListener> {
-        /**
-         * Performs the operation on the given listener
-         */
-        void operate(TListener listener) throws Exception;
-    }
+public class ListenerRegistration<TListener> implements ListenerExecutor {
 
     private final Executor mExecutor;
-    private final @Nullable TRequest mRequest;
-    private final CallerIdentity mCallerIdentity;
 
     private boolean mActive;
 
     private volatile @Nullable TListener mListener;
 
-    protected ListenerRegistration(@Nullable TRequest request, CallerIdentity callerIdentity,
-            TListener listener) {
-        // if a client is in the same process as us, binder calls will execute synchronously and
-        // we shouldn't run callbacks directly since they might be run under lock and deadlock
-        if (callerIdentity.pid == Process.myPid()) {
-            // there's a slight loophole here for pending intents - pending intent callbacks can
-            // always be run on the direct executor since they're always asynchronous, but honestly
-            // you shouldn't be using pending intent callbacks within the same process anyways
-            mExecutor =  FgThread.getExecutor();
-        } else {
-            mExecutor =  DIRECT_EXECUTOR;
-        }
-
-        mRequest = request;
-        mCallerIdentity = Objects.requireNonNull(callerIdentity);
+    protected ListenerRegistration(Executor executor, TListener listener) {
+        mExecutor = Objects.requireNonNull(executor);
         mActive = false;
         mListener = Objects.requireNonNull(listener);
     }
 
-    /**
-     * Returns the request associated with this listener, or null if one wasn't supplied.
-     */
-    public final @Nullable TRequest getRequest() {
-        return mRequest;
+    protected final Executor getExecutor() {
+        return mExecutor;
     }
 
     /**
-     * Returns the listener identity.
+     * May be overridden by subclasses. Invoked when registration occurs. Invoked while holding the
+     * owning multiplexer's internal lock.
      */
-    public final CallerIdentity getIdentity() {
-        return mCallerIdentity;
-    }
+    protected void onRegister(Object key) {}
 
     /**
-     * May be overridden by subclasses. Invoked when registration occurs. If this returns true,
-     * then registration will complete successfully. If this returns false, registration will fail,
-     * and {@link #onUnregister()} will not be called.
-     */
-    protected boolean onRegister(Object key) {
-        return true;
-    }
-
-    /**
-     * May be overridden by subclasses. Invoked when unregistration occurs.
+     * May be overridden by subclasses. Invoked when unregistration occurs. Invoked while holding
+     * the owning multiplexer's internal lock.
      */
     protected void onUnregister() {}
 
     /**
      * May be overridden by subclasses. Invoked when this registration becomes active. If this
-     * returns a non-null operation, that operation will be invoked for the listener.
+     * returns a non-null operation, that operation will be invoked for the listener. Invoked
+     * while holding the owning multiplexer's internal lock.
      */
-    protected @Nullable ListenerOperation<TListener> onActive() {
-        return null;
-    }
+    protected void onActive() {}
 
     /**
-     * May be overridden by subclasses. Invoked when registration becomes inactive.
+     * May be overridden by subclasses. Invoked when registration becomes inactive. If this returns
+     * a non-null operation, that operation will be invoked for the listener. Invoked while holding
+     * the owning multiplexer's internal lock.
      */
     protected void onInactive() {}
 
-    final boolean isActive() {
+    public final boolean isActive() {
         return mActive;
     }
 
@@ -131,50 +86,43 @@ public class ListenerRegistration<TRequest, TListener> {
         return false;
     }
 
-    final boolean isRegistered() {
+    public final boolean isRegistered() {
         return mListener != null;
     }
 
     final void unregisterInternal() {
         mListener = null;
-    }
-
-    final void executeInternal(@NonNull ListenerOperation<TListener> operation) {
-        Objects.requireNonNull(operation);
-        mExecutor.execute(() -> {
-            TListener listener = mListener;
-            if (listener == null) {
-                return;
-            }
-
-            try {
-                operation.operate(listener);
-            } catch (Exception e) {
-                onOperationFailure(operation, e);
-            }
-        });
+        onListenerUnregister();
     }
 
     /**
-     * Invoked when an operation throws an exception, and run on the same executor as the operation.
+     * May be overridden by subclasses, however should rarely be needed. Invoked when the listener
+     * associated with this registration is unregistered, which may occur before the registration
+     * itself is unregistered. This immediately prevents the listener from being further invoked
+     * until the registration itself can be finalized and unregistered completely.
      */
-    protected void onOperationFailure(@NonNull ListenerOperation<TListener> operation,
-            @NonNull Exception exception) {
-        if (exception instanceof RuntimeException) {
-            throw (RuntimeException) exception;
-        } else {
-            // listeners should not throw exceptions that their registrations cannot handle
-            throw new UnsupportedOperationException(exception);
-        }
+    protected void onListenerUnregister() {}
+
+    /**
+     * May be overridden by subclasses to handle listener operation failures. The default behavior
+     * is to further propagate any exceptions. Will always be invoked on the executor thread.
+     */
+    protected void onOperationFailure(ListenerOperation<TListener> operation, Exception exception) {
+        throw new AssertionError(exception);
+    }
+
+    /**
+     * Executes the given listener operation, invoking
+     * {@link #onOperationFailure(ListenerOperation, Exception)} in case the listener operation
+     * fails.
+     */
+    protected final void executeOperation(@Nullable ListenerOperation<TListener> operation) {
+        executeSafely(mExecutor, () -> mListener, operation, this::onOperationFailure);
     }
 
     @Override
     public String toString() {
-        if (mRequest == null) {
-            return "[]";
-        } else {
-            return mRequest.toString();
-        }
+        return "[]";
     }
 
     @Override

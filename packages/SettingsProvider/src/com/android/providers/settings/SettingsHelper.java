@@ -25,6 +25,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.hardware.display.ColorDisplayManager;
 import android.icu.util.ULocale;
 import android.media.AudioManager;
 import android.media.RingtoneManager;
@@ -48,6 +49,8 @@ import java.util.Locale;
 public class SettingsHelper {
     private static final String TAG = "SettingsHelper";
     private static final String SILENT_RINGTONE = "_silent";
+    private static final String SETTINGS_REPLACED_KEY = "backup_skip_user_facing_data";
+    private static final String SETTING_ORIGINAL_KEY_SUFFIX = "_original";
     private static final float FLOAT_TOLERANCE = 0.01f;
 
     private Context mContext;
@@ -69,8 +72,9 @@ public class SettingsHelper {
      * {@hide}
      */
     private static final ArraySet<String> sBroadcastOnRestore;
+    private static final ArraySet<String> sBroadcastOnRestoreSystemUI;
     static {
-        sBroadcastOnRestore = new ArraySet<String>(4);
+        sBroadcastOnRestore = new ArraySet<String>(9);
         sBroadcastOnRestore.add(Settings.Secure.ENABLED_NOTIFICATION_LISTENERS);
         sBroadcastOnRestore.add(Settings.Secure.ENABLED_VR_LISTENERS);
         sBroadcastOnRestore.add(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
@@ -78,6 +82,11 @@ public class SettingsHelper {
         sBroadcastOnRestore.add(Settings.Secure.UI_NIGHT_MODE);
         sBroadcastOnRestore.add(Settings.Secure.DARK_THEME_CUSTOM_START_TIME);
         sBroadcastOnRestore.add(Settings.Secure.DARK_THEME_CUSTOM_END_TIME);
+        sBroadcastOnRestore.add(Settings.Secure.ACCESSIBILITY_DISPLAY_MAGNIFICATION_NAVBAR_ENABLED);
+        sBroadcastOnRestore.add(Settings.Secure.ACCESSIBILITY_BUTTON_TARGETS);
+        sBroadcastOnRestoreSystemUI = new ArraySet<String>(2);
+        sBroadcastOnRestoreSystemUI.add(Settings.Secure.QS_TILES);
+        sBroadcastOnRestoreSystemUI.add(Settings.Secure.QS_AUTO_ADDED_TILES);
     }
 
     private interface SettingsLookup {
@@ -121,9 +130,14 @@ public class SettingsHelper {
      */
     public void restoreValue(Context context, ContentResolver cr, ContentValues contentValues,
             Uri destination, String name, String value, int restoredFromSdkInt) {
+        if (isReplacedSystemSetting(name)) {
+            return;
+        }
+
         // Will we need a post-restore broadcast for this element?
         String oldValue = null;
         boolean sendBroadcast = false;
+        boolean sendBroadcastSystemUI = false;
         final SettingsLookup table;
 
         if (destination.equals(Settings.Secure.CONTENT_URI)) {
@@ -134,10 +148,12 @@ public class SettingsHelper {
             table = sGlobalLookup;
         }
 
-        if (sBroadcastOnRestore.contains(name)) {
+        sendBroadcast = sBroadcastOnRestore.contains(name);
+        sendBroadcastSystemUI = sBroadcastOnRestoreSystemUI.contains(name);
+
+        if (sendBroadcast || sendBroadcastSystemUI) {
             // TODO: http://b/22388012
             oldValue = table.lookup(cr, name, UserHandle.USER_SYSTEM);
-            sendBroadcast = true;
         }
 
         try {
@@ -153,6 +169,27 @@ public class SettingsHelper {
                     || Settings.System.ALARM_ALERT.equals(name)) {
                 setRingtone(name, value);
                 return;
+            } else if (Settings.System.DISPLAY_COLOR_MODE.equals(name)) {
+                int mode = Integer.parseInt(value);
+                String restoredVendorHint = Settings.System.getString(mContext.getContentResolver(),
+                        Settings.System.DISPLAY_COLOR_MODE_VENDOR_HINT);
+                final String deviceVendorHint = mContext.getResources().getString(
+                        com.android.internal.R.string.config_vendorColorModesRestoreHint);
+                boolean displayColorModeVendorModeHintsMatch =
+                        !TextUtils.isEmpty(deviceVendorHint)
+                                && deviceVendorHint.equals(restoredVendorHint);
+                // Replace vendor hint with new device's vendor hint.
+                contentValues.clear();
+                contentValues.put(Settings.NameValueTable.NAME,
+                        Settings.System.DISPLAY_COLOR_MODE_VENDOR_HINT);
+                contentValues.put(Settings.NameValueTable.VALUE, deviceVendorHint);
+                cr.insert(destination, contentValues);
+                // If vendor hints match, modes in the vendor range can be restored. Otherwise, only
+                // map standard modes.
+                if (!ColorDisplayManager.isStandardColorMode(mode)
+                        && !displayColorModeVendorModeHintsMatch) {
+                    return;
+                }
             }
 
             // Default case: write the restored value to settings
@@ -163,18 +200,28 @@ public class SettingsHelper {
         } catch (Exception e) {
             // If we fail to apply the setting, by definition nothing happened
             sendBroadcast = false;
+            sendBroadcastSystemUI = false;
         } finally {
             // If this was an element of interest, send the "we just restored it"
             // broadcast with the historical value now that the new value has
             // been committed and observers kicked off.
-            if (sendBroadcast) {
+            if (sendBroadcast || sendBroadcastSystemUI) {
                 Intent intent = new Intent(Intent.ACTION_SETTING_RESTORED)
-                        .setPackage("android").addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY)
+                        .addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY)
                         .putExtra(Intent.EXTRA_SETTING_NAME, name)
                         .putExtra(Intent.EXTRA_SETTING_NEW_VALUE, value)
                         .putExtra(Intent.EXTRA_SETTING_PREVIOUS_VALUE, oldValue)
                         .putExtra(Intent.EXTRA_SETTING_RESTORED_FROM_SDK_INT, restoredFromSdkInt);
-                context.sendBroadcastAsUser(intent, UserHandle.SYSTEM, null);
+
+                if (sendBroadcast) {
+                    intent.setPackage("android");
+                    context.sendBroadcastAsUser(intent, UserHandle.SYSTEM, null);
+                }
+                if (sendBroadcastSystemUI) {
+                    intent.setPackage(
+                            context.getString(com.android.internal.R.string.config_systemUi));
+                    context.sendBroadcastAsUser(intent, UserHandle.SYSTEM, null);
+                }
             }
         }
     }
@@ -203,7 +250,33 @@ public class SettingsHelper {
             }
         }
         // Return the original value
-        return value;
+        return isReplacedSystemSetting(name) ? getRealValueForSystemSetting(name) : value;
+    }
+
+    /**
+     * The setting value might have been replaced temporarily. If that's the case, return the real
+     * value instead of the temporary one.
+     */
+    @VisibleForTesting
+    public String getRealValueForSystemSetting(String setting) {
+        // The real value irrespectively of the original setting's namespace is stored in
+        // Settings.Secure.
+        return Settings.Secure.getString(mContext.getContentResolver(),
+                setting + SETTING_ORIGINAL_KEY_SUFFIX);
+    }
+
+    @VisibleForTesting
+    public boolean isReplacedSystemSetting(String setting) {
+        // This list should not be modified.
+        if (!Settings.System.SCREEN_OFF_TIMEOUT.equals(setting)) {
+            return false;
+        }
+        // If this flag is set, values for the system settings from the list above have been
+        // temporarily replaced. We don't want to back up the temporary value or run restore for
+        // such settings.
+        // TODO(154822946): Remove this logic in the next release.
+        return Settings.Secure.getInt(mContext.getContentResolver(), SETTINGS_REPLACED_KEY,
+                /* def */ 0) != 0;
     }
 
     /**
@@ -400,7 +473,8 @@ public class SettingsHelper {
             // indicate this isn't some passing default - the user wants this remembered
             config.userSetLocale = true;
 
-            am.updatePersistentConfiguration(config);
+            am.updatePersistentConfigurationWithAttribution(config, mContext.getOpPackageName(),
+                    mContext.getAttributionTag());
         } catch (RemoteException e) {
             // Intentionally left blank
         }

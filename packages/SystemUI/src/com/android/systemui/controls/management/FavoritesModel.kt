@@ -17,9 +17,11 @@
 package com.android.systemui.controls.management
 
 import android.content.ComponentName
+import android.util.Log
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.RecyclerView
 import com.android.systemui.controls.ControlInterface
+import com.android.systemui.controls.CustomIconCache
 import com.android.systemui.controls.controller.ControlInfo
 import java.util.Collections
 
@@ -34,13 +36,44 @@ import java.util.Collections
  * @property favoritesModelCallback callback to notify on first change and empty favorites
  */
 class FavoritesModel(
+    private val customIconCache: CustomIconCache,
     private val componentName: ComponentName,
     favorites: List<ControlInfo>,
     private val favoritesModelCallback: FavoritesModelCallback
 ) : ControlsModel {
 
+    companion object {
+        private const val TAG = "FavoritesModel"
+    }
+
     private var adapter: RecyclerView.Adapter<*>? = null
     private var modified = false
+
+    override val moveHelper = object : ControlsModel.MoveHelper {
+        override fun canMoveBefore(position: Int): Boolean {
+            return position > 0 && position < dividerPosition
+        }
+
+        override fun canMoveAfter(position: Int): Boolean {
+            return position >= 0 && position < dividerPosition - 1
+        }
+
+        override fun moveBefore(position: Int) {
+            if (!canMoveBefore(position)) {
+                Log.w(TAG, "Cannot move position $position before")
+            } else {
+                onMoveItem(position, position - 1)
+            }
+        }
+
+        override fun moveAfter(position: Int) {
+            if (!canMoveAfter(position)) {
+                Log.w(TAG, "Cannot move position $position after")
+            } else {
+                onMoveItem(position, position + 1)
+            }
+        }
+    }
 
     override fun attachAdapter(adapter: RecyclerView.Adapter<*>) {
         this.adapter = adapter
@@ -52,7 +85,7 @@ class FavoritesModel(
         }
 
     override val elements: List<ElementWrapper> = favorites.map {
-        ControlInfoWrapper(componentName, it, true)
+        ControlInfoWrapper(componentName, it, true, customIconCache::retrieve)
     } + DividerWrapper()
 
     /**
@@ -187,7 +220,7 @@ class FavoritesModel(
             viewHolder: RecyclerView.ViewHolder,
             target: RecyclerView.ViewHolder
         ): Boolean {
-            onMoveItem(viewHolder.adapterPosition, target.adapterPosition)
+            onMoveItem(viewHolder.bindingAdapterPosition, target.bindingAdapterPosition)
             return true
         }
 
@@ -195,7 +228,7 @@ class FavoritesModel(
             recyclerView: RecyclerView,
             viewHolder: RecyclerView.ViewHolder
         ): Int {
-            if (viewHolder.adapterPosition < dividerPosition) {
+            if (viewHolder.bindingAdapterPosition < dividerPosition) {
                 return ItemTouchHelper.Callback.makeMovementFlags(MOVEMENT, 0)
             } else {
                 return ItemTouchHelper.Callback.makeMovementFlags(0, 0)
@@ -207,7 +240,7 @@ class FavoritesModel(
             current: RecyclerView.ViewHolder,
             target: RecyclerView.ViewHolder
         ): Boolean {
-            return target.adapterPosition < dividerPosition
+            return target.bindingAdapterPosition < dividerPosition
         }
 
         override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {}

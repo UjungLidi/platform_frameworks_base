@@ -16,6 +16,8 @@
 
 package com.android.server.accessibility;
 
+import static android.view.WindowManager.ScreenshotSource.SCREENSHOT_ACCESSIBILITY_ACTIONS;
+
 import android.accessibilityservice.AccessibilityService;
 import android.app.PendingIntent;
 import android.app.RemoteAction;
@@ -83,7 +85,6 @@ public class SystemActionPerformer {
     private final AccessibilityAction mLegacyNotificationsAction;
     private final AccessibilityAction mLegacyQuickSettingsAction;
     private final AccessibilityAction mLegacyPowerDialogAction;
-    private final AccessibilityAction mLegacyToggleSplitScreenAction;
     private final AccessibilityAction mLegacyLockScreenAction;
     private final AccessibilityAction mLegacyTakeScreenshotAction;
 
@@ -140,10 +141,6 @@ public class SystemActionPerformer {
                 AccessibilityService.GLOBAL_ACTION_POWER_DIALOG,
                 mContext.getResources().getString(
                         R.string.accessibility_system_action_power_dialog_label));
-        mLegacyToggleSplitScreenAction = new AccessibilityAction(
-                AccessibilityService.GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN,
-                mContext.getResources().getString(
-                        R.string.accessibility_system_action_toggle_split_screen_label));
         mLegacyLockScreenAction = new AccessibilityAction(
                 AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN,
                 mContext.getResources().getString(
@@ -233,10 +230,6 @@ public class SystemActionPerformer {
             systemActions.add(mLegacyPowerDialogAction);
         }
         if (!mRegisteredSystemActions.containsKey(
-                AccessibilityService.GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)) {
-            systemActions.add(mLegacyToggleSplitScreenAction);
-        }
-        if (!mRegisteredSystemActions.containsKey(
                 AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN)) {
             systemActions.add(mLegacyLockScreenAction);
         }
@@ -301,7 +294,11 @@ public class SystemActionPerformer {
                     return lockScreen();
                 case AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT:
                     return takeScreenshot();
+                case AccessibilityService.GLOBAL_ACTION_KEYCODE_HEADSETHOOK :
+                    sendDownAndUpKeyEvents(KeyEvent.KEYCODE_HEADSETHOOK);
+                    return true;
                 default:
+                    Slog.e(TAG, "Invalid action id: " + actionId);
                     return false;
             }
         } finally {
@@ -311,14 +308,15 @@ public class SystemActionPerformer {
 
     private void sendDownAndUpKeyEvents(int keyCode) {
         final long token = Binder.clearCallingIdentity();
-
-        // Inject down.
-        final long downTime = SystemClock.uptimeMillis();
-        sendKeyEventIdentityCleared(keyCode, KeyEvent.ACTION_DOWN, downTime, downTime);
-        sendKeyEventIdentityCleared(
-                keyCode, KeyEvent.ACTION_UP, downTime, SystemClock.uptimeMillis());
-
-        Binder.restoreCallingIdentity(token);
+        try {
+            // Inject down.
+            final long downTime = SystemClock.uptimeMillis();
+            sendKeyEventIdentityCleared(keyCode, KeyEvent.ACTION_DOWN, downTime, downTime);
+            sendKeyEventIdentityCleared(
+                    keyCode, KeyEvent.ACTION_UP, downTime, SystemClock.uptimeMillis());
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
     }
 
     private void sendKeyEventIdentityCleared(int keyCode, int action, long downTime, long time) {
@@ -332,22 +330,24 @@ public class SystemActionPerformer {
 
     private void expandNotifications() {
         final long token = Binder.clearCallingIdentity();
-
-        StatusBarManager statusBarManager = (StatusBarManager) mContext.getSystemService(
-                android.app.Service.STATUS_BAR_SERVICE);
-        statusBarManager.expandNotificationsPanel();
-
-        Binder.restoreCallingIdentity(token);
+        try {
+            StatusBarManager statusBarManager = (StatusBarManager) mContext.getSystemService(
+                    android.app.Service.STATUS_BAR_SERVICE);
+            statusBarManager.expandNotificationsPanel();
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
     }
 
     private void expandQuickSettings() {
         final long token = Binder.clearCallingIdentity();
-
-        StatusBarManager statusBarManager = (StatusBarManager) mContext.getSystemService(
-                android.app.Service.STATUS_BAR_SERVICE);
-        statusBarManager.expandSettingsPanel();
-
-        Binder.restoreCallingIdentity(token);
+        try {
+            StatusBarManager statusBarManager = (StatusBarManager) mContext.getSystemService(
+                    android.app.Service.STATUS_BAR_SERVICE);
+            statusBarManager.expandSettingsPanel();
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
     }
 
     private boolean openRecents() {
@@ -395,7 +395,8 @@ public class SystemActionPerformer {
         ScreenshotHelper screenshotHelper = (mScreenshotHelperSupplier != null)
                 ? mScreenshotHelperSupplier.get() : new ScreenshotHelper(mContext);
         screenshotHelper.takeScreenshot(android.view.WindowManager.TAKE_SCREENSHOT_FULLSCREEN,
-                true, true, new Handler(Looper.getMainLooper()), null);
+                true, true, SCREENSHOT_ACCESSIBILITY_ACTIONS,
+                new Handler(Looper.getMainLooper()), null);
         return true;
     }
 }

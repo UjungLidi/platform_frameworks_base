@@ -39,18 +39,19 @@ import com.android.internal.util.Preconditions;
 import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.security.SecureRandom;
 import java.util.ArrayList;
-import java.util.Random;
 
 /**
- * Session used when the Android a system-provided content capture service
- * about events associated with views.
+ * Session used when notifying the Android system about events associated with views.
  */
 public abstract class ContentCaptureSession implements AutoCloseable {
 
     private static final String TAG = ContentCaptureSession.class.getSimpleName();
 
-    private static final Random sIdGenerator = new Random();
+    // TODO(b/158778794): to make the session ids truly globally unique across
+    //  processes, we may need to explore other options.
+    private static final SecureRandom ID_GENERATOR = new SecureRandom();
 
     /**
      * Initial state, when there is no session.
@@ -125,7 +126,7 @@ public abstract class ContentCaptureSession implements AutoCloseable {
     public static final int STATE_INTERNAL_ERROR = 0x100;
 
     /**
-     * Session is disabled because service didn't whitelist package or activity.
+     * Session is disabled because service didn't allowlist package or activity.
      *
      * @hide
      */
@@ -166,6 +167,8 @@ public abstract class ContentCaptureSession implements AutoCloseable {
     public static final int FLUSH_REASON_IDLE_TIMEOUT = 5;
     /** @hide */
     public static final int FLUSH_REASON_TEXT_CHANGE_TIMEOUT = 6;
+    /** @hide */
+    public static final int FLUSH_REASON_SESSION_CONNECTED = 7;
 
     /** @hide */
     @IntDef(prefix = { "FLUSH_REASON_" }, value = {
@@ -174,7 +177,8 @@ public abstract class ContentCaptureSession implements AutoCloseable {
             FLUSH_REASON_SESSION_STARTED,
             FLUSH_REASON_SESSION_FINISHED,
             FLUSH_REASON_IDLE_TIMEOUT,
-            FLUSH_REASON_TEXT_CHANGE_TIMEOUT
+            FLUSH_REASON_TEXT_CHANGE_TIMEOUT,
+            FLUSH_REASON_SESSION_CONNECTED
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface FlushReason{}
@@ -337,11 +341,7 @@ public abstract class ContentCaptureSession implements AutoCloseable {
             }
         }
 
-        try {
-            flush(FLUSH_REASON_SESSION_FINISHED);
-        } finally {
-            onDestroy();
-        }
+        onDestroy();
     }
 
     abstract void onDestroy();
@@ -609,6 +609,8 @@ public abstract class ContentCaptureSession implements AutoCloseable {
                 return "IDLE";
             case FLUSH_REASON_TEXT_CHANGE_TIMEOUT:
                 return "TEXT_CHANGE";
+            case FLUSH_REASON_SESSION_CONNECTED:
+                return "CONNECTED";
             default:
                 return "UNKOWN-" + reason;
         }
@@ -617,7 +619,7 @@ public abstract class ContentCaptureSession implements AutoCloseable {
     private static int getRandomSessionId() {
         int id;
         do {
-            id = sIdGenerator.nextInt();
+            id = ID_GENERATOR.nextInt();
         } while (id == NO_SESSION_ID);
         return id;
     }

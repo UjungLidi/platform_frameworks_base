@@ -16,6 +16,8 @@
 
 package com.android.server.wm;
 
+import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
+
 import android.os.Handler;
 import android.testing.DexmakerShareClassLoaderRule;
 
@@ -40,6 +42,11 @@ class SystemServiceTestsBase {
         mLockRule.waitForLocked(mSystemServicesTestRule::waitUntilWindowManagerHandlersIdle);
     }
 
+    /** Waits until the choreographer of WindowAnimator has processed all callbacks. */
+    void waitUntilWindowAnimatorIdle() {
+        mLockRule.waitForLocked(mSystemServicesTestRule::waitUntilWindowAnimatorIdle);
+    }
+
     void cleanupWindowManagerHandlers() {
         mLockRule.waitForLocked(mSystemServicesTestRule::cleanupWindowManagerHandlers);
     }
@@ -59,6 +66,15 @@ class SystemServiceTestsBase {
     /** It is used when we want to wait for a result inside {@link WindowManagerGlobalLock}. */
     <T> T awaitInWmLock(Callable<T> callable) {
         return mLockRule.waitForLocked(callable);
+    }
+
+    /**
+     * Make the system booted, so that {@link ActivityStack#resumeTopActivityInnerLocked} can really
+     * be executed to update activity state and configuration when resuming the current top.
+     */
+    static void setBooted(ActivityTaskManagerService atmService) {
+        doReturn(false).when(atmService).isBooting();
+        doReturn(true).when(atmService).isBooted();
     }
 
     /**

@@ -16,6 +16,8 @@
 
 package android.telephony;
 
+import static android.text.TextUtils.formatSimple;
+
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
@@ -30,6 +32,7 @@ import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.Rect;
 import android.graphics.Typeface;
+import android.os.Build;
 import android.os.Parcel;
 import android.os.ParcelUuid;
 import android.os.Parcelable;
@@ -148,13 +151,14 @@ public class SubscriptionInfo implements Parcelable {
 
     /**
      * The access rules for this subscription, if it is embedded and defines any.
+     * This does not include access rules for non-embedded subscriptions.
      */
     @Nullable
     private UiccAccessRule[] mNativeAccessRules;
 
     /**
      * The carrier certificates for this subscription that are saved in carrier configs.
-     * The other carrier certificates are embedded on Uicc and stored as part of mNativeAccessRules.
+     * This does not include access rules from the Uicc, whether embedded or non-embedded.
      */
     @Nullable
     private UiccAccessRule[] mCarrierConfigAccessRules;
@@ -305,11 +309,14 @@ public class SubscriptionInfo implements Parcelable {
     }
 
     /**
-     * Returns the ICC ID if the calling app has been granted the READ_PRIVILEGED_PHONE_STATE
-     * permission, has carrier privileges (see {@link TelephonyManager#hasCarrierPrivileges}), or
-     * is a device owner or profile owner that has been granted the READ_PHONE_STATE permission.
-     * The profile owner is an app that owns a managed profile on the device; for more details see
-     * <a href="https://developer.android.com/work/managed-profiles">Work profiles</a>. Profile
+     * Returns the ICC ID.
+     *
+     * Starting with API level 29 Security Patch 2021-04-05, returns the ICC ID if the calling app
+     * has been granted the READ_PRIVILEGED_PHONE_STATE permission, has carrier privileges (see
+     * {@link TelephonyManager#hasCarrierPrivileges}), or is a device owner or profile owner that
+     * has been granted the READ_PHONE_STATE permission. The profile owner is an app that owns a
+     * managed profile on the device; for more details see <a
+     * href="https://developer.android.com/work/managed-profiles">Work profiles</a>. Profile
      * owner access is deprecated and will be removed in a future release.
      *
      * @return the ICC ID, or an empty string if one of these requirements is not met
@@ -351,7 +358,7 @@ public class SubscriptionInfo implements Parcelable {
      * Sets the name displayed to the user that identifies this subscription
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void setDisplayName(CharSequence name) {
         this.mDisplayName = name;
     }
@@ -376,7 +383,7 @@ public class SubscriptionInfo implements Parcelable {
      * NAME_SOURCE_USER_INPUT.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public int getNameSource() {
         return this.mNameSource;
     }
@@ -420,7 +427,7 @@ public class SubscriptionInfo implements Parcelable {
         // Set text size scaled by density
         paint.setTextSize(TEXT_SIZE * metrics.density);
         // Convert sim slot index to localized string
-        final String index = String.format("%d", mSimSlotIndex + 1);
+        final String index = formatSimple("%d", mSimSlotIndex + 1);
         final Rect textBound = new Rect();
         paint.getTextBounds(index, 0, 1, textBound);
         final float xOffset = (width / 2.f) - textBound.centerX();
@@ -443,14 +450,28 @@ public class SubscriptionInfo implements Parcelable {
      * Sets the color displayed to the user that identifies this subscription
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void setIconTint(int iconTint) {
         this.mIconTint = iconTint;
     }
 
     /**
-     * @return the number of this subscription if the calling app has been granted the
-     * READ_PHONE_NUMBERS permission, or an empty string otherwise
+     * Returns the number of this subscription.
+     *
+     * Starting with API level 30, returns the number of this subscription if the calling app meets
+     * one of the following requirements:
+     * <ul>
+     *     <li>If the calling app's target SDK is API level 29 or lower and the app has been granted
+     *     the READ_PHONE_STATE permission.
+     *     <li>If the calling app has been granted any of READ_PRIVILEGED_PHONE_STATE,
+     *     READ_PHONE_NUMBERS, or READ_SMS.
+     *     <li>If the calling app has carrier privileges (see {@link
+     *     TelephonyManager#hasCarrierPrivileges}).
+     *     <li>If the calling app is the default SMS role holder.
+     * </ul>
+     *
+     * @return the number of this subscription, or an empty string if one of these requirements is
+     * not met
      */
     public String getNumber() {
         return mNumber;
@@ -551,6 +572,13 @@ public class SubscriptionInfo implements Parcelable {
     /**
      * @hide
      */
+    public void clearGroupUuid() {
+        this.mGroupUUID = null;
+    }
+
+    /**
+     * @hide
+     */
     public List<String> getEhplmns() {
         return mEhplmns == null ? Collections.emptyList() : Arrays.asList(mEhplmns);
     }
@@ -644,7 +672,6 @@ public class SubscriptionInfo implements Parcelable {
      * is authorized to manage this subscription.
      * TODO and fix it properly in R / master: either deprecate this and have 3 APIs
      *  native + carrier + all, or have this return all by default.
-     * @throws UnsupportedOperationException if this subscription is not embedded.
      * @hide
      */
     @SystemApi
@@ -670,12 +697,15 @@ public class SubscriptionInfo implements Parcelable {
     }
 
     /**
-     * Returns the card string if the calling app has been granted the READ_PRIVILEGED_PHONE_STATE
-     * permission, has carrier privileges (see {@link TelephonyManager#hasCarrierPrivileges}), or
-     * is a device owner or profile owner on an organization owned device that has been granted the
-     * READ_PHONE_STATE permission. The profile owner is an app that owns a managed profile on the
-     * device; for more details see <a href="https://developer.android.com/work/managed-profiles">
-     * Work profiles</a>.
+     * Returns the card string of the SIM card which contains the subscription.
+     *
+     * Starting with API level 29 Security Patch 2021-04-05, returns the card string if the calling
+     * app has been granted the READ_PRIVILEGED_PHONE_STATE permission, has carrier privileges (see
+     * {@link TelephonyManager#hasCarrierPrivileges}), or is a device owner or profile owner that
+     * has been granted the READ_PHONE_STATE permission. The profile owner is an app that owns a
+     * managed profile on the device; for more details see <a
+     * href="https://developer.android.com/work/managed-profiles">Work profiles</a>. Profile
+     * owner access is deprecated and will be removed in a future release.
      *
      * @return the card string of the SIM card which contains the subscription or an empty string
      * if these requirements are not met. The card string is the ICCID for UICCs or the EID for
@@ -837,20 +867,20 @@ public class SubscriptionInfo implements Parcelable {
                 + " carrierId=" + mCarrierId + " displayName=" + mDisplayName
                 + " carrierName=" + mCarrierName + " nameSource=" + mNameSource
                 + " iconTint=" + mIconTint
-                + " mNumber=" + Rlog.pii(TelephonyUtils.IS_DEBUGGABLE, mNumber)
-                + " dataRoaming=" + mDataRoaming + " iconBitmap=" + mIconBitmap + " mcc " + mMcc
-                + " mnc " + mMnc + "mCountryIso=" + mCountryIso + " isEmbedded " + mIsEmbedded
-                + " nativeAccessRules " + Arrays.toString(mNativeAccessRules)
+                + " number=" + Rlog.pii(TelephonyUtils.IS_DEBUGGABLE, mNumber)
+                + " dataRoaming=" + mDataRoaming + " iconBitmap=" + mIconBitmap + " mcc=" + mMcc
+                + " mnc=" + mMnc + " countryIso=" + mCountryIso + " isEmbedded=" + mIsEmbedded
+                + " nativeAccessRules=" + Arrays.toString(mNativeAccessRules)
                 + " cardString=" + cardStringToPrint + " cardId=" + mCardId
-                + " isOpportunistic=" + mIsOpportunistic + " mGroupUUID=" + mGroupUUID
-                + " mIsGroupDisabled=" + mIsGroupDisabled
+                + " isOpportunistic=" + mIsOpportunistic + " groupUUID=" + mGroupUUID
+                + " isGroupDisabled=" + mIsGroupDisabled
                 + " profileClass=" + mProfileClass
                 + " ehplmns=" + Arrays.toString(mEhplmns)
                 + " hplmns=" + Arrays.toString(mHplmns)
                 + " subscriptionType=" + mSubscriptionType
-                + " mGroupOwner=" + mGroupOwner
+                + " groupOwner=" + mGroupOwner
                 + " carrierConfigAccessRules=" + Arrays.toString(mCarrierConfigAccessRules)
-                + " mAreUiccApplicationsEnabled=" + mAreUiccApplicationsEnabled + "}";
+                + " areUiccApplicationsEnabled=" + mAreUiccApplicationsEnabled + "}";
     }
 
     @Override

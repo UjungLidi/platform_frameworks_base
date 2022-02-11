@@ -16,25 +16,35 @@
 
 package com.android.internal.widget;
 
+import static android.view.inputmethod.InputConnectionProto.CURSOR_CAPS_MODE;
+import static android.view.inputmethod.InputConnectionProto.EDITABLE_TEXT;
+import static android.view.inputmethod.InputConnectionProto.SELECTED_TEXT;
+import static android.view.inputmethod.InputConnectionProto.SELECTED_TEXT_END;
+import static android.view.inputmethod.InputConnectionProto.SELECTED_TEXT_START;
+
 import android.compat.annotation.UnsupportedAppUsage;
-import android.content.ClipData;
-import android.content.ClipDescription;
-import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
+import android.text.Selection;
 import android.text.method.KeyListener;
 import android.util.Log;
+import android.util.imetracing.InputConnectionHelper;
+import android.util.proto.ProtoOutputStream;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.CompletionInfo;
 import android.view.inputmethod.CorrectionInfo;
+import android.view.inputmethod.DumpableInputConnection;
 import android.view.inputmethod.ExtractedText;
 import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InputConnection;
-import android.view.inputmethod.InputContentInfo;
-import android.widget.RichContentReceiver;
 import android.widget.TextView;
 
-public class EditableInputConnection extends BaseInputConnection {
+/**
+ * Base class for an editable InputConnection instance. This is created by {@link TextView} or
+ * {@link EditText}.
+ */
+public class EditableInputConnection extends BaseInputConnection
+        implements DumpableInputConnection {
     private static final boolean DEBUG = false;
     private static final String TAG = "EditableInputConnection";
 
@@ -86,6 +96,12 @@ public class EditableInputConnection extends BaseInputConnection {
             }
         }
         return false;
+    }
+
+    @Override
+    public void endComposingRegionEditInternal() {
+        // The ContentCapture service is interested in Composing-state changes.
+        mTextView.notifyContentCaptureTextChanged();
     }
 
     @Override
@@ -168,6 +184,12 @@ public class EditableInputConnection extends BaseInputConnection {
     }
 
     @Override
+    public boolean performSpellCheck() {
+        mTextView.onPerformSpellCheck();
+        return true;
+    }
+
+    @Override
     public boolean performPrivateCommand(String action, Bundle data) {
         mTextView.onPrivateIMECommand(action, data);
         return true;
@@ -183,28 +205,6 @@ public class EditableInputConnection extends BaseInputConnection {
         mTextView.hideErrorIfUnchanged();
 
         return success;
-    }
-
-    @Override
-    public boolean commitContent(InputContentInfo content, int flags, Bundle opts) {
-        int targetSdkVersion = mTextView.getContext().getApplicationInfo().targetSdkVersion;
-        if (targetSdkVersion <= Build.VERSION_CODES.R) {
-            return false;
-        }
-
-        final ClipDescription description = content.getDescription();
-        final RichContentReceiver<TextView> receiver = mTextView.getRichContentReceiver();
-        if ((flags & InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION) != 0) {
-            try {
-                content.requestPermission();
-            } catch (Exception e) {
-                // TODO(b/147299828): Can we catch SecurityException instead?
-                Log.w(TAG, "Can't insert content from IME; requestPermission() failed: " + e);
-                return false; // Can't insert the content if we don't have permission to read it
-            }
-        }
-        ClipData clip = new ClipData(description, new ClipData.Item(content.getContentUri()));
-        return receiver.onReceive(mTextView, clip, RichContentReceiver.SOURCE_INPUT_METHOD, 0);
     }
 
     @Override
@@ -248,5 +248,38 @@ public class EditableInputConnection extends BaseInputConnection {
             }
         }
         return true;
+    }
+
+    @Override
+    public boolean setImeConsumesInput(boolean imeConsumesInput) {
+        if (mTextView == null) {
+            return super.setImeConsumesInput(imeConsumesInput);
+        }
+        mTextView.setImeConsumesInput(imeConsumesInput);
+        return true;
+    }
+
+    @Override
+    public void dumpDebug(ProtoOutputStream proto, long fieldId) {
+        final long token = proto.start(fieldId);
+        CharSequence editableText = mTextView.getText();
+        CharSequence selectedText = getSelectedText(0 /* flags */);
+        if (InputConnectionHelper.DUMP_TEXT) {
+            if (editableText != null) {
+                proto.write(EDITABLE_TEXT, editableText.toString());
+            }
+            if (selectedText != null) {
+                proto.write(SELECTED_TEXT, selectedText.toString());
+            }
+        }
+        final Editable content = getEditable();
+        if (content != null) {
+            int start = Selection.getSelectionStart(content);
+            int end = Selection.getSelectionEnd(content);
+            proto.write(SELECTED_TEXT_START, start);
+            proto.write(SELECTED_TEXT_END, end);
+        }
+        proto.write(CURSOR_CAPS_MODE, getCursorCapsMode(0));
+        proto.end(token);
     }
 }

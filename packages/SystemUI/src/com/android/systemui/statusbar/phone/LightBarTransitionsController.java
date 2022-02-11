@@ -26,7 +26,7 @@ import android.util.TimeUtils;
 
 import com.android.systemui.Dependency;
 import com.android.systemui.Dumpable;
-import com.android.systemui.Interpolators;
+import com.android.systemui.animation.Interpolators;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.CommandQueue.Callbacks;
@@ -97,6 +97,7 @@ public class LightBarTransitionsController implements Dumpable, Callbacks,
 
     public void restoreState(Bundle savedInstanceState) {
         setIconTintInternal(savedInstanceState.getFloat(EXTRA_DARK_INTENSITY, 0));
+        mNextDarkIntensity = mDarkIntensity;
     }
 
     @Override

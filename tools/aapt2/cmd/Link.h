@@ -190,8 +190,11 @@ class LinkCommand : public Command {
     AddOptionalFlag("--version-name",
         "Version name to inject into the AndroidManifest.xml if none is present.",
         &options_.manifest_fixer_options.version_name_default);
+    AddOptionalFlag("--revision-code",
+        "Revision code (integer) to inject into the AndroidManifest.xml if none is\n"
+            "present.", &options_.manifest_fixer_options.revision_code_default);
     AddOptionalSwitch("--replace-version",
-        "If --version-code and/or --version-name are specified, these\n"
+        "If --version-code, --version-name, and/or --revision-code are specified, these\n"
             "values will replace any value already in the manifest. By\n"
             "default, nothing is changed if the manifest already defines\n"
             "these attributes.",
@@ -263,6 +266,10 @@ class LinkCommand : public Command {
         "Changes the name of the target package for instrumentation. Most useful\n"
             "when used in conjunction with --rename-manifest-package.",
         &options_.manifest_fixer_options.rename_instrumentation_target_package);
+    AddOptionalFlag("--rename-overlay-target-package",
+        "Changes the name of the target package for overlay. Most useful\n"
+            "when used in conjunction with --rename-manifest-package.",
+        &options_.manifest_fixer_options.rename_overlay_target_package);
     AddOptionalFlagList("-0", "File suffix not to compress.",
         &options_.extensions_to_not_compress);
     AddOptionalSwitch("--no-compress", "Do not compress any resources.",

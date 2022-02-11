@@ -18,6 +18,7 @@ package com.android.systemui.broadcast
 
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
 import android.content.IntentFilter
 import android.os.Handler
 import android.os.HandlerExecutor
@@ -25,18 +26,16 @@ import android.os.Looper
 import android.os.Message
 import android.os.UserHandle
 import android.text.TextUtils
-import android.util.Log
+import android.util.IndentingPrintWriter
 import android.util.SparseArray
 import com.android.internal.annotations.VisibleForTesting
 import com.android.systemui.Dumpable
-import com.android.systemui.dagger.qualifiers.Background
-import com.android.systemui.dagger.qualifiers.Main
+import com.android.systemui.broadcast.logging.BroadcastDispatcherLogger
 import com.android.systemui.dump.DumpManager
+import com.android.systemui.settings.UserTracker
 import java.io.FileDescriptor
 import java.io.PrintWriter
 import java.util.concurrent.Executor
-import javax.inject.Inject
-import javax.inject.Singleton
 
 data class ReceiverData(
     val receiver: BroadcastReceiver,
@@ -60,21 +59,21 @@ private const val DEBUG = true
  *
  * Use only for IntentFilters with actions and optionally categories. It does not support,
  * permissions, schemes, data types, data authorities or priority different than 0.
- * Cannot be used for getting sticky broadcasts.
+ * Cannot be used for getting sticky broadcasts (either as return of registering or as re-delivery).
  */
-@Singleton
-open class BroadcastDispatcher @Inject constructor (
+open class BroadcastDispatcher constructor (
     private val context: Context,
-    @Main private val mainHandler: Handler,
-    @Background private val bgLooper: Looper,
-    dumpManager: DumpManager
+    private val bgLooper: Looper,
+    private val bgExecutor: Executor,
+    private val dumpManager: DumpManager,
+    private val logger: BroadcastDispatcherLogger,
+    private val userTracker: UserTracker
 ) : Dumpable {
 
     // Only modify in BG thread
     private val receiversByUser = SparseArray<UserBroadcastDispatcher>(20)
 
-    init {
-        // TODO: Don't do this in the constructor
+    fun initialize() {
         dumpManager.registerDumpable(javaClass.name, this)
     }
 
@@ -87,7 +86,7 @@ open class BroadcastDispatcher @Inject constructor (
      *               have at least one action.
      * @param handler A handler to dispatch [BroadcastReceiver.onReceive].
      * @param user A user handle to determine which broadcast should be dispatched to this receiver.
-     *             By default, it is the current user.
+     *             By default, it is the user of the context (system user in SystemUI).
      * @throws IllegalArgumentException if the filter has other constraints that are not actions or
      *                                  categories or the filter has no actions.
      */
@@ -113,7 +112,7 @@ open class BroadcastDispatcher @Inject constructor (
      * @param executor An executor to dispatch [BroadcastReceiver.onReceive]. Pass null to use an
      *                 executor in the main thread (default).
      * @param user A user handle to determine which broadcast should be dispatched to this receiver.
-     *             By default, it is the current user.
+     *             Pass `null` to use the user of the context (system user in SystemUI).
      * @throws IllegalArgumentException if the filter has other constraints that are not actions or
      *                                  categories or the filter has no actions.
      */
@@ -121,13 +120,17 @@ open class BroadcastDispatcher @Inject constructor (
     open fun registerReceiver(
         receiver: BroadcastReceiver,
         filter: IntentFilter,
-        executor: Executor? = context.mainExecutor,
-        user: UserHandle = context.user
+        executor: Executor? = null,
+        user: UserHandle? = null
     ) {
         checkFilter(filter)
         this.handler
-                .obtainMessage(MSG_ADD_RECEIVER,
-                        ReceiverData(receiver, filter, executor ?: context.mainExecutor, user))
+                .obtainMessage(MSG_ADD_RECEIVER, ReceiverData(
+                        receiver,
+                        filter,
+                        executor ?: context.mainExecutor,
+                        user ?: context.user
+                ))
                 .sendToTarget()
     }
 
@@ -156,7 +159,7 @@ open class BroadcastDispatcher @Inject constructor (
     /**
      * Unregister receiver for a particular user.
      *
-     * @param receiver The receiver to unregister. It will be unregistered for all users.
+     * @param receiver The receiver to unregister.
      * @param user The user associated to the registered [receiver]. It can be [UserHandle.ALL].
      */
     open fun unregisterReceiverForUser(receiver: BroadcastReceiver, user: UserHandle) {
@@ -166,17 +169,21 @@ open class BroadcastDispatcher @Inject constructor (
 
     @VisibleForTesting
     protected open fun createUBRForUser(userId: Int) =
-            UserBroadcastDispatcher(context, userId, bgLooper)
+            UserBroadcastDispatcher(context, userId, bgLooper, bgExecutor, logger)
 
     override fun dump(fd: FileDescriptor, pw: PrintWriter, args: Array<out String>) {
         pw.println("Broadcast dispatcher:")
+        val ipw = IndentingPrintWriter(pw, "  ")
+        ipw.increaseIndent()
         for (index in 0 until receiversByUser.size()) {
-            pw.println("  User ${receiversByUser.keyAt(index)}")
-            receiversByUser.valueAt(index).dump(fd, pw, args)
+            ipw.println("User ${receiversByUser.keyAt(index)}")
+            receiversByUser.valueAt(index).dump(fd, ipw, args)
         }
+        ipw.decreaseIndent()
     }
 
     private val handler = object : Handler(bgLooper) {
+
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 MSG_ADD_RECEIVER -> {
@@ -184,13 +191,13 @@ open class BroadcastDispatcher @Inject constructor (
                     // If the receiver asked to be registered under the current user, we register
                     // under the actual current user.
                     val userId = if (data.user.identifier == UserHandle.USER_CURRENT) {
-                        context.userId
+                        userTracker.userId
                     } else {
                         data.user.identifier
                     }
                     if (userId < UserHandle.USER_ALL) {
-                        if (DEBUG) Log.w(TAG, "Register receiver for invalid user: $userId")
-                        return
+                        throw IllegalStateException(
+                                "Attempting to register receiver for invalid user {$userId}")
                     }
                     val uBR = receiversByUser.get(userId, createUBRForUser(userId))
                     receiversByUser.put(userId, uBR)
@@ -206,7 +213,6 @@ open class BroadcastDispatcher @Inject constructor (
                 MSG_REMOVE_RECEIVER_FOR_USER -> {
                     receiversByUser.get(msg.arg1)?.unregisterReceiver(msg.obj as BroadcastReceiver)
                 }
-
                 else -> super.handleMessage(msg)
             }
         }

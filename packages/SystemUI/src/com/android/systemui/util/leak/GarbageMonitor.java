@@ -43,14 +43,22 @@ import android.provider.Settings;
 import android.text.format.DateUtils;
 import android.util.Log;
 import android.util.LongSparseArray;
+import android.view.View;
 
+import com.android.internal.logging.MetricsLogger;
 import com.android.systemui.Dumpable;
 import com.android.systemui.R;
 import com.android.systemui.SystemUI;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Background;
+import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.plugins.qs.QSTile;
+import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.logging.QSLogger;
+import com.android.systemui.qs.tileimpl.QSIconViewImpl;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
 
 import java.io.FileDescriptor;
@@ -59,25 +67,40 @@ import java.util.ArrayList;
 import java.util.List;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
+ * Suite of tools to periodically inspect the System UI heap and possibly prompt the user to
+ * capture heap dumps and report them. Includes the implementation of the "Dump SysUI Heap"
+ * quick settings tile.
  */
-@Singleton
+@SysUISingleton
 public class GarbageMonitor implements Dumpable {
-    private static final boolean LEAK_REPORTING_ENABLED =
-            Build.IS_DEBUGGABLE
-                    && SystemProperties.getBoolean("debug.enable_leak_reporting", false);
-    private static final String FORCE_ENABLE_LEAK_REPORTING = "sysui_force_enable_leak_reporting";
+    // Feature switches
+    // ================
 
-    private static final boolean HEAP_TRACKING_ENABLED = Build.IS_DEBUGGABLE;
+    // Whether to use TrackedGarbage to trigger LeakReporter. Off by default unless you set the
+    // appropriate sysprop on a userdebug device.
+    public static final boolean LEAK_REPORTING_ENABLED = Build.IS_DEBUGGABLE
+            && SystemProperties.getBoolean("debug.enable_leak_reporting", false);
+    public static final String FORCE_ENABLE_LEAK_REPORTING = "sysui_force_enable_leak_reporting";
 
-    // whether to use ActivityManager.setHeapLimit
-    private static final boolean ENABLE_AM_HEAP_LIMIT = Build.IS_DEBUGGABLE;
-    // heap limit value, in KB (overrides R.integer.watch_heap_limit)
+    // Heap tracking: watch the current memory levels and update the MemoryTile if available.
+    // On for all userdebug devices.
+    public static final boolean HEAP_TRACKING_ENABLED = Build.IS_DEBUGGABLE;
+
+    // Tell QSTileHost.java to toss this into the default tileset?
+    public static final boolean ADD_MEMORY_TILE_TO_DEFAULT_ON_DEBUGGABLE_BUILDS = true;
+
+    // whether to use ActivityManager.setHeapLimit (and post a notification to the user asking
+    // to dump the heap). Off by default unless you set the appropriate sysprop on userdebug
+    private static final boolean ENABLE_AM_HEAP_LIMIT = Build.IS_DEBUGGABLE
+            && SystemProperties.getBoolean("debug.enable_sysui_heap_limit", false);
+
+    // Tuning params
+    // =============
+
+    // threshold for setHeapLimit(), in KB (overrides R.integer.watch_heap_limit)
     private static final String SETTINGS_KEY_AM_HEAP_LIMIT = "systemui_am_heap_limit";
-
-    private static final String TAG = "GarbageMonitor";
 
     private static final long GARBAGE_INSPECTION_INTERVAL =
             15 * DateUtils.MINUTE_IN_MILLIS; // 15 min
@@ -89,6 +112,7 @@ public class GarbageMonitor implements Dumpable {
 
     private static final int GARBAGE_ALLOWANCE = 5;
 
+    private static final String TAG = "GarbageMonitor";
     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
 
     private final Handler mHandler;
@@ -273,7 +297,7 @@ public class GarbageMonitor implements Dumpable {
         MemoryIconDrawable(Context context) {
             baseIcon = context.getDrawable(R.drawable.ic_memory).mutate();
             dp = context.getResources().getDisplayMetrics().density;
-            paint.setColor(QSTileImpl.getColorForState(context, STATE_ACTIVE));
+            paint.setColor(QSIconViewImpl.getIconColorForState(context, STATE_ACTIVE));
         }
 
         public void setRss(long rss) {
@@ -378,19 +402,25 @@ public class GarbageMonitor implements Dumpable {
     public static class MemoryTile extends QSTileImpl<QSTile.State> {
         public static final String TILE_SPEC = "dbg:mem";
 
-        // Tell QSTileHost.java to toss this into the default tileset?
-        public static final boolean ADD_TO_DEFAULT_ON_DEBUGGABLE_BUILDS = true;
-
         private final GarbageMonitor gm;
-        private final ActivityStarter mActivityStarter;
         private ProcessMemInfo pmi;
         private boolean dumpInProgress;
 
         @Inject
-        public MemoryTile(QSHost host, GarbageMonitor monitor, ActivityStarter starter) {
-            super(host);
+        public MemoryTile(
+                QSHost host,
+                @Background Looper backgroundLooper,
+                @Main Handler mainHandler,
+                FalsingManager falsingManager,
+                MetricsLogger metricsLogger,
+                StatusBarStateController statusBarStateController,
+                ActivityStarter activityStarter,
+                QSLogger qsLogger,
+                GarbageMonitor monitor
+        ) {
+            super(host, backgroundLooper, mainHandler, falsingManager, metricsLogger,
+                    statusBarStateController, activityStarter, qsLogger);
             gm = monitor;
-            mActivityStarter = starter;
         }
 
         @Override
@@ -404,7 +434,7 @@ public class GarbageMonitor implements Dumpable {
         }
 
         @Override
-        protected void handleClick() {
+        protected void handleClick(@Nullable View view) {
             if (dumpInProgress) return;
 
             dumpInProgress = true;
@@ -526,7 +556,7 @@ public class GarbageMonitor implements Dumpable {
     }
 
     /** */
-    @Singleton
+    @SysUISingleton
     public static class Service extends SystemUI implements Dumpable {
         private final GarbageMonitor mGarbageMonitor;
 

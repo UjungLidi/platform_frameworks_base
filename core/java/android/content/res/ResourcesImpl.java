@@ -54,6 +54,8 @@ import android.view.DisplayAdjustments;
 
 import com.android.internal.util.GrowingArrayUtils;
 
+import libcore.util.NativeAllocationRegistry;
+
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
 
@@ -78,9 +80,9 @@ public class ResourcesImpl {
     private static final boolean DEBUG_LOAD = false;
     private static final boolean DEBUG_CONFIG = false;
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static final boolean TRACE_FOR_PRELOAD = false; // Do we still need it?
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static final boolean TRACE_FOR_MISS_PRELOAD = false; // Do we still need it?
 
     private static final int ID_OTHER = 0x01000004;
@@ -88,7 +90,7 @@ public class ResourcesImpl {
     private static final Object sSync = new Object();
 
     private static boolean sPreloaded;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private boolean mPreloading;
 
     // Information about preloaded resources.  Note that they are not
@@ -146,7 +148,7 @@ public class ResourcesImpl {
 
     private PluralRules mPluralRule;
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private final Configuration mConfiguration = new Configuration();
 
     static {
@@ -166,7 +168,7 @@ public class ResourcesImpl {
      * @param displayAdjustments this resource's Display override and compatibility info.
      *                           Must not be null.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public ResourcesImpl(@NonNull AssetManager assets, @Nullable DisplayMetrics metrics,
             @Nullable Configuration config, @NonNull DisplayAdjustments displayAdjustments) {
         mAssets = assets;
@@ -185,7 +187,7 @@ public class ResourcesImpl {
         return mAssets;
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     DisplayMetrics getDisplayMetrics() {
         if (DEBUG_CONFIG) Slog.v(TAG, "Returning DisplayMetrics: " + mMetrics.widthPixels
                 + "x" + mMetrics.heightPixels + " " + mMetrics.density);
@@ -213,7 +215,7 @@ public class ResourcesImpl {
         }
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     void getValue(@AnyRes int id, TypedValue outValue, boolean resolveRefs)
             throws NotFoundException {
         boolean found = mAssets.getResourceValue(id, 0, outValue, resolveRefs);
@@ -534,7 +536,24 @@ public class ResourcesImpl {
             remainder = languageTag.substring(separator);
         }
 
-        return Locale.adjustLanguageCode(language) + remainder;
+        // No need to convert to lower cases because the language in the return value of
+        // Locale.toLanguageTag has been lower-cased.
+        final String adjustedLanguage;
+        switch(language) {
+            case "id":
+                adjustedLanguage = "in";
+                break;
+            case "yi":
+                adjustedLanguage = "ji";
+                break;
+            case "he":
+                adjustedLanguage = "iw";
+                break;
+            default:
+                adjustedLanguage = language;
+                break;
+        }
+        return adjustedLanguage + remainder;
     }
 
     /**
@@ -1248,15 +1267,9 @@ public class ResourcesImpl {
         return new ThemeImpl();
     }
 
-    /**
-     * Creates a new ThemeImpl which is already set to the given Resources.ThemeKey.
-     */
-    ThemeImpl newThemeImpl(Resources.ThemeKey key) {
-        ThemeImpl impl = new ThemeImpl();
-        impl.mKey.setTo(key);
-        impl.rebase();
-        return impl;
-    }
+    private static final NativeAllocationRegistry sThemeRegistry =
+            NativeAllocationRegistry.createMalloced(ResourcesImpl.class.getClassLoader(),
+                    AssetManager.getThemeFreeFunction());
 
     public class ThemeImpl {
         /**
@@ -1265,7 +1278,7 @@ public class ResourcesImpl {
         private final Resources.ThemeKey mKey = new Resources.ThemeKey();
 
         @SuppressWarnings("hiding")
-        private final AssetManager mAssets;
+        private AssetManager mAssets;
         private final long mTheme;
 
         /**
@@ -1276,6 +1289,7 @@ public class ResourcesImpl {
         /*package*/ ThemeImpl() {
             mAssets = ResourcesImpl.this.mAssets;
             mTheme = mAssets.createTheme();
+            sThemeRegistry.registerNativeAllocation(this, mTheme);
         }
 
         @Override
@@ -1297,22 +1311,16 @@ public class ResourcesImpl {
         }
 
         void applyStyle(int resId, boolean force) {
-            synchronized (mKey) {
-                mAssets.applyStyleToTheme(mTheme, resId, force);
-                mThemeResId = resId;
-                mKey.append(resId, force);
-            }
+            mAssets.applyStyleToTheme(mTheme, resId, force);
+            mThemeResId = resId;
+            mKey.append(resId, force);
         }
 
         void setTo(ThemeImpl other) {
-            synchronized (mKey) {
-                synchronized (other.mKey) {
-                    mAssets.setThemeTo(mTheme, other.mAssets, other.mTheme);
+            mAssets.setThemeTo(mTheme, other.mAssets, other.mTheme);
 
-                    mThemeResId = other.mThemeResId;
-                    mKey.setTo(other.getKey());
-                }
-            }
+            mThemeResId = other.mThemeResId;
+            mKey.setTo(other.getKey());
         }
 
         @NonNull
@@ -1321,46 +1329,40 @@ public class ResourcesImpl {
                 @StyleableRes int[] attrs,
                 @AttrRes int defStyleAttr,
                 @StyleRes int defStyleRes) {
-            synchronized (mKey) {
-                final int len = attrs.length;
-                final TypedArray array = TypedArray.obtain(wrapper.getResources(), len);
+            final int len = attrs.length;
+            final TypedArray array = TypedArray.obtain(wrapper.getResources(), len);
 
-                // XXX note that for now we only work with compiled XML files.
-                // To support generic XML files we will need to manually parse
-                // out the attributes from the XML file (applying type information
-                // contained in the resources and such).
-                final XmlBlock.Parser parser = (XmlBlock.Parser) set;
-                mAssets.applyStyle(mTheme, defStyleAttr, defStyleRes, parser, attrs,
-                        array.mDataAddress, array.mIndicesAddress);
-                array.mTheme = wrapper;
-                array.mXml = parser;
-                return array;
-            }
+            // XXX note that for now we only work with compiled XML files.
+            // To support generic XML files we will need to manually parse
+            // out the attributes from the XML file (applying type information
+            // contained in the resources and such).
+            final XmlBlock.Parser parser = (XmlBlock.Parser) set;
+            mAssets.applyStyle(mTheme, defStyleAttr, defStyleRes, parser, attrs,
+                    array.mDataAddress, array.mIndicesAddress);
+            array.mTheme = wrapper;
+            array.mXml = parser;
+            return array;
         }
 
         @NonNull
         TypedArray resolveAttributes(@NonNull Resources.Theme wrapper,
                 @NonNull int[] values,
                 @NonNull int[] attrs) {
-            synchronized (mKey) {
-                final int len = attrs.length;
-                if (values == null || len != values.length) {
-                    throw new IllegalArgumentException(
-                            "Base attribute values must the same length as attrs");
-                }
-
-                final TypedArray array = TypedArray.obtain(wrapper.getResources(), len);
-                mAssets.resolveAttrs(mTheme, 0, 0, values, attrs, array.mData, array.mIndices);
-                array.mTheme = wrapper;
-                array.mXml = null;
-                return array;
+            final int len = attrs.length;
+            if (values == null || len != values.length) {
+                throw new IllegalArgumentException(
+                        "Base attribute values must the same length as attrs");
             }
+
+            final TypedArray array = TypedArray.obtain(wrapper.getResources(), len);
+            mAssets.resolveAttrs(mTheme, 0, 0, values, attrs, array.mData, array.mIndices);
+            array.mTheme = wrapper;
+            array.mXml = null;
+            return array;
         }
 
         boolean resolveAttribute(int resid, TypedValue outValue, boolean resolveRefs) {
-            synchronized (mKey) {
-                return mAssets.getThemeValue(mTheme, resid, outValue, resolveRefs);
-            }
+            return mAssets.getThemeValue(mTheme, resid, outValue, resolveRefs);
         }
 
         int[] getAllAttributes() {
@@ -1368,35 +1370,29 @@ public class ResourcesImpl {
         }
 
         @Config int getChangingConfigurations() {
-            synchronized (mKey) {
-                final @NativeConfig int nativeChangingConfig =
-                        AssetManager.nativeThemeGetChangingConfigurations(mTheme);
-                return ActivityInfo.activityInfoConfigNativeToJava(nativeChangingConfig);
-            }
+            final @NativeConfig int nativeChangingConfig =
+                    AssetManager.nativeThemeGetChangingConfigurations(mTheme);
+            return ActivityInfo.activityInfoConfigNativeToJava(nativeChangingConfig);
         }
 
         public void dump(int priority, String tag, String prefix) {
-            synchronized (mKey) {
-                mAssets.dumpTheme(mTheme, priority, tag, prefix);
-            }
+            mAssets.dumpTheme(mTheme, priority, tag, prefix);
         }
 
         String[] getTheme() {
-            synchronized (mKey) {
-                final int N = mKey.mCount;
-                final String[] themes = new String[N * 2];
-                for (int i = 0, j = N - 1; i < themes.length; i += 2, --j) {
-                    final int resId = mKey.mResId[j];
-                    final boolean forced = mKey.mForce[j];
-                    try {
-                        themes[i] = getResourceName(resId);
-                    } catch (NotFoundException e) {
-                        themes[i] = Integer.toHexString(i);
-                    }
-                    themes[i + 1] = forced ? "forced" : "not forced";
+            final int n = mKey.mCount;
+            final String[] themes = new String[n * 2];
+            for (int i = 0, j = n - 1; i < themes.length; i += 2, --j) {
+                final int resId = mKey.mResId[j];
+                final boolean forced = mKey.mForce[j];
+                try {
+                    themes[i] = getResourceName(resId);
+                } catch (NotFoundException e) {
+                    themes[i] = Integer.toHexString(i);
                 }
-                return themes;
+                themes[i + 1] = forced ? "forced" : "not forced";
             }
+            return themes;
         }
 
         /**
@@ -1405,16 +1401,18 @@ public class ResourcesImpl {
          * {@link #applyStyle(int, boolean)}.
          */
         void rebase() {
-            synchronized (mKey) {
-                AssetManager.nativeThemeClear(mTheme);
+            rebase(mAssets);
+        }
 
-                // Reapply the same styles in the same order.
-                for (int i = 0; i < mKey.mCount; i++) {
-                    final int resId = mKey.mResId[i];
-                    final boolean force = mKey.mForce[i];
-                    mAssets.applyStyleToTheme(mTheme, resId, force);
-                }
-            }
+        /**
+         * Rebases the theme against the {@code newAssets} by re-applying the styles passed to
+         * {@link #applyStyle(int, boolean)}.
+         *
+         * The theme will use {@code newAssets} for all future invocations of
+         * {@link #applyStyle(int, boolean)}.
+         */
+        void rebase(AssetManager newAssets) {
+            mAssets = mAssets.rebaseTheme(mTheme, newAssets, mKey.mResId, mKey.mForce, mKey.mCount);
         }
 
         /**
@@ -1438,10 +1436,8 @@ public class ResourcesImpl {
         @Nullable
         public int[] getAttributeResolutionStack(@AttrRes int defStyleAttr,
                 @StyleRes int defStyleRes, @StyleRes int explicitStyleRes) {
-            synchronized (mKey) {
-                return mAssets.getAttributeResolutionStack(
-                        mTheme, defStyleAttr, defStyleRes, explicitStyleRes);
-            }
+            return mAssets.getAttributeResolutionStack(
+                    mTheme, defStyleAttr, defStyleRes, explicitStyleRes);
         }
     }
 

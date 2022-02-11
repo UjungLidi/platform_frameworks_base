@@ -27,6 +27,8 @@ import static android.view.accessibility.AccessibilityManager.STATE_FLAG_ACCESSI
 import static android.view.accessibility.AccessibilityManager.STATE_FLAG_HIGH_TEXT_CONTRAST_ENABLED;
 import static android.view.accessibility.AccessibilityManager.STATE_FLAG_TOUCH_EXPLORATION_ENABLED;
 
+import static com.android.server.accessibility.AccessibilityUserState.doesShortcutTargetsStringContain;
+
 import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertNull;
@@ -40,10 +42,16 @@ import static org.mockito.Mockito.when;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.res.Resources;
+import android.graphics.Color;
 import android.provider.Settings;
 import android.test.mock.MockContentResolver;
 import android.testing.DexmakerShareClassLoaderRule;
+import android.util.ArraySet;
 
+import androidx.test.InstrumentationRegistry;
+
+import com.android.internal.R;
 import com.android.internal.util.test.FakeSettingsProvider;
 
 import org.junit.After;
@@ -58,6 +66,12 @@ public class AccessibilityUserStateTest {
 
     private static final ComponentName COMPONENT_NAME =
             new ComponentName("com.android.server.accessibility", "AccessibilityUserStateTest");
+    private static final ComponentName COMPONENT_NAME1 =
+            new ComponentName("com.android.server.accessibility",
+                    "com.android.server.accessibility.AccessibilityUserStateTest1");
+    private static final ComponentName COMPONENT_NAME2 =
+            new ComponentName("com.android.server.accessibility",
+                    "com.android.server.accessibility.AccessibilityUserStateTest2");
 
     // Values of setting key SHOW_IME_WITH_HARD_KEYBOARD
     private static final int STATE_HIDE_IME = 0;
@@ -81,8 +95,13 @@ public class AccessibilityUserStateTest {
 
     private AccessibilityUserState mUserState;
 
+    private int mFocusStrokeWidthDefaultValue;
+    private int mFocusColorDefaultValue;
+
     @Before
     public void setUp() {
+        final Resources resources = InstrumentationRegistry.getContext().getResources();
+
         MockitoAnnotations.initMocks(this);
         FakeSettingsProvider.clearSettingsProvider();
         mMockResolver = new MockContentResolver();
@@ -90,6 +109,11 @@ public class AccessibilityUserStateTest {
         when(mMockContext.getContentResolver()).thenReturn(mMockResolver);
         when(mMockServiceInfo.getComponentName()).thenReturn(COMPONENT_NAME);
         when(mMockConnection.getServiceInfo()).thenReturn(mMockServiceInfo);
+        when(mMockContext.getResources()).thenReturn(resources);
+
+        mFocusStrokeWidthDefaultValue =
+                resources.getDimensionPixelSize(R.dimen.accessibility_focus_highlight_stroke_width);
+        mFocusColorDefaultValue = resources.getColor(R.color.accessibility_focus_highlight_color);
 
         mUserState = new AccessibilityUserState(USER_ID, mMockContext, mMockListener);
     }
@@ -113,12 +137,14 @@ public class AccessibilityUserStateTest {
         mUserState.mTouchExplorationGrantedServices.add(COMPONENT_NAME);
         mUserState.mAccessibilityShortcutKeyTargets.add(COMPONENT_NAME.flattenToString());
         mUserState.mAccessibilityButtonTargets.add(COMPONENT_NAME.flattenToString());
+        mUserState.setTargetAssignedToAccessibilityButton(COMPONENT_NAME.flattenToString());
         mUserState.setTouchExplorationEnabledLocked(true);
         mUserState.setDisplayMagnificationEnabledLocked(true);
         mUserState.setAutoclickEnabledLocked(true);
         mUserState.setUserNonInteractiveUiTimeoutLocked(30);
         mUserState.setUserInteractiveUiTimeoutLocked(30);
         mUserState.setMagnificationModeLocked(ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW);
+        mUserState.setFocusAppearanceLocked(20, Color.BLUE);
 
         mUserState.onSwitchToAnotherUserLocked();
 
@@ -132,6 +158,7 @@ public class AccessibilityUserStateTest {
         assertTrue(mUserState.mTouchExplorationGrantedServices.isEmpty());
         assertTrue(mUserState.mAccessibilityShortcutKeyTargets.isEmpty());
         assertTrue(mUserState.mAccessibilityButtonTargets.isEmpty());
+        assertNull(mUserState.getTargetAssignedToAccessibilityButton());
         assertFalse(mUserState.isTouchExplorationEnabledLocked());
         assertFalse(mUserState.isDisplayMagnificationEnabledLocked());
         assertFalse(mUserState.isAutoclickEnabledLocked());
@@ -139,6 +166,8 @@ public class AccessibilityUserStateTest {
         assertEquals(0, mUserState.getUserInteractiveUiTimeoutLocked());
         assertEquals(ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN,
                 mUserState.getMagnificationModeLocked());
+        assertEquals(mFocusStrokeWidthDefaultValue, mUserState.getFocusStrokeWidthLocked());
+        assertEquals(mFocusColorDefaultValue, mUserState.getFocusColorLocked());
     }
 
     @Test
@@ -291,6 +320,31 @@ public class AccessibilityUserStateTest {
     }
 
     @Test
+    public void doesShortcutTargetsStringContain_returnFalse() {
+        assertFalse(doesShortcutTargetsStringContain(null, null));
+        assertFalse(doesShortcutTargetsStringContain(null,
+                COMPONENT_NAME.flattenToShortString()));
+        assertFalse(doesShortcutTargetsStringContain(new ArraySet<>(), null));
+
+        final ArraySet<String> shortcutTargets = new ArraySet<>();
+        shortcutTargets.add(COMPONENT_NAME.flattenToString());
+        assertFalse(doesShortcutTargetsStringContain(shortcutTargets,
+                COMPONENT_NAME1.flattenToString()));
+    }
+
+    @Test
+    public void isAssignedToShortcutLocked_withDifferentTypeComponentString_returnTrue() {
+        final ArraySet<String> shortcutTargets = new ArraySet<>();
+        shortcutTargets.add(COMPONENT_NAME1.flattenToShortString());
+        shortcutTargets.add(COMPONENT_NAME2.flattenToString());
+
+        assertTrue(doesShortcutTargetsStringContain(shortcutTargets,
+                COMPONENT_NAME1.flattenToString()));
+        assertTrue(doesShortcutTargetsStringContain(shortcutTargets,
+                COMPONENT_NAME2.flattenToShortString()));
+    }
+
+    @Test
     public void isShortcutTargetInstalledLocked_returnTrue() {
         mUserState.mInstalledServices.add(mMockServiceInfo);
         assertTrue(mUserState.isShortcutTargetInstalledLocked(COMPONENT_NAME.flattenToString()));
@@ -312,6 +366,21 @@ public class AccessibilityUserStateTest {
 
         assertEquals(ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW,
                 mUserState.getMagnificationModeLocked());
+    }
+
+    @Test
+    public void setFocusAppearanceData_returnExpectedFocusAppearanceData() {
+        final int focusStrokeWidthValue = 100;
+        final int focusColorValue = Color.BLUE;
+
+        assertEquals(mFocusStrokeWidthDefaultValue, mUserState.getFocusStrokeWidthLocked());
+        assertEquals(mFocusColorDefaultValue, mUserState.getFocusColorLocked());
+
+        mUserState.setFocusAppearanceLocked(focusStrokeWidthValue, focusColorValue);
+
+        assertEquals(focusStrokeWidthValue, mUserState.getFocusStrokeWidthLocked());
+        assertEquals(focusColorValue, mUserState.getFocusColorLocked());
+
     }
 
     private int getSecureIntForUser(String key, int userId) {

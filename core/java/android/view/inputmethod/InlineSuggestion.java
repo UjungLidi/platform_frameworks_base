@@ -18,49 +18,54 @@ package android.view.inputmethod;
 
 import android.annotation.BinderThread;
 import android.annotation.CallbackExecutor;
+import android.annotation.MainThread;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.TestApi;
 import android.content.Context;
-import android.os.AsyncTask;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.RemoteException;
 import android.util.Size;
 import android.util.Slog;
 import android.view.SurfaceControlViewHost;
+import android.view.View;
+import android.view.ViewGroup;
 import android.widget.inline.InlineContentView;
 
 import com.android.internal.util.DataClass;
 import com.android.internal.util.Parcelling;
 import com.android.internal.view.inline.IInlineContentCallback;
 import com.android.internal.view.inline.IInlineContentProvider;
+import com.android.internal.view.inline.InlineTooltipUi;
 
 import java.lang.ref.WeakReference;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
 /**
- * This class represents an inline suggestion which is made by one app
- * and can be embedded into the UI of another. Suggestions may contain
- * sensitive information not known to the host app which needs to be
- * protected from spoofing. To address that the suggestion view inflated
- * on demand for embedding is created in such a way that the hosting app
- * cannot introspect its content and cannot interact with it.
+ * This class represents an inline suggestion which is made by one app and can be embedded into the
+ * UI of another. Suggestions may contain sensitive information not known to the host app which
+ * needs to be protected from spoofing. To address that the suggestion view inflated on demand for
+ * embedding is created in such a way that the hosting app cannot introspect its content and cannot
+ * interact with it.
  */
-@DataClass(
-        genEqualsHashCode = true,
-        genToString = true,
-        genHiddenConstDefs = true,
+@DataClass(genEqualsHashCode = true, genToString = true, genHiddenConstDefs = true,
         genHiddenConstructor = true)
-@DataClass.Suppress({"getContentProvider"})
 public final class InlineSuggestion implements Parcelable {
 
     private static final String TAG = "InlineSuggestion";
 
-    private final @NonNull InlineSuggestionInfo mInfo;
+    @NonNull
+    private final InlineSuggestionInfo mInfo;
 
-    private final @Nullable IInlineContentProvider mContentProvider;
+    /**
+     * @hide
+     */
+    @Nullable
+    private final IInlineContentProvider mContentProvider;
 
     /**
      * Used to keep a strong reference to the callback so it doesn't get garbage collected.
@@ -68,7 +73,17 @@ public final class InlineSuggestion implements Parcelable {
      * @hide
      */
     @DataClass.ParcelWith(InlineContentCallbackImplParceling.class)
-    private @Nullable InlineContentCallbackImpl mInlineContentCallback;
+    @Nullable
+    private InlineContentCallbackImpl mInlineContentCallback;
+
+    /**
+     * Used to show up the inline suggestion tooltip.
+     *
+     * @hide
+     */
+    @Nullable
+    @DataClass.ParcelWith(InlineTooltipUiParceling.class)
+    private InlineTooltipUi mInlineTooltipUi;
 
     /**
      * Creates a new {@link InlineSuggestion}, for testing purpose.
@@ -78,7 +93,8 @@ public final class InlineSuggestion implements Parcelable {
     @TestApi
     @NonNull
     public static InlineSuggestion newInlineSuggestion(@NonNull InlineSuggestionInfo info) {
-        return new InlineSuggestion(info, null, /* inlineContentCallback */ null);
+        return new InlineSuggestion(info, null, /* inlineContentCallback */ null,
+                /* inlineTooltipUi */ null);
     }
 
     /**
@@ -86,27 +102,38 @@ public final class InlineSuggestion implements Parcelable {
      *
      * @hide
      */
-    public InlineSuggestion(
-            @NonNull InlineSuggestionInfo info,
+    public InlineSuggestion(@NonNull InlineSuggestionInfo info,
             @Nullable IInlineContentProvider contentProvider) {
-        this(info, contentProvider, /* inlineContentCallback */ null);
+        this(info, contentProvider, /* inlineContentCallback */ null, /* inlineTooltipUi */ null);
     }
 
     /**
      * Inflates a view with the content of this suggestion at a specific size.
-     * The size must be between the
-     * {@link android.widget.inline.InlinePresentationSpec#getMinSize() min size} and the
-     * {@link android.widget.inline.InlinePresentationSpec#getMaxSize() max size} of the
-     * presentation spec returned by {@link InlineSuggestionInfo#getInlinePresentationSpec()}.
+     *
+     * <p> Each dimension of the size must satisfy one of the following conditions:
+     *
+     * <ol>
+     *     <li>between {@link android.widget.inline.InlinePresentationSpec#getMinSize()} and
+     * {@link android.widget.inline.InlinePresentationSpec#getMaxSize()} of the presentation spec
+     * from {@code mInfo}
+     *     <li>{@link ViewGroup.LayoutParams#WRAP_CONTENT}
+     * </ol>
+     *
+     * If the size is set to {@link
+     * ViewGroup.LayoutParams#WRAP_CONTENT}, then the size of the inflated view will be just large
+     * enough to fit the content, while still conforming to the min / max size specified by the
+     * {@link android.widget.inline.InlinePresentationSpec}.
      *
      * <p> The caller can attach an {@link android.view.View.OnClickListener} and/or an
-     * {@link android.view.View.OnLongClickListener} to the view in the
-     * {@code callback} to receive click and
-     * long click events on the view.
+     * {@link android.view.View.OnLongClickListener} to the view in the {@code callback} to receive
+     * click and long click events on the view.
      *
      * @param context  Context in which to inflate the view.
-     * @param size     The size at which to inflate the suggestion.
-     * @param callback Callback for receiving the inflated view.
+     * @param size     The size at which to inflate the suggestion. For each dimension, it maybe an
+     *                 exact value or {@link ViewGroup.LayoutParams#WRAP_CONTENT}.
+     * @param callback Callback for receiving the inflated view, where the {@link
+     *                 ViewGroup.LayoutParams} of the view is set as the actual size of the
+     *                 underlying remote view.
      * @throws IllegalArgumentException If an invalid argument is passed.
      * @throws IllegalStateException    If this method is already called.
      */
@@ -115,35 +142,70 @@ public final class InlineSuggestion implements Parcelable {
             @NonNull Consumer<InlineContentView> callback) {
         final Size minSize = mInfo.getInlinePresentationSpec().getMinSize();
         final Size maxSize = mInfo.getInlinePresentationSpec().getMaxSize();
-        if (size.getHeight() < minSize.getHeight() || size.getHeight() > maxSize.getHeight()
-                || size.getWidth() < minSize.getWidth() || size.getWidth() > maxSize.getWidth()) {
-            throw new IllegalArgumentException("size not between min:"
-                    + minSize + " and max:" + maxSize);
+        if (!isValid(size.getWidth(), minSize.getWidth(), maxSize.getWidth())
+                || !isValid(size.getHeight(), minSize.getHeight(), maxSize.getHeight())) {
+            throw new IllegalArgumentException(
+                    "size is neither between min:" + minSize + " and max:" + maxSize
+                            + ", nor wrap_content");
         }
-        mInlineContentCallback = getInlineContentCallback(context, callbackExecutor, callback);
-        AsyncTask.THREAD_POOL_EXECUTOR.execute(() -> {
-            if (mContentProvider == null) {
-                callback.accept(/* view */ null);
-                return;
+
+        InlineSuggestion toolTip = mInfo.getTooltip();
+        if (toolTip != null) {
+            if (mInlineTooltipUi == null) {
+                mInlineTooltipUi = new InlineTooltipUi(context);
             }
-            try {
-                mContentProvider.provideContent(size.getWidth(), size.getHeight(),
-                        new InlineContentCallbackWrapper(mInlineContentCallback));
-            } catch (RemoteException e) {
-                Slog.w(TAG, "Error creating suggestion content surface: " + e);
-                callback.accept(/* view */ null);
-            }
+        } else {
+            mInlineTooltipUi = null;
+        }
+
+        mInlineContentCallback = getInlineContentCallback(context, callbackExecutor, callback,
+                mInlineTooltipUi);
+        if (mContentProvider == null) {
+            callbackExecutor.execute(() -> callback.accept(/* view */ null));
+            mInlineTooltipUi = null;
+            return;
+        }
+        try {
+            mContentProvider.provideContent(size.getWidth(), size.getHeight(),
+                    new InlineContentCallbackWrapper(mInlineContentCallback));
+        } catch (RemoteException e) {
+            Slog.w(TAG, "Error creating suggestion content surface: " + e);
+            callbackExecutor.execute(() -> callback.accept(/* view */ null));
+        }
+        if (toolTip == null) return;
+
+        final Size tooltipSize = new Size(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        mInfo.getTooltip().inflate(context, tooltipSize, callbackExecutor, view -> {
+            Handler.getMain().post(() -> mInlineTooltipUi.setTooltipView(view));
         });
     }
 
+    /**
+     * Returns true if the {@code actual} length is within [min, max] or is {@link
+     * ViewGroup.LayoutParams#WRAP_CONTENT}.
+     */
+    private static boolean isValid(int actual, int min, int max) {
+        if (actual == ViewGroup.LayoutParams.WRAP_CONTENT) {
+            return true;
+        }
+        return actual >= min && actual <= max;
+    }
+
     private synchronized InlineContentCallbackImpl getInlineContentCallback(Context context,
-            Executor callbackExecutor, Consumer<InlineContentView> callback) {
+            Executor callbackExecutor, Consumer<InlineContentView> callback,
+            InlineTooltipUi inlineTooltipUi) {
         if (mInlineContentCallback != null) {
             throw new IllegalStateException("Already called #inflate()");
         }
-        return new InlineContentCallbackImpl(context, callbackExecutor, callback);
+        return new InlineContentCallbackImpl(context, mContentProvider, callbackExecutor,
+                callback, inlineTooltipUi);
     }
 
+    /**
+     * A wrapper class around the {@link InlineContentCallbackImpl} to ensure it's not strongly
+     * reference by the remote system server process.
+     */
     private static final class InlineContentCallbackWrapper extends IInlineContentCallback.Stub {
 
         private final WeakReference<InlineContentCallbackImpl> mCallbackImpl;
@@ -154,10 +216,11 @@ public final class InlineSuggestion implements Parcelable {
 
         @Override
         @BinderThread
-        public void onContent(SurfaceControlViewHost.SurfacePackage content) {
+        public void onContent(SurfaceControlViewHost.SurfacePackage content, int width,
+                int height) {
             final InlineContentCallbackImpl callbackImpl = mCallbackImpl.get();
             if (callbackImpl != null) {
-                callbackImpl.onContent(content);
+                callbackImpl.onContent(content, width, height);
             }
         }
 
@@ -180,44 +243,217 @@ public final class InlineSuggestion implements Parcelable {
         }
     }
 
+    /**
+     * Handles the communication between the inline suggestion view in current (IME) process and
+     * the remote view provided from the system server.
+     *
+     * <p>This class is thread safe, because all the outside calls are piped into a single
+     * handler thread to be processed.
+     */
     private static final class InlineContentCallbackImpl {
 
-        private final @NonNull Context mContext;
-        private final @NonNull Executor mCallbackExecutor;
-        private final @NonNull Consumer<InlineContentView> mCallback;
-        private @Nullable InlineContentView mView;
+        @NonNull
+        private final Handler mMainHandler = new Handler(Looper.getMainLooper());
+
+        @NonNull
+        private final Context mContext;
+        @Nullable
+        private final IInlineContentProvider mInlineContentProvider;
+        @NonNull
+        private final Executor mCallbackExecutor;
+
+        /**
+         * Callback from the client (IME) that will receive the inflated suggestion view. It'll
+         * only be called once when the view SurfacePackage is first sent back to the client. Any
+         * updates to the view due to attach to window and detach from window events will be
+         * handled under the hood, transparent from the client.
+         */
+        @NonNull
+        private final Consumer<InlineContentView> mCallback;
+
+        /**
+         * Indicates whether the first content has been received or not.
+         */
+        private boolean mFirstContentReceived = false;
+
+        /**
+         * The client (IME) side view which internally wraps a remote view. It'll be set when
+         * {@link #onContent(SurfaceControlViewHost.SurfacePackage, int, int)} is called, which
+         * should only happen once in the lifecycle of this inline suggestion instance.
+         */
+        @Nullable
+        private InlineContentView mView;
+
+        /**
+         * The SurfacePackage pointing to the remote view. It's cached here to be sent to the next
+         * available consumer.
+         */
+        @Nullable
+        private SurfaceControlViewHost.SurfacePackage mSurfacePackage;
+
+        /**
+         * The callback (from the {@link InlineContentView}) which consumes the surface package.
+         * It's cached here to be called when the SurfacePackage is returned from the remote
+         * view owning process.
+         */
+        @Nullable
+        private Consumer<SurfaceControlViewHost.SurfacePackage> mSurfacePackageConsumer;
+
+        @Nullable
+        private InlineTooltipUi mInlineTooltipUi;
 
         InlineContentCallbackImpl(@NonNull Context context,
+                @Nullable IInlineContentProvider inlineContentProvider,
                 @NonNull @CallbackExecutor Executor callbackExecutor,
-                @NonNull Consumer<InlineContentView> callback) {
+                @NonNull Consumer<InlineContentView> callback,
+                @Nullable InlineTooltipUi inlineTooltipUi) {
             mContext = context;
+            mInlineContentProvider = inlineContentProvider;
             mCallbackExecutor = callbackExecutor;
             mCallback = callback;
+            mInlineTooltipUi = inlineTooltipUi;
         }
 
         @BinderThread
-        public void onContent(SurfaceControlViewHost.SurfacePackage content) {
-            if (content == null) {
+        public void onContent(SurfaceControlViewHost.SurfacePackage content, int width,
+                int height) {
+            mMainHandler.post(() -> handleOnContent(content, width, height));
+        }
+
+        @MainThread
+        private void handleOnContent(SurfaceControlViewHost.SurfacePackage content, int width,
+                int height) {
+            if (!mFirstContentReceived) {
+                handleOnFirstContentReceived(content, width, height);
+                mFirstContentReceived = true;
+            } else {
+                handleOnSurfacePackage(content);
+            }
+        }
+
+        /**
+         * Called when the view content is returned for the first time.
+         */
+        @MainThread
+        private void handleOnFirstContentReceived(SurfaceControlViewHost.SurfacePackage content,
+                int width, int height) {
+            mSurfacePackage = content;
+            if (mSurfacePackage == null) {
                 mCallbackExecutor.execute(() -> mCallback.accept(/* view */null));
             } else {
                 mView = new InlineContentView(mContext);
-                mView.setChildSurfacePackage(content);
+                if (mInlineTooltipUi != null) {
+                    mView.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+                        @Override
+                        public void onLayoutChange(View v, int left, int top, int right,
+                                int bottom, int oldLeft, int oldTop, int oldRight, int oldBottom) {
+                            if (mInlineTooltipUi != null) {
+                                mInlineTooltipUi.update(mView);
+                            }
+                        }
+                    });
+                }
+                mView.setLayoutParams(new ViewGroup.LayoutParams(width, height));
+                mView.setChildSurfacePackageUpdater(getSurfacePackageUpdater());
                 mCallbackExecutor.execute(() -> mCallback.accept(mView));
             }
         }
 
+        /**
+         * Called when any subsequent SurfacePackage is returned from the remote view owning
+         * process.
+         */
+        @MainThread
+        private void handleOnSurfacePackage(SurfaceControlViewHost.SurfacePackage surfacePackage) {
+            if (surfacePackage == null) {
+                return;
+            }
+            if (mSurfacePackage != null || mSurfacePackageConsumer == null) {
+                // The surface package is not consumed, release it immediately.
+                surfacePackage.release();
+                try {
+                    mInlineContentProvider.onSurfacePackageReleased();
+                } catch (RemoteException e) {
+                    Slog.w(TAG, "Error calling onSurfacePackageReleased(): " + e);
+                }
+                return;
+            }
+            mSurfacePackage = surfacePackage;
+            if (mSurfacePackage == null) {
+                return;
+            }
+            if (mSurfacePackageConsumer != null) {
+                mSurfacePackageConsumer.accept(mSurfacePackage);
+                mSurfacePackageConsumer = null;
+            }
+        }
+
+        @MainThread
+        private void handleOnSurfacePackageReleased() {
+            if (mSurfacePackage != null) {
+                try {
+                    mInlineContentProvider.onSurfacePackageReleased();
+                } catch (RemoteException e) {
+                    Slog.w(TAG, "Error calling onSurfacePackageReleased(): " + e);
+                }
+                mSurfacePackage = null;
+            }
+            // Clear the pending surface package consumer, if any. This can happen if the IME
+            // attaches the view to window and then quickly detaches it from the window, before
+            // the surface package requested upon attaching to window was returned.
+            mSurfacePackageConsumer = null;
+        }
+
+        @MainThread
+        private void handleGetSurfacePackage(
+                Consumer<SurfaceControlViewHost.SurfacePackage> consumer) {
+            if (mSurfacePackage != null) {
+                consumer.accept(mSurfacePackage);
+            } else {
+                mSurfacePackageConsumer = consumer;
+                try {
+                    mInlineContentProvider.requestSurfacePackage();
+                } catch (RemoteException e) {
+                    Slog.w(TAG, "Error calling getSurfacePackage(): " + e);
+                    consumer.accept(null);
+                    mSurfacePackageConsumer = null;
+                }
+            }
+        }
+
+        private InlineContentView.SurfacePackageUpdater getSurfacePackageUpdater() {
+            return new InlineContentView.SurfacePackageUpdater() {
+                @Override
+                public void onSurfacePackageReleased() {
+                    mMainHandler.post(
+                            () -> InlineContentCallbackImpl.this.handleOnSurfacePackageReleased());
+                }
+
+                @Override
+                public void getSurfacePackage(
+                        Consumer<SurfaceControlViewHost.SurfacePackage> consumer) {
+                    mMainHandler.post(
+                            () -> InlineContentCallbackImpl.this.handleGetSurfacePackage(consumer));
+                }
+            };
+        }
+
         @BinderThread
         public void onClick() {
-            if (mView != null && mView.hasOnClickListeners()) {
-                mView.callOnClick();
-            }
+            mMainHandler.post(() -> {
+                if (mView != null && mView.hasOnClickListeners()) {
+                    mView.callOnClick();
+                }
+            });
         }
 
         @BinderThread
         public void onLongClick() {
-            if (mView != null && mView.hasOnLongClickListeners()) {
-                mView.performLongClick();
-            }
+            mMainHandler.post(() -> {
+                if (mView != null && mView.hasOnLongClickListeners()) {
+                    mView.performLongClick();
+                }
+            });
         }
     }
 
@@ -237,9 +473,25 @@ public final class InlineSuggestion implements Parcelable {
         }
     }
 
+    /**
+     * This class used to provide parcelling logic for InlineContentCallbackImpl. It's intended to
+     * make this parcelling a no-op, since it can't be parceled and we don't need to parcel it.
+     */
+    private static class InlineTooltipUiParceling implements
+            Parcelling<InlineTooltipUi> {
+        @Override
+        public void parcel(InlineTooltipUi item, Parcel dest, int parcelFlags) {
+        }
+
+        @Override
+        public InlineTooltipUi unparcel(Parcel source) {
+            return null;
+        }
+    }
 
 
-    // Code below generated by codegen v1.0.15.
+
+    // Code below generated by codegen v1.0.22.
     //
     // DO NOT MODIFY!
     // CHECKSTYLE:OFF Generated code
@@ -257,18 +509,22 @@ public final class InlineSuggestion implements Parcelable {
      *
      * @param inlineContentCallback
      *   Used to keep a strong reference to the callback so it doesn't get garbage collected.
+     * @param inlineTooltipUi
+     *   Used to show up the inline suggestion tooltip.
      * @hide
      */
     @DataClass.Generated.Member
     public InlineSuggestion(
             @NonNull InlineSuggestionInfo info,
             @Nullable IInlineContentProvider contentProvider,
-            @Nullable InlineContentCallbackImpl inlineContentCallback) {
+            @Nullable InlineContentCallbackImpl inlineContentCallback,
+            @Nullable InlineTooltipUi inlineTooltipUi) {
         this.mInfo = info;
         com.android.internal.util.AnnotationValidations.validate(
                 NonNull.class, null, mInfo);
         this.mContentProvider = contentProvider;
         this.mInlineContentCallback = inlineContentCallback;
+        this.mInlineTooltipUi = inlineTooltipUi;
 
         // onConstructed(); // You can define this method to get a callback
     }
@@ -276,6 +532,14 @@ public final class InlineSuggestion implements Parcelable {
     @DataClass.Generated.Member
     public @NonNull InlineSuggestionInfo getInfo() {
         return mInfo;
+    }
+
+    /**
+     * @hide
+     */
+    @DataClass.Generated.Member
+    public @Nullable IInlineContentProvider getContentProvider() {
+        return mContentProvider;
     }
 
     /**
@@ -288,6 +552,16 @@ public final class InlineSuggestion implements Parcelable {
         return mInlineContentCallback;
     }
 
+    /**
+     * Used to show up the inline suggestion tooltip.
+     *
+     * @hide
+     */
+    @DataClass.Generated.Member
+    public @Nullable InlineTooltipUi getInlineTooltipUi() {
+        return mInlineTooltipUi;
+    }
+
     @Override
     @DataClass.Generated.Member
     public String toString() {
@@ -297,7 +571,8 @@ public final class InlineSuggestion implements Parcelable {
         return "InlineSuggestion { " +
                 "info = " + mInfo + ", " +
                 "contentProvider = " + mContentProvider + ", " +
-                "inlineContentCallback = " + mInlineContentCallback +
+                "inlineContentCallback = " + mInlineContentCallback + ", " +
+                "inlineTooltipUi = " + mInlineTooltipUi +
         " }";
     }
 
@@ -316,7 +591,8 @@ public final class InlineSuggestion implements Parcelable {
         return true
                 && java.util.Objects.equals(mInfo, that.mInfo)
                 && java.util.Objects.equals(mContentProvider, that.mContentProvider)
-                && java.util.Objects.equals(mInlineContentCallback, that.mInlineContentCallback);
+                && java.util.Objects.equals(mInlineContentCallback, that.mInlineContentCallback)
+                && java.util.Objects.equals(mInlineTooltipUi, that.mInlineTooltipUi);
     }
 
     @Override
@@ -329,6 +605,7 @@ public final class InlineSuggestion implements Parcelable {
         _hash = 31 * _hash + java.util.Objects.hashCode(mInfo);
         _hash = 31 * _hash + java.util.Objects.hashCode(mContentProvider);
         _hash = 31 * _hash + java.util.Objects.hashCode(mInlineContentCallback);
+        _hash = 31 * _hash + java.util.Objects.hashCode(mInlineTooltipUi);
         return _hash;
     }
 
@@ -343,6 +620,17 @@ public final class InlineSuggestion implements Parcelable {
         }
     }
 
+    @DataClass.Generated.Member
+    static Parcelling<InlineTooltipUi> sParcellingForInlineTooltipUi =
+            Parcelling.Cache.get(
+                    InlineTooltipUiParceling.class);
+    static {
+        if (sParcellingForInlineTooltipUi == null) {
+            sParcellingForInlineTooltipUi = Parcelling.Cache.put(
+                    new InlineTooltipUiParceling());
+        }
+    }
+
     @Override
     @DataClass.Generated.Member
     public void writeToParcel(@NonNull Parcel dest, int flags) {
@@ -352,10 +640,12 @@ public final class InlineSuggestion implements Parcelable {
         byte flg = 0;
         if (mContentProvider != null) flg |= 0x2;
         if (mInlineContentCallback != null) flg |= 0x4;
+        if (mInlineTooltipUi != null) flg |= 0x8;
         dest.writeByte(flg);
         dest.writeTypedObject(mInfo, flags);
         if (mContentProvider != null) dest.writeStrongInterface(mContentProvider);
         sParcellingForInlineContentCallback.parcel(mInlineContentCallback, dest, flags);
+        sParcellingForInlineTooltipUi.parcel(mInlineTooltipUi, dest, flags);
     }
 
     @Override
@@ -373,12 +663,14 @@ public final class InlineSuggestion implements Parcelable {
         InlineSuggestionInfo info = (InlineSuggestionInfo) in.readTypedObject(InlineSuggestionInfo.CREATOR);
         IInlineContentProvider contentProvider = (flg & 0x2) == 0 ? null : IInlineContentProvider.Stub.asInterface(in.readStrongBinder());
         InlineContentCallbackImpl inlineContentCallback = sParcellingForInlineContentCallback.unparcel(in);
+        InlineTooltipUi inlineTooltipUi = sParcellingForInlineTooltipUi.unparcel(in);
 
         this.mInfo = info;
         com.android.internal.util.AnnotationValidations.validate(
                 NonNull.class, null, mInfo);
         this.mContentProvider = contentProvider;
         this.mInlineContentCallback = inlineContentCallback;
+        this.mInlineTooltipUi = inlineTooltipUi;
 
         // onConstructed(); // You can define this method to get a callback
     }
@@ -398,10 +690,10 @@ public final class InlineSuggestion implements Parcelable {
     };
 
     @DataClass.Generated(
-            time = 1585180783541L,
-            codegenVersion = "1.0.15",
+            time = 1615562097666L,
+            codegenVersion = "1.0.22",
             sourceFile = "frameworks/base/core/java/android/view/inputmethod/InlineSuggestion.java",
-            inputSignatures = "private static final  java.lang.String TAG\nprivate final @android.annotation.NonNull android.view.inputmethod.InlineSuggestionInfo mInfo\nprivate final @android.annotation.Nullable com.android.internal.view.inline.IInlineContentProvider mContentProvider\nprivate @com.android.internal.util.DataClass.ParcelWith(android.view.inputmethod.InlineSuggestion.InlineContentCallbackImplParceling.class) @android.annotation.Nullable android.view.inputmethod.InlineSuggestion.InlineContentCallbackImpl mInlineContentCallback\npublic static @android.annotation.TestApi @android.annotation.NonNull android.view.inputmethod.InlineSuggestion newInlineSuggestion(android.view.inputmethod.InlineSuggestionInfo)\npublic  void inflate(android.content.Context,android.util.Size,java.util.concurrent.Executor,java.util.function.Consumer<android.widget.inline.InlineContentView>)\nprivate synchronized  android.view.inputmethod.InlineSuggestion.InlineContentCallbackImpl getInlineContentCallback(android.content.Context,java.util.concurrent.Executor,java.util.function.Consumer<android.widget.inline.InlineContentView>)\nclass InlineSuggestion extends java.lang.Object implements [android.os.Parcelable]\n@com.android.internal.util.DataClass(genEqualsHashCode=true, genToString=true, genHiddenConstDefs=true, genHiddenConstructor=true)")
+            inputSignatures = "private static final  java.lang.String TAG\nprivate final @android.annotation.NonNull android.view.inputmethod.InlineSuggestionInfo mInfo\nprivate final @android.annotation.Nullable com.android.internal.view.inline.IInlineContentProvider mContentProvider\nprivate @com.android.internal.util.DataClass.ParcelWith(android.view.inputmethod.InlineSuggestion.InlineContentCallbackImplParceling.class) @android.annotation.Nullable android.view.inputmethod.InlineSuggestion.InlineContentCallbackImpl mInlineContentCallback\nprivate @android.annotation.Nullable @com.android.internal.util.DataClass.ParcelWith(android.view.inputmethod.InlineSuggestion.InlineTooltipUiParceling.class) com.android.internal.view.inline.InlineTooltipUi mInlineTooltipUi\npublic static @android.annotation.TestApi @android.annotation.NonNull android.view.inputmethod.InlineSuggestion newInlineSuggestion(android.view.inputmethod.InlineSuggestionInfo)\npublic  void inflate(android.content.Context,android.util.Size,java.util.concurrent.Executor,java.util.function.Consumer<android.widget.inline.InlineContentView>)\nprivate static  boolean isValid(int,int,int)\nprivate synchronized  android.view.inputmethod.InlineSuggestion.InlineContentCallbackImpl getInlineContentCallback(android.content.Context,java.util.concurrent.Executor,java.util.function.Consumer<android.widget.inline.InlineContentView>,com.android.internal.view.inline.InlineTooltipUi)\nclass InlineSuggestion extends java.lang.Object implements [android.os.Parcelable]\n@com.android.internal.util.DataClass(genEqualsHashCode=true, genToString=true, genHiddenConstDefs=true, genHiddenConstructor=true)")
     @Deprecated
     private void __metadata() {}
 

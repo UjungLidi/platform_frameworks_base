@@ -203,7 +203,7 @@ decision is made the activity is called by via `Activity.onPermissionGranted`.
 
 During development and testing a runtime permission can be granted via the `pm` shell command or by
 using the `UiAutomator.grantRuntimePermission` API call. Please note that this does _not_ grant the
-[app-op](#runtime-permissions-and-app-ops) synchronously. Unless the app needs to test the actual
+[app-op](#runtime-permissions-and-app_ops) synchronously. Unless the app needs to test the actual
 permission grant flow it is recommended to grant the runtime permissions during install using
 `adb install -g /my/package.apk`.
 
@@ -262,7 +262,7 @@ crashing the app the special `PERMISSION_DENIED_APP_OP` mandates that the API sh
 silently fail.
 
 A secondary use case of the `AppOpsManager.noteOp` calls is to
-[track](../app/AppOps.md#Appops-for-tracking) which apps perform what runtime protected actions.
+[track](../app/AppOps.md#app_ops-for-tracking) which apps perform what runtime protected actions.
 
 #### Verifying an app has a runtime time permission
 
@@ -471,7 +471,7 @@ This is currently (Mar 2020) reworked and will behave like [location](#location)
 
 ##### Location
 
-As described [above](#runtime-permissions-and-app-ops) the app-op mode for granted permissions is
+As described [above](#runtime-permissions-and-app_ops) the app-op mode for granted permissions is
 `MODE_ALLOWED` to allow access or `MODE_IGNORED` to suppress access.
 
 The important case is the case where the permission is granted and the app-op is `MODE_IGNORED`. In
@@ -706,8 +706,8 @@ App-op permissions are user-switchable permissions that are not runtime permissi
 be used for permissions that are really only meant to be ever granted to a very small amount of
 apps. Traditionally granting these permissions is intentionally very heavy weight so that the
 user really needs to understand the use case. For example one use case is the
-`INTERACT_ACROSS_PROFILES` permission that allows apps of different
-[user profiles](../os/Users.md#user-profile) to interact. Of course this is breaking a very basic
+`INTERACT_ACROSS_PROFILES` permission that allows apps of different users within the same
+[profile group](../os/Users.md#profile-group) to interact. Of course this is breaking a very basic
 security container and hence should only ever be granted with a lot of care.
 
 **Warning:** Most app-op permissions follow this logic, but most of them also have exceptions
@@ -728,7 +728,7 @@ platforms manifest using the `appop` protection level
 Almost always the protection level is app-op | something else, like
 [signature](#signature-permissions) (in the case above) or [privileged](#privileged-permissions).
 
-#### Checking a app-op permission
+#### Checking an app-op permission
 
 The `PermissionChecker` utility can check app-op permissions with the [same syntax as runtime
 permissions](#checking-a-runtime-permission).
@@ -764,7 +764,7 @@ class PermissionChecker {
 }
 ```
 
-#### Granting a app-op permission
+#### Granting an app-op permission
 
 The permission's grant state is only considered if the app-op's mode is `MODE_DEFAULT`. This
 allows to have default grants while still being overridden by the app-op.
@@ -809,6 +809,9 @@ Please note that OEMs sign their platform themselves. I.e. OEMs can implement ne
 permissions. It is unlikely that 3rd party apps will be able to use APIs protected by signature
 permissions as they are usually not signed with the platform certificate.
 
+If possible, [role protected permissions](#role-protected-permissions) should also be considered as
+an alternative to better restrict which apps may get the permission.
+
 Such permissions are defined and checked like an install time permission.
 
 ### Preinstalled permissions
@@ -818,6 +821,9 @@ on a particular device install there. Hence it can be really any app including 3
 
 Hence this permission level is discouraged unless there are
 [further restrictions](#restricted-by-tests).
+
+If possible, [role protected permissions](#role-protected-permissions) should also be considered as
+an alternative to better restrict which apps may get the permission.
 
 Such permissions are defined and checked like an install time permission.
 
@@ -832,6 +838,9 @@ privileged permissions added in updates will never be granted.
 
 Hence this permission level is discouraged unless there are
 [further restrictions](#restricted-by-tests).
+
+If possible, [role protected permissions](#role-protected-permissions) should also be considered as
+an alternative to better restrict which apps may get the permission.
 
 Such permissions are defined and checked like an install time permission.
 
@@ -848,7 +857,7 @@ private val whitelistedPkgs = listOf("my.whitelisted.package")
 
 @Test
 fun onlySomeAppsAreAllowedToHavePermissionGranted() {
-    assertThat(whitelistedPkgs).containsAllIn(
+    assertThat(whitelistedPkgs).containsAtLeastElementsIn(
             context.packageManager.getInstalledPackages(MATCH_ALL)
                     .filter { pkg ->
                         context.checkPermission(android.Manifest.permission.MY_PRIVILEGED_PERMISSION, -1,
@@ -890,7 +899,15 @@ well defined app or set of apps. It is possible to add new types in `PackageMana
 Which apps qualify for such a permission level is flexible and custom for each such level. Usually
 they refer to a single or small set of apps, usually - but not always - apps defined in AOSP.
 
+This type of permission is deprecated in favor of
+[role protected permissions](#role-protected-permissions).
+
 These permissions are defined and checked like an install time permission.
+
+### Role protected permissions
+
+See
+[Using role for permission protection](../../../../../../packages/modules/Permission/PermissionController/src/com/android/permissioncontroller/role/RolePermissionProtection.md).
 
 ### Development permissions
 

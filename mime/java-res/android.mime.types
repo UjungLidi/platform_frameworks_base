@@ -63,6 +63,7 @@
 ?application/x-android-drm-fl fl
 ?application/x-flac flac
 ?application/x-font pcf
+?application/x-mobipocket-ebook prc mobi
 ?application/x-mpegurl m3u m3u8
 ?application/x-pem-file pem
 ?application/x-pkcs12 p12 pfx
@@ -72,7 +73,7 @@
 ?application/x-x509-server-cert crt
 ?application/x-x509-user-cert crt
 
-?audio/3gpp 3gpp 3ga
+?audio/3gpp 3ga 3gpp
 ?audio/aac-adts aac
 ?audio/ac3 ac3 a52
 ?audio/amr amr
@@ -84,12 +85,15 @@
 ?audio/sp-midi smf
 ?audio/x-matroska mka
 ?audio/x-pn-realaudio ra
+?audio/x-mpeg mp3
 
 ?image/bmp bmp
+?image/gif gif
 ?image/heic heic
 ?image/heic-sequence heics
 ?image/heif heif hif
 ?image/heif-sequence heifs
+?image/avif avif
 ?image/ico cur
 ?image/webp webp
 ?image/x-adobe-dng dng
@@ -136,7 +140,7 @@
 # that may have been defined earlier.
 
 application/pgp-signature pgp
-application/x-x509-ca-cert crt
+application/x-x509-ca-cert crt der
 audio/aac aac adts adt
 audio/basic snd
 audio/flac flac

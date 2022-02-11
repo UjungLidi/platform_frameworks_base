@@ -38,8 +38,9 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"<xliff:g id="PERCENTAGE">%s</xliff:g> • ఛార్జ్ అవుతోంది"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"<xliff:g id="PERCENTAGE">%s</xliff:g> • వేగంగా ఛార్జ్ అవుతోంది"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"<xliff:g id="PERCENTAGE">%s</xliff:g> • నెమ్మదిగా ఛార్జ్ అవుతోంది"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="6091488837901216962">"<xliff:g id="PERCENTAGE">%s</xliff:g> • ఛార్జింగ్ తాత్కాలికంగా పరిమితం చేయబడింది"</string>
     <string name="keyguard_low_battery" msgid="1868012396800230904">"మీ ఛార్జర్‌ను కనెక్ట్ చేయండి."</string>
-    <string name="keyguard_instructions_when_pattern_disabled" msgid="8448804180089936954">"అన్‌లాక్ చేయడానికి మెనుని నొక్కండి."</string>
+    <string name="keyguard_instructions_when_pattern_disabled" msgid="8448804180089936954">"అన్‌లాక్ చేయడానికి మెనూను నొక్కండి."</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"నెట్‌వర్క్ లాక్ చేయబడింది"</string>
     <string name="keyguard_missing_sim_message_short" msgid="704159478161444907">"SIM కార్డ్ లేదు"</string>
     <string name="keyguard_missing_sim_instructions" msgid="1162120926141335918">"SIM కార్డ్‌ని చొప్పించండి."</string>
@@ -82,8 +83,8 @@
     <string name="kg_invalid_sim_puk_hint" msgid="5319756880543857694">"PUK కోడ్ అనేది 8 లేదా అంతకంటే ఎక్కువ సంఖ్యలు ఉండాలి."</string>
     <string name="kg_invalid_puk" msgid="1774337070084931186">"సరైన PUK కోడ్‌ను మళ్లీ నమోదు చేయండి. ఎక్కువసార్లు ప్రయత్నించడం వలన SIM శాశ్వతంగా నిలిపివేయబడుతుంది."</string>
     <string name="kg_login_too_many_attempts" msgid="4519957179182578690">"నమూనాని చాలా ఎక్కువసార్లు గీసారు"</string>
-    <string name="kg_too_many_failed_pin_attempts_dialog_message" msgid="544687656831558971">"మీరు మీ పిన్‌ను <xliff:g id="NUMBER_0">%1$d</xliff:g> సార్లు తప్పుగా టైప్ చేసారు. \n\n<xliff:g id="NUMBER_1">%2$d</xliff:g> సెకన్లలో మళ్లీ ప్రయత్నించండి."</string>
-    <string name="kg_too_many_failed_password_attempts_dialog_message" msgid="190984061975729494">"మీరు మీ పాస్‌వర్డ్‌ను <xliff:g id="NUMBER_0">%1$d</xliff:g> సార్లు తప్పుగా టైప్ చేసారు. \n\n<xliff:g id="NUMBER_1">%2$d</xliff:g> సెకన్లలో మళ్లీ ప్రయత్నించండి."</string>
+    <string name="kg_too_many_failed_pin_attempts_dialog_message" msgid="544687656831558971">"మీరు మీ పిన్‌ను <xliff:g id="NUMBER_0">%1$d</xliff:g> సార్లు తప్పుగా టైప్ చేశారు. \n\n<xliff:g id="NUMBER_1">%2$d</xliff:g> సెకన్లలో మళ్లీ ప్రయత్నించండి."</string>
+    <string name="kg_too_many_failed_password_attempts_dialog_message" msgid="190984061975729494">"మీరు మీ పాస్‌వర్డ్‌ను <xliff:g id="NUMBER_0">%1$d</xliff:g> సార్లు తప్పుగా టైప్ చేశారు. \n\n<xliff:g id="NUMBER_1">%2$d</xliff:g> సెకన్లలో మళ్లీ ప్రయత్నించండి."</string>
     <string name="kg_too_many_failed_pattern_attempts_dialog_message" msgid="4252405904570284368">"మీరు మీ అన్‌లాక్ నమూనాను <xliff:g id="NUMBER_0">%1$d</xliff:g> సార్లు తప్పుగా గీసారు. \n\n<xliff:g id="NUMBER_1">%2$d</xliff:g> సెకన్లలో మళ్లీ ప్రయత్నించండి."</string>
     <string name="kg_password_wrong_pin_code_pukked" msgid="8047350661459040581">"SIM పిన్ కోడ్ తప్పు, ఇప్పుడు మీ డివైజ్‌ను అన్‌లాక్ చేయాలంటే, మీరు తప్పనిసరిగా మీ క్యారియర్‌ను సంప్రదించాలి."</string>
     <plurals name="kg_password_wrong_pin_code" formatted="false" msgid="7030584350995485026">
@@ -101,9 +102,6 @@
     <string name="keyguard_carrier_default" msgid="6359808469637388586">"సేవ లేదు."</string>
     <string name="accessibility_ime_switch_button" msgid="9082358310194861329">"ఇన్‌పుట్ పద్ధతిని మార్చు"</string>
     <string name="airplane_mode" msgid="2528005343938497866">"విమానం మోడ్"</string>
-    <string name="kg_prompt_reason_prepare_for_update_pin" msgid="8878724145347297575">"అప్‌డేట్‌కు సిద్ధం చేయడానికి పిన్ అవసరం"</string>
-    <string name="kg_prompt_reason_prepare_for_update_pattern" msgid="4873394344883271519">"అప్‌డేట్‌కు సిద్ధం చేయడానికి ఆకృతి అవసరం"</string>
-    <string name="kg_prompt_reason_prepare_for_update_password" msgid="5625446803865598337">"అప్‌డేట్‌కు సిద్ధం చేయడానికి పాస్‌వర్డ్ అవసరం"</string>
     <string name="kg_prompt_reason_restart_pattern" msgid="4720554342633852066">"పరికరాన్ని పునఃప్రారంభించిన తర్వాత నమూనాను గీయాలి"</string>
     <string name="kg_prompt_reason_restart_pin" msgid="1587671566498057656">"డివైజ్‌ను పునఃప్రారంభించిన తర్వాత పిన్ నమోదు చేయాలి"</string>
     <string name="kg_prompt_reason_restart_password" msgid="8061279087240952002">"పరికరాన్ని పునఃప్రారంభించిన తర్వాత పాస్‌వర్డ్‌ను నమోదు చేయాలి"</string>
@@ -137,7 +135,7 @@
       <item quantity="other">SIM ఇప్పుడు నిలిపివేయబడింది. PUK కోడ్‌ను నమోదు చేయండి. SIM శాశ్వతంగా నిరుపయోగం కాకుండా ఉండటానికి మీకు <xliff:g id="_NUMBER_1">%d</xliff:g> ప్రయత్నాలు మిగిలి ఉన్నాయి. వివరాల కోసం కారియర్‌ను సంప్రదించండి.</item>
       <item quantity="one">SIM ఇప్పుడు నిలిపివేయబడింది. PUK కోడ్‌ను నమోదు చేయండి. SIM శాశ్వతంగా నిరుపయోగం కాకుండా ఉండటానికి మీకు <xliff:g id="_NUMBER_0">%d</xliff:g> ప్రయత్నం మిగిలి ఉంది వివరాల కోసం కారియర్‌ను సంప్రదించండి.</item>
     </plurals>
-    <string name="clock_title_default" msgid="6342735240617459864">"డిఫాల్ట్"</string>
+    <string name="clock_title_default" msgid="6342735240617459864">"ఆటోమేటిక్"</string>
     <string name="clock_title_bubble" msgid="2204559396790593213">"బబుల్"</string>
     <string name="clock_title_analog" msgid="8409262532900918273">"ఎనలాగ్"</string>
 </resources>

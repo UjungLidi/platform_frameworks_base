@@ -18,6 +18,7 @@ package com.android.systemui.statusbar.notification.collection;
 
 import static android.service.notification.NotificationListenerService.REASON_APP_CANCEL;
 import static android.service.notification.NotificationListenerService.REASON_APP_CANCEL_ALL;
+import static android.service.notification.NotificationListenerService.REASON_CANCEL;
 import static android.service.notification.NotificationListenerService.REASON_CANCEL_ALL;
 import static android.service.notification.NotificationListenerService.REASON_CHANNEL_BANNED;
 import static android.service.notification.NotificationListenerService.REASON_CLICK;
@@ -47,7 +48,6 @@ import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.app.Notification;
 import android.os.RemoteException;
-import android.os.SystemClock;
 import android.os.UserHandle;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.NotificationListenerService.Ranking;
@@ -60,7 +60,9 @@ import androidx.annotation.NonNull;
 
 import com.android.internal.statusbar.IStatusBarService;
 import com.android.systemui.Dumpable;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dump.DumpManager;
+import com.android.systemui.dump.LogBufferEulogizer;
 import com.android.systemui.statusbar.FeatureFlags;
 import com.android.systemui.statusbar.notification.collection.coalescer.CoalescedEvent;
 import com.android.systemui.statusbar.notification.collection.coalescer.GroupCoalescer;
@@ -81,6 +83,7 @@ import com.android.systemui.statusbar.notification.collection.notifcollection.No
 import com.android.systemui.statusbar.notification.collection.notifcollection.RankingAppliedEvent;
 import com.android.systemui.statusbar.notification.collection.notifcollection.RankingUpdatedEvent;
 import com.android.systemui.util.Assert;
+import com.android.systemui.util.time.SystemClock;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -94,9 +97,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Queue;
+import java.util.concurrent.TimeUnit;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * Keeps a record of all of the "active" notifications, i.e. the notifications that are currently
@@ -121,11 +124,13 @@ import javax.inject.Singleton;
  * events occur.
  */
 @MainThread
-@Singleton
+@SysUISingleton
 public class NotifCollection implements Dumpable {
     private final IStatusBarService mStatusBarService;
+    private final SystemClock mClock;
     private final FeatureFlags mFeatureFlags;
     private final NotifCollectionLogger mLogger;
+    private final LogBufferEulogizer mEulogizer;
 
     private final Map<String, NotificationEntry> mNotificationSet = new ArrayMap<>();
     private final Collection<NotificationEntry> mReadOnlyNotificationSet =
@@ -140,18 +145,24 @@ public class NotifCollection implements Dumpable {
 
     private boolean mAttached = false;
     private boolean mAmDispatchingToOtherCode;
+    private long mInitializedTimestamp = 0;
 
     @Inject
     public NotifCollection(
             IStatusBarService statusBarService,
-            DumpManager dumpManager,
+            SystemClock clock,
             FeatureFlags featureFlags,
-            NotifCollectionLogger logger) {
+            NotifCollectionLogger logger,
+            LogBufferEulogizer logBufferEulogizer,
+            DumpManager dumpManager) {
         Assert.isMainThread();
         mStatusBarService = statusBarService;
-        mLogger = logger;
-        dumpManager.registerDumpable(TAG, this);
+        mClock = clock;
         mFeatureFlags = featureFlags;
+        mLogger = logger;
+        mEulogizer = logBufferEulogizer;
+
+        dumpManager.registerDumpable(TAG, this);
     }
 
     /** Initializes the NotifCollection and registers it to receive notification events. */
@@ -172,6 +183,11 @@ public class NotifCollection implements Dumpable {
     void setBuildListener(CollectionReadyForBuildListener buildListener) {
         Assert.isMainThread();
         mBuildListener = buildListener;
+    }
+
+    /** @see NotifPipeline#getEntry(String) () */
+    NotificationEntry getEntry(String key) {
+        return mNotificationSet.get(key);
     }
 
     /** @see NotifPipeline#getAllNotifs() */
@@ -223,7 +239,8 @@ public class NotifCollection implements Dumpable {
 
             requireNonNull(stats);
             if (entry != mNotificationSet.get(entry.getKey())) {
-                throw new IllegalStateException("Invalid entry: " + entry.getKey());
+                throw mEulogizer.record(
+                        new IllegalStateException("Invalid entry: " + entry.getKey()));
             }
 
             if (entry.getDismissState() == DISMISSED) {
@@ -242,8 +259,6 @@ public class NotifCollection implements Dumpable {
                 try {
                     mStatusBarService.onNotificationClear(
                             entry.getSbn().getPackageName(),
-                            entry.getSbn().getTag(),
-                            entry.getSbn().getId(),
                             entry.getSbn().getUser().getIdentifier(),
                             entry.getSbn().getKey(),
                             stats.dismissalSurface,
@@ -276,7 +291,10 @@ public class NotifCollection implements Dumpable {
         Assert.isMainThread();
         checkForReentrantCall();
 
+        mLogger.logDismissAll(userId);
+
         try {
+            // TODO(b/169585328): Do not clear media player notifications
             mStatusBarService.onClearAllNotifications(userId);
         } catch (RemoteException e) {
             // system process is dead if we're here.
@@ -322,6 +340,7 @@ public class NotifCollection implements Dumpable {
                     for (NotificationEntry otherEntry : mNotificationSet.values()) {
                         if (shouldAutoDismissChildren(otherEntry, entry.getSbn().getGroupKey())) {
                             otherEntry.setDismissState(PARENT_DISMISSED);
+                            mLogger.logChildDismissed(otherEntry);
                             if (isCanceled(otherEntry)) {
                                 canceledEntries.add(otherEntry);
                             }
@@ -334,6 +353,7 @@ public class NotifCollection implements Dumpable {
         // Immediately remove any dismissed notifs that have already been canceled by system server
         // (probably due to being lifetime-extended up until this point).
         for (NotificationEntry canceledEntry : canceledEntries) {
+            mLogger.logDismissOnAlreadyCanceledEntry(canceledEntry);
             tryRemoveNotification(canceledEntry);
         }
     }
@@ -367,8 +387,11 @@ public class NotifCollection implements Dumpable {
 
         final NotificationEntry entry = mNotificationSet.get(sbn.getKey());
         if (entry == null) {
-            throw new IllegalStateException("No notification to remove with key " + sbn.getKey());
+            // TODO (b/160008901): Throw an exception here
+            mLogger.logNoNotificationToRemoveWithKey(sbn.getKey());
+            return;
         }
+
         entry.mCancellationReason = reason;
         tryRemoveNotification(entry);
         applyRanking(rankingMap);
@@ -382,6 +405,10 @@ public class NotifCollection implements Dumpable {
         dispatchEventsAndRebuildList();
     }
 
+    private void onNotificationsInitialized() {
+        mInitializedTimestamp = mClock.uptimeMillis();
+    }
+
     private void postNotification(
             StatusBarNotification sbn,
             Ranking ranking) {
@@ -389,12 +416,12 @@ public class NotifCollection implements Dumpable {
 
         if (entry == null) {
             // A new notification!
-            entry = new NotificationEntry(sbn, ranking, SystemClock.uptimeMillis());
+            entry = new NotificationEntry(sbn, ranking, mClock.uptimeMillis());
+            mEventQueue.add(new InitEntryEvent(entry));
             mEventQueue.add(new BindEntryEvent(entry, sbn));
             mNotificationSet.put(sbn.getKey(), entry);
 
             mLogger.logNotifPosted(sbn.getKey());
-            mEventQueue.add(new InitEntryEvent(entry));
             mEventQueue.add(new EntryAddedEvent(entry));
 
         } else {
@@ -426,22 +453,25 @@ public class NotifCollection implements Dumpable {
      */
     private boolean tryRemoveNotification(NotificationEntry entry) {
         if (mNotificationSet.get(entry.getKey()) != entry) {
-            throw new IllegalStateException("No notification to remove with key " + entry.getKey());
+            throw mEulogizer.record(
+                    new IllegalStateException("No notification to remove with key "
+                            + entry.getKey()));
         }
 
         if (!isCanceled(entry)) {
-            throw new IllegalStateException("Cannot remove notification " + entry.getKey()
-                        + ": has not been marked for removal");
+            throw mEulogizer.record(
+                    new IllegalStateException("Cannot remove notification " + entry.getKey()
+                            + ": has not been marked for removal"));
         }
 
-        if (isDismissedByUser(entry)) {
-            // User-dismissed notifications cannot be lifetime-extended
+        if (cannotBeLifetimeExtended(entry)) {
             cancelLifetimeExtension(entry);
         } else {
             updateLifetimeExtension(entry);
         }
 
         if (!isLifetimeExtended(entry)) {
+            mLogger.logNotifReleased(entry.getKey());
             mNotificationSet.remove(entry.getKey());
             cancelDismissInterception(entry);
             mEventQueue.add(new EntryRemovedEvent(entry, entry.mCancellationReason));
@@ -501,11 +531,11 @@ public class NotifCollection implements Dumpable {
         checkForReentrantCall();
 
         if (!entry.mLifetimeExtenders.remove(extender)) {
-            throw new IllegalStateException(
+            throw mEulogizer.record(new IllegalStateException(
                     String.format(
                             "Cannot end lifetime extension for extender \"%s\" (%s)",
                             extender.getName(),
-                            extender));
+                            extender)));
         }
 
         mLogger.logLifetimeExtensionEnded(
@@ -557,7 +587,7 @@ public class NotifCollection implements Dumpable {
     }
 
     private void cancelLocalDismissal(NotificationEntry entry) {
-        if (isDismissedByUser(entry)) {
+        if (entry.getDismissState() != NOT_DISMISSED) {
             entry.setDismissState(NOT_DISMISSED);
             if (entry.getSbn().getNotification().isGroupSummary()) {
                 for (NotificationEntry otherEntry : mNotificationSet.values()) {
@@ -581,11 +611,11 @@ public class NotifCollection implements Dumpable {
         checkForReentrantCall();
 
         if (!entry.mDismissInterceptors.remove(interceptor)) {
-            throw new IllegalStateException(
+            throw mEulogizer.record(new IllegalStateException(
                     String.format(
                             "Cannot end dismiss interceptor for interceptor \"%s\" (%s)",
                             interceptor.getName(),
-                            interceptor));
+                            interceptor)));
         }
 
         if (!isDismissIntercepted(entry)) {
@@ -608,7 +638,24 @@ public class NotifCollection implements Dumpable {
 
     private void checkForReentrantCall() {
         if (mAmDispatchingToOtherCode) {
-            throw new IllegalStateException("Reentrant call detected");
+            throw mEulogizer.record(new IllegalStateException("Reentrant call detected"));
+        }
+    }
+
+    // While the NotificationListener is connecting to NotificationManager, there is a short period
+    // during which it's possible for us to receive events about notifications we don't yet know
+    // about (or that otherwise don't make sense). Until that race condition is fixed, we create a
+    // "forgiveness window" of five seconds during which we won't crash if we receive nonsensical
+    // messages from system server.
+    private void crashIfNotInitializing(RuntimeException exception) {
+        final boolean isRecentlyInitialized = mInitializedTimestamp == 0
+                || mClock.uptimeMillis() - mInitializedTimestamp
+                        < INITIALIZATION_FORGIVENESS_WINDOW;
+
+        if (isRecentlyInitialized) {
+            mLogger.logIgnoredError(exception.getMessage());
+        } else {
+            throw mEulogizer.record(exception);
         }
     }
 
@@ -626,12 +673,16 @@ public class NotifCollection implements Dumpable {
      * immediately removed from the collection, but can sometimes stick around due to lifetime
      * extenders.
      */
-    private static boolean isCanceled(NotificationEntry entry) {
+    private boolean isCanceled(NotificationEntry entry) {
         return entry.mCancellationReason != REASON_NOT_CANCELED;
     }
 
-    private static boolean isDismissedByUser(NotificationEntry entry) {
-        return entry.getDismissState() != NOT_DISMISSED;
+    private boolean cannotBeLifetimeExtended(NotificationEntry entry) {
+        final boolean locallyDismissedByUser = entry.getDismissState() != NOT_DISMISSED;
+        final boolean systemServerReportedUserCancel =
+                entry.mCancellationReason == REASON_CLICK
+                        || entry.mCancellationReason == REASON_CANCEL;
+        return locallyDismissedByUser || systemServerReportedUserCancel;
     }
 
     /**
@@ -726,6 +777,11 @@ public class NotifCollection implements Dumpable {
         public void onNotificationRankingUpdate(RankingMap rankingMap) {
             NotifCollection.this.onNotificationRankingUpdate(rankingMap);
         }
+
+        @Override
+        public void onNotificationsInitialized() {
+            NotifCollection.this.onNotificationsInitialized();
+        }
     };
 
     private static final String TAG = "NotifCollection";
@@ -757,4 +813,6 @@ public class NotifCollection implements Dumpable {
 
     static final int REASON_NOT_CANCELED = -1;
     public static final int REASON_UNKNOWN = 0;
+
+    private static final long INITIALIZATION_FORGIVENESS_WINDOW = TimeUnit.SECONDS.toMillis(5);
 }

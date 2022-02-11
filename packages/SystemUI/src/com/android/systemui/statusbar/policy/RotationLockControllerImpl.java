@@ -18,41 +18,49 @@ package com.android.systemui.statusbar.policy;
 
 import android.content.Context;
 import android.os.UserHandle;
+import android.provider.Settings.Secure;
+
+import androidx.annotation.NonNull;
 
 import com.android.internal.view.RotationPolicy;
+import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.util.settings.SecureSettings;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /** Platform implementation of the rotation lock controller. **/
-@Singleton
+@SysUISingleton
 public final class RotationLockControllerImpl implements RotationLockController {
     private final Context mContext;
+    private final SecureSettings mSecureSettings;
     private final CopyOnWriteArrayList<RotationLockControllerCallback> mCallbacks =
             new CopyOnWriteArrayList<RotationLockControllerCallback>();
 
     private final RotationPolicy.RotationPolicyListener mRotationPolicyListener =
             new RotationPolicy.RotationPolicyListener() {
-        @Override
-        public void onChange() {
-            notifyChanged();
-        }
-    };
+                @Override
+                public void onChange() {
+                    notifyChanged();
+                }
+            };
 
     @Inject
-    public RotationLockControllerImpl(Context context) {
+    public RotationLockControllerImpl(Context context, SecureSettings secureSettings) {
         mContext = context;
+        mSecureSettings = secureSettings;
         setListening(true);
     }
 
-    public void addCallback(RotationLockControllerCallback callback) {
+    @Override
+    public void addCallback(@NonNull RotationLockControllerCallback callback) {
         mCallbacks.add(callback);
         notifyChanged(callback);
     }
 
-    public void removeCallback(RotationLockControllerCallback callback) {
+    @Override
+    public void removeCallback(@NonNull RotationLockControllerCallback callback) {
         mCallbacks.remove(callback);
     }
 
@@ -64,11 +72,16 @@ public final class RotationLockControllerImpl implements RotationLockController 
         return RotationPolicy.isRotationLocked(mContext);
     }
 
+    public boolean isCameraRotationEnabled() {
+        return mSecureSettings.getIntForUser(Secure.CAMERA_AUTOROTATE, 0, UserHandle.USER_CURRENT)
+                == 1;
+    }
+
     public void setRotationLocked(boolean locked) {
         RotationPolicy.setRotationLock(mContext, locked);
     }
 
-    public void setRotationLockedAtAngle(boolean locked, int rotation){
+    public void setRotationLockedAtAngle(boolean locked, int rotation) {
         RotationPolicy.setRotationLockAtAngle(mContext, locked, rotation);
     }
 

@@ -16,74 +16,113 @@
 
 package com.android.test.taskembed;
 
-import android.app.ActivityTaskManager;
+import static android.app.WindowConfiguration.WINDOWING_MODE_MULTI_WINDOW;
+import static android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
+
+import android.app.ActivityOptions;
 import android.content.Context;
-import android.window.TaskOrganizer;
-import android.window.WindowContainerToken;
+import android.content.Intent;
+import android.graphics.Rect;
+import android.os.Bundle;
 import android.view.SurfaceControl;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
-import android.window.ITaskOrganizer;
+import android.window.WindowContainerToken;
+import android.window.WindowContainerTransaction;
 
 /**
  * Simple SurfaceView wrapper which registers a TaskOrganizer
  * after it's Surface is ready.
  */
-class TaskView extends SurfaceView implements SurfaceHolder.Callback {
-    final TaskOrganizer mTaskOrganizer;
-    final int mWindowingMode;
-    WindowContainerToken mWc;
+class TaskView extends SurfaceView {
+    private WindowContainerToken mWc;
+    private Context mContext;
+    private SurfaceControl mLeash;
+    private TaskOrganizerMultiWindowTest.Organizer mOrganizer;
+    private Intent mIntent;
+    private boolean mLaunched = false;
 
-    boolean mSurfaceCreated = false;
-    boolean mNeedsReparent;
-
-    TaskView(Context c, TaskOrganizer o, int windowingMode) {
+    TaskView(Context c, TaskOrganizerMultiWindowTest.Organizer organizer,
+            Intent intent) {
         super(c);
-        getHolder().addCallback(this);
+        mContext = c;
+        mOrganizer = organizer;
+        mIntent = intent;
+        getHolder().addCallback(
+                new SurfaceHolder.Callback() {
+                    @Override
+                    public void surfaceCreated(SurfaceHolder holder) {}
+
+                    @Override
+                    public void surfaceChanged(SurfaceHolder holder,
+                            int format, int width, int height) {
+                        if (!mLaunched) {
+                            launchOrganizedActivity(mIntent, width, height);
+                            mLaunched = true;
+                        } else {
+                            resizeTask(width, height);
+                        }
+                    }
+
+                    @Override
+                    public void surfaceDestroyed(SurfaceHolder holder) {}
+                }
+        );
         setZOrderOnTop(true);
-
-        mTaskOrganizer = o;
-        mWindowingMode = windowingMode;
     }
 
-    @Override
-    public void surfaceCreated(SurfaceHolder holder) {
-        mSurfaceCreated = true;
-        if (mNeedsReparent) {
-            mNeedsReparent = false;
-            reparentLeash();
+    private void launchOrganizedActivity(Intent i, int width, int height) {
+        mContext.startActivity(i, makeLaunchOptions(width, height));
+    }
+
+    private Bundle makeLaunchOptions(int width, int height) {
+        ActivityOptions o = ActivityOptions.makeBasic();
+        o.setLaunchWindowingMode(WINDOWING_MODE_MULTI_WINDOW);
+        o.setLaunchBounds(new Rect(0, 0, width, height));
+        o.setTaskOverlay(true, true);
+        o.setTaskAlwaysOnTop(true);
+        return o.toBundle();
+    }
+
+    void resizeTask(int width, int height) {
+        final WindowContainerTransaction wct = new WindowContainerTransaction();
+        wct.setBounds(mWc, new Rect(0, 0, width, height)).setHidden(mWc, false);
+        try {
+            mOrganizer.applySyncTransaction(wct, mOrganizer.mTransactionCallback);
+        } catch (Exception e) {
+            // Oh well
         }
     }
 
-    @Override
-    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+    void hideTask() {
+        if (mWc == null) {
+            return;
+        }
+        final WindowContainerTransaction wct = new WindowContainerTransaction();
+        wct.setWindowingMode(mWc, WINDOWING_MODE_UNDEFINED).setHidden(mWc, true);
+        try {
+            mOrganizer.applySyncTransaction(wct, mOrganizer.mTransactionCallback);
+        } catch (Exception e) {
+            // Oh well
+        }
+        releaseLeash();
     }
 
-    @Override
-    public void surfaceDestroyed(SurfaceHolder holder) {
-    }
-
-    void reparentTask(WindowContainerToken wc) {
+    void reparentTask(WindowContainerToken wc, SurfaceControl leash) {
         mWc = wc;
-        if (mSurfaceCreated == false) {
-            mNeedsReparent = true;
-        } else {
-            reparentLeash();
-        }
+        mLeash = leash;
+        reparentLeash();
     }
 
     void reparentLeash() {
         SurfaceControl.Transaction t = new SurfaceControl.Transaction();
-        SurfaceControl leash = null;
-        try {
-            leash = mWc.getLeash();
-        } catch (Exception e) {
-            // System server died.. oh well
-        }
-
-        t.reparent(leash, getSurfaceControl())
-            .setPosition(leash, 0, 0)
-            .show(leash)
+        t.reparent(mLeash, getSurfaceControl())
+            .show(mLeash)
             .apply();
+    }
+
+    void releaseLeash() {
+        SurfaceControl.Transaction t = new SurfaceControl.Transaction();
+        t.remove(mLeash).apply();
     }
 }

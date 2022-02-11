@@ -17,6 +17,7 @@
 package com.android.systemui.recents;
 
 import static com.android.systemui.util.leak.RotationUtils.ROTATION_LANDSCAPE;
+import static com.android.systemui.util.leak.RotationUtils.ROTATION_NONE;
 import static com.android.systemui.util.leak.RotationUtils.ROTATION_SEASCAPE;
 
 import android.animation.ArgbEvaluator;
@@ -27,10 +28,13 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.ColorDrawable;
 import android.os.Binder;
 import android.os.RemoteException;
+import android.text.SpannableStringBuilder;
+import android.text.style.BulletSpan;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.View;
@@ -49,8 +53,8 @@ import com.android.systemui.R;
 import com.android.systemui.broadcast.BroadcastDispatcher;
 import com.android.systemui.shared.system.QuickStepContract;
 import com.android.systemui.shared.system.WindowManagerWrapper;
-import com.android.systemui.statusbar.phone.NavigationBarView;
-import com.android.systemui.statusbar.phone.NavigationModeController;
+import com.android.systemui.navigationbar.NavigationBarView;
+import com.android.systemui.navigationbar.NavigationModeController;
 import com.android.systemui.statusbar.phone.StatusBar;
 import com.android.systemui.util.leak.RotationUtils;
 
@@ -126,7 +130,7 @@ public class ScreenPinningRequest implements View.OnClickListener,
         }
     }
 
-    private WindowManager.LayoutParams getWindowLayoutParams() {
+    protected WindowManager.LayoutParams getWindowLayoutParams() {
         final WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -184,7 +188,7 @@ public class ScreenPinningRequest implements View.OnClickListener,
             DisplayMetrics metrics = new DisplayMetrics();
             mWindowManager.getDefaultDisplay().getMetrics(metrics);
             float density = metrics.density;
-            int rotation = RotationUtils.getRotation(mContext);
+            int rotation = getRotation(mContext);
 
             inflateView(rotation);
             int bgColor = mContext.getColor(
@@ -293,8 +297,20 @@ public class ScreenPinningRequest implements View.OnClickListener,
                         .setImageDrawable(navigationBarView.getHomeDrawable());
             }
 
-            ((TextView) mLayout.findViewById(R.id.screen_pinning_description))
-                    .setText(descriptionStringResId);
+            // Create a bulleted list of the default description plus the two security notes.
+            int gapWidth = getResources().getDimensionPixelSize(
+                    R.dimen.screen_pinning_description_bullet_gap_width);
+            SpannableStringBuilder description = new SpannableStringBuilder();
+            description.append(getContext().getText(descriptionStringResId),
+                    new BulletSpan(gapWidth), /* flags */ 0);
+            description.append(System.lineSeparator());
+            description.append(getContext().getText(R.string.screen_pinning_exposes_personal_data),
+                    new BulletSpan(gapWidth), /* flags */ 0);
+            description.append(System.lineSeparator());
+            description.append(getContext().getText(R.string.screen_pinning_can_open_other_apps),
+                    new BulletSpan(gapWidth), /* flags */ 0);
+            ((TextView) mLayout.findViewById(R.id.screen_pinning_description)).setText(description);
+
             final int backBgVisibility = touchExplorationEnabled ? View.INVISIBLE : View.VISIBLE;
             mLayout.findViewById(R.id.screen_pinning_back_bg).setVisibility(backBgVisibility);
             mLayout.findViewById(R.id.screen_pinning_back_bg_light).setVisibility(backBgVisibility);
@@ -328,14 +344,23 @@ public class ScreenPinningRequest implements View.OnClickListener,
 
         protected void onConfigurationChanged() {
             removeAllViews();
-            inflateView(RotationUtils.getRotation(mContext));
+            inflateView(getRotation(mContext));
+        }
+
+        private int getRotation(Context context) {
+            Configuration config = context.getResources().getConfiguration();
+            if (config.smallestScreenWidthDp >= 600) {
+                return ROTATION_NONE;
+            }
+
+            return RotationUtils.getRotation(context);
         }
 
         private final Runnable mUpdateLayoutRunnable = new Runnable() {
             @Override
             public void run() {
                 if (mLayout != null && mLayout.getParent() != null) {
-                    mLayout.setLayoutParams(getRequestLayoutParams(RotationUtils.getRotation(mContext)));
+                    mLayout.setLayoutParams(getRequestLayoutParams(getRotation(mContext)));
                 }
             }
         };

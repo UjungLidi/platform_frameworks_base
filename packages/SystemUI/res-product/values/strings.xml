@@ -23,7 +23,7 @@
     <!-- Indication when device is not charging due to bad placement on the dock. [CHAR LIMIT=60] -->
     <string name="dock_alignment_not_charging" product="default">Realign phone to charge wirelessly</string>
 
-    <!-- Message of the overlay warning the user to interact with the device or it will go to sleep. [CHAR LIMIT=NONE] -->
+    <!-- Message of the overlay warning the user that the TV is about to go to standby unless a TV remote button is pressed. [CHAR LIMIT=NONE] -->
     <string name="inattentive_sleep_warning_message" product="tv">The Android TV device will soon turn off; press a button to keep it on.</string>
     <!-- Message of the overlay warning the user to interact with the device or it will go to sleep. [CHAR LIMIT=NONE] -->
     <string name="inattentive_sleep_warning_message" product="default">The device will soon turn off; press to keep it on.</string>
@@ -121,5 +121,13 @@
        you will be asked to unlock your phone using an email account.\n\n
        Try again in <xliff:g id="number">%3$d</xliff:g> seconds.
     </string>
+
+
+    <!-- Text shown when viewing global actions while phone is locked and additional controls are hidden [CHAR LIMIT=NONE] -->
+    <string name="global_action_lock_message" product="default">Unlock your phone for more options</string>
+    <!-- Text shown when viewing global actions while phone is locked and additional controls are hidden [CHAR LIMIT=NONE] -->
+    <string name="global_action_lock_message" product="tablet">Unlock your tablet for more options</string>
+    <!-- Text shown when viewing global actions while phone is locked and additional controls are hidden [CHAR LIMIT=NONE] -->
+    <string name="global_action_lock_message" product="device">Unlock your device for more options</string>
 
 </resources>

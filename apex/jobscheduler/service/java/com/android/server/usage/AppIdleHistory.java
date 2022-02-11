@@ -20,6 +20,7 @@ import static android.app.usage.UsageStatsManager.REASON_MAIN_DEFAULT;
 import static android.app.usage.UsageStatsManager.REASON_MAIN_FORCED_BY_USER;
 import static android.app.usage.UsageStatsManager.REASON_MAIN_MASK;
 import static android.app.usage.UsageStatsManager.REASON_MAIN_PREDICTED;
+import static android.app.usage.UsageStatsManager.REASON_MAIN_TIMEOUT;
 import static android.app.usage.UsageStatsManager.REASON_MAIN_USAGE;
 import static android.app.usage.UsageStatsManager.REASON_SUB_MASK;
 import static android.app.usage.UsageStatsManager.REASON_SUB_USAGE_USER_INTERACTION;
@@ -36,6 +37,7 @@ import android.app.usage.UsageStatsManager;
 import android.os.SystemClock;
 import android.util.ArrayMap;
 import android.util.AtomicFile;
+import android.util.IndentingPrintWriter;
 import android.util.Slog;
 import android.util.SparseArray;
 import android.util.TimeUtils;
@@ -45,7 +47,6 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.CollectionUtils;
 import com.android.internal.util.FastXmlSerializer;
 import com.android.internal.util.FrameworkStatsLog;
-import com.android.internal.util.IndentingPrintWriter;
 
 import libcore.io.IoUtils;
 
@@ -78,6 +79,12 @@ public class AppIdleHistory {
     private static final long ONE_MINUTE = 60 * 1000;
 
     private static final int STANDBY_BUCKET_UNKNOWN = -1;
+
+    /**
+     * The bucket beyond which apps are considered idle. Any apps in this bucket or lower are
+     * considered idle while those in higher buckets are not considered idle.
+     */
+    static final int IDLE_BUCKET_CUTOFF = STANDBY_BUCKET_RARE;
 
     @VisibleForTesting
     static final String APP_IDLE_FILENAME = "app_idle_stats.xml";
@@ -253,8 +260,10 @@ public class AppIdleHistory {
         int bucketingReason = REASON_MAIN_USAGE | usageReason;
         final boolean isUserUsage = isUserUsage(bucketingReason);
 
-        if (appUsageHistory.currentBucket == STANDBY_BUCKET_RESTRICTED && !isUserUsage) {
-            // Only user usage should bring an app out of the RESTRICTED bucket.
+        if (appUsageHistory.currentBucket == STANDBY_BUCKET_RESTRICTED && !isUserUsage
+                && (appUsageHistory.bucketingReason & REASON_MAIN_MASK) != REASON_MAIN_TIMEOUT) {
+            // Only user usage should bring an app out of the RESTRICTED bucket, unless the app
+            // just timed out into RESTRICTED.
             newBucket = STANDBY_BUCKET_RESTRICTED;
             bucketingReason = appUsageHistory.bucketingReason;
         } else {
@@ -350,7 +359,7 @@ public class AppIdleHistory {
         ArrayMap<String, AppUsageHistory> userHistory = getUserHistory(userId);
         AppUsageHistory appUsageHistory =
                 getPackageHistory(userHistory, packageName, elapsedRealtime, true);
-        return appUsageHistory.currentBucket >= STANDBY_BUCKET_RARE;
+        return appUsageHistory.currentBucket >= IDLE_BUCKET_CUTOFF;
     }
 
     public AppUsageHistory getAppUsageHistory(String packageName, int userId,
@@ -487,7 +496,7 @@ public class AppIdleHistory {
         final int newBucket;
         final int reason;
         if (idle) {
-            newBucket = STANDBY_BUCKET_RARE;
+            newBucket = IDLE_BUCKET_CUTOFF;
             reason = REASON_MAIN_FORCED_BY_USER;
         } else {
             newBucket = STANDBY_BUCKET_ACTIVE;
@@ -669,6 +678,14 @@ public class AppIdleHistory {
         return Long.parseLong(value);
     }
 
+
+    public void writeAppIdleTimes() {
+        final int size = mIdleHistory.size();
+        for (int i = 0; i < size; i++) {
+            writeAppIdleTimes(mIdleHistory.keyAt(i));
+        }
+    }
+
     public void writeAppIdleTimes(int userId) {
         FileOutputStream fos = null;
         AtomicFile appIdleFile = new AtomicFile(getUserFile(userId));
@@ -737,8 +754,18 @@ public class AppIdleHistory {
         }
     }
 
-    public void dump(IndentingPrintWriter idpw, int userId, List<String> pkgs) {
-        idpw.println("App Standby States:");
+    public void dumpUsers(IndentingPrintWriter idpw, int[] userIds, List<String> pkgs) {
+        final int numUsers = userIds.length;
+        for (int i = 0; i < numUsers; i++) {
+            idpw.println();
+            dumpUser(idpw, userIds[i], pkgs);
+        }
+    }
+
+    private void dumpUser(IndentingPrintWriter idpw, int userId, List<String> pkgs) {
+        idpw.print("User ");
+        idpw.print(userId);
+        idpw.println(" App Standby States:");
         idpw.increaseIndent();
         ArrayMap<String, AppUsageHistory> userHistory = mIdleHistory.get(userId);
         final long elapsedRealtime = SystemClock.elapsedRealtime();

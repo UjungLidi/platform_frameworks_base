@@ -21,10 +21,10 @@ import android.app.NotificationManager;
 import android.content.Context;
 import android.os.Bundle;
 import android.service.notification.StatusBarNotification;
-import android.util.ArraySet;
 import android.util.Log;
 
 import com.android.internal.statusbar.NotificationVisibility;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.statusbar.notification.NotificationEntryListener;
 import com.android.systemui.statusbar.notification.NotificationEntryManager;
 import com.android.systemui.statusbar.notification.collection.NotifPipeline;
@@ -33,10 +33,9 @@ import com.android.systemui.statusbar.notification.collection.notifcollection.No
 import com.android.systemui.util.time.SystemClock;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /** Updates foreground service notification state in response to notification data events. */
-@Singleton
+@SysUISingleton
 public class ForegroundServiceNotificationListener {
 
     private static final String TAG = "FgServiceController";
@@ -78,8 +77,6 @@ public class ForegroundServiceNotificationListener {
                 removeNotification(entry.getSbn());
             }
         });
-        mEntryManager.addNotificationLifetimeExtender(
-                new ForegroundServiceLifetimeExtender(systemClock));
 
         notifPipeline.addCollectionListener(new NotifCollectionListener() {
             @Override
@@ -163,33 +160,17 @@ public class ForegroundServiceNotificationListener {
                                 userState.addImportantNotification(sbn.getPackageName(),
                                         sbn.getKey());
                             }
-                            final Notification.Builder builder =
-                                    Notification.Builder.recoverBuilder(
-                                            mContext, sbn.getNotification());
-                            if (builder.usesStandardHeader()) {
-                                userState.addStandardLayoutNotification(
-                                        sbn.getPackageName(), sbn.getKey());
-                            }
+                        }
+                        final Notification.Builder builder =
+                                Notification.Builder.recoverBuilder(
+                                        mContext, sbn.getNotification());
+                        if (builder.usesStandardHeader()) {
+                            userState.addStandardLayoutNotification(
+                                    sbn.getPackageName(), sbn.getKey());
                         }
                     }
-                    tagForeground(entry);
                     return true;
                 },
                 true /* create if not found */);
-    }
-
-    // TODO: (b/145659174) remove when moving to NewNotifPipeline. Replaced by
-    //  ForegroundCoordinator
-    private void tagForeground(NotificationEntry entry) {
-        final StatusBarNotification sbn = entry.getSbn();
-        ArraySet<Integer> activeOps = mForegroundServiceController.getAppOps(
-                sbn.getUserId(),
-                sbn.getPackageName());
-        if (activeOps != null) {
-            synchronized (entry.mActiveAppOps) {
-                entry.mActiveAppOps.clear();
-                entry.mActiveAppOps.addAll(activeOps);
-            }
-        }
     }
 }

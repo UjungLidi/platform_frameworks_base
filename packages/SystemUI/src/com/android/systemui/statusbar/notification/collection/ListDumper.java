@@ -19,6 +19,10 @@ package com.android.systemui.statusbar.notification.collection;
 import static com.android.systemui.statusbar.notification.collection.NotifCollection.REASON_NOT_CANCELED;
 import static com.android.systemui.statusbar.notification.collection.NotificationEntry.DismissState.NOT_DISMISSED;
 
+import static java.util.Objects.requireNonNull;
+
+import com.android.systemui.statusbar.NotificationInteractionTracker;
+
 import java.util.Arrays;
 import java.util.List;
 
@@ -35,6 +39,7 @@ public class ListDumper {
      */
     public static String dumpTree(
             List<ListEntry> entries,
+            NotificationInteractionTracker interactionTracker,
             boolean includeRecordKeeping,
             String indent) {
         StringBuilder sb = new StringBuilder();
@@ -46,17 +51,19 @@ public class ListDumper {
                     indent,
                     sb,
                     true,
-                    includeRecordKeeping);
+                    includeRecordKeeping,
+                    interactionTracker.hasUserInteractedWith(entry.getKey()));
             if (entry instanceof GroupEntry) {
                 GroupEntry ge = (GroupEntry) entry;
                 List<NotificationEntry> children = ge.getChildren();
                 for (int childIndex = 0;  childIndex < children.size(); childIndex++) {
                     dumpEntry(children.get(childIndex),
-                            Integer.toString(topEntryIndex) + "." + Integer.toString(childIndex),
+                            topEntryIndex + "." + childIndex,
                             childEntryIndent,
                             sb,
                             true,
-                            includeRecordKeeping);
+                            includeRecordKeeping,
+                            interactionTracker.hasUserInteractedWith(entry.getKey()));
                 }
             }
         }
@@ -80,7 +87,8 @@ public class ListDumper {
                     indent,
                     sb,
                     false,
-                    includeRecordKeeping);
+                    includeRecordKeeping,
+                    false);
         }
         return sb.toString();
     }
@@ -91,7 +99,9 @@ public class ListDumper {
             String indent,
             StringBuilder sb,
             boolean includeParent,
-            boolean includeRecordKeeping) {
+            boolean includeRecordKeeping,
+            boolean hasBeenInteractedWith
+    ) {
         sb.append(indent)
                 .append("[").append(index).append("] ")
                 .append(entry.getKey());
@@ -102,15 +112,13 @@ public class ListDumper {
                     .append(")");
         }
 
-        if (entry.getNotifSection() != null) {
-            sb.append(" sectionIndex=")
-                    .append(entry.getSection())
-                    .append(" sectionName=")
-                    .append(entry.getNotifSection().getName());
+        if (entry.getSection() != null) {
+            sb.append(" section=")
+                    .append(entry.getSection().getLabel());
         }
 
         if (includeRecordKeeping) {
-            NotificationEntry notifEntry = entry.getRepresentativeEntry();
+            NotificationEntry notifEntry = requireNonNull(entry.getRepresentativeEntry());
             StringBuilder rksb = new StringBuilder();
 
             if (!notifEntry.mLifetimeExtenders.isEmpty()) {
@@ -155,6 +163,24 @@ public class ListDumper {
                 rksb.append("dismissState=")
                         .append(notifEntry.getDismissState())
                         .append(" ");
+            }
+
+            if (notifEntry.getAttachState().getSuppressedChanges().getParent() != null) {
+                rksb.append("suppressedParent=")
+                        .append(notifEntry.getAttachState().getSuppressedChanges()
+                                .getParent().getKey())
+                        .append(" ");
+            }
+
+            if (notifEntry.getAttachState().getSuppressedChanges().getSection() != null) {
+                rksb.append("suppressedSection=")
+                        .append(notifEntry.getAttachState().getSuppressedChanges()
+                                .getSection())
+                        .append(" ");
+            }
+
+            if (hasBeenInteractedWith) {
+                rksb.append("interacted=yes ");
             }
 
             String rkString = rksb.toString();

@@ -45,11 +45,14 @@ import android.util.Slog;
 import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.IAccessibilityManagerClient;
 
+import com.android.internal.R;
 import com.android.internal.accessibility.AccessibilityShortcutController;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -97,27 +100,54 @@ class AccessibilityUserState {
 
     private ComponentName mServiceChangingSoftKeyboardMode;
 
+    private String mTargetAssignedToAccessibilityButton;
+
     private boolean mBindInstantServiceAllowed;
     private boolean mIsAutoclickEnabled;
     private boolean mIsDisplayMagnificationEnabled;
     private boolean mIsFilterKeyEventsEnabled;
     private boolean mIsPerformGesturesEnabled;
+    private boolean mAccessibilityFocusOnlyInActiveWindow;
     private boolean mIsTextHighContrastEnabled;
     private boolean mIsTouchExplorationEnabled;
     private boolean mServiceHandlesDoubleTap;
     private boolean mRequestMultiFingerGestures;
+    private boolean mRequestTwoFingerPassthrough;
+    private boolean mSendMotionEventsEnabled;
     private int mUserInteractiveUiTimeout;
     private int mUserNonInteractiveUiTimeout;
     private int mNonInteractiveUiTimeout = 0;
     private int mInteractiveUiTimeout = 0;
     private int mLastSentClientState = -1;
+
+    /** {@code true} if the device config supports magnification area. */
+    private final boolean mSupportMagnificationArea;
     // The magnification mode of default display.
     private int mMagnificationMode = ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN;
+    // The magnification capabilities used to know magnification mode could be switched.
+    private int mMagnificationCapabilities = ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN;
+
+    /** The stroke width of the focus rectangle in pixels */
+    private int mFocusStrokeWidth;
+    /** The color of the focus rectangle */
+    private int mFocusColor;
+    // The default value of the focus stroke width.
+    private final int mFocusStrokeWidthDefaultValue;
+    // The default value of the focus color.
+    private final int mFocusColorDefaultValue;
 
     private Context mContext;
 
     @SoftKeyboardShowMode
     private int mSoftKeyboardShowMode = SHOW_MODE_AUTO;
+
+    boolean isValidMagnificationModeLocked() {
+        if (!mSupportMagnificationArea
+                && mMagnificationMode == Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW) {
+            return false;
+        }
+        return (mMagnificationCapabilities & mMagnificationMode) != 0;
+    }
 
     interface ServiceInfoChangeListener {
         void onServiceInfoChangedLocked(AccessibilityUserState userState);
@@ -128,6 +158,14 @@ class AccessibilityUserState {
         mUserId = userId;
         mContext = context;
         mServiceInfoChangeListener = serviceInfoChangeListener;
+        mFocusStrokeWidthDefaultValue = mContext.getResources().getDimensionPixelSize(
+                R.dimen.accessibility_focus_highlight_stroke_width);
+        mFocusColorDefaultValue = mContext.getResources().getColor(
+                R.color.accessibility_focus_highlight_color);
+        mFocusStrokeWidth = mFocusStrokeWidthDefaultValue;
+        mFocusColor = mFocusColorDefaultValue;
+        mSupportMagnificationArea = mContext.getResources().getBoolean(
+                R.bool.config_magnification_area);
     }
 
     boolean isHandlingAccessibilityEventsLocked() {
@@ -155,14 +193,19 @@ class AccessibilityUserState {
         mTouchExplorationGrantedServices.clear();
         mAccessibilityShortcutKeyTargets.clear();
         mAccessibilityButtonTargets.clear();
+        mTargetAssignedToAccessibilityButton = null;
         mIsTouchExplorationEnabled = false;
         mServiceHandlesDoubleTap = false;
         mRequestMultiFingerGestures = false;
+        mRequestTwoFingerPassthrough = false;
+        mSendMotionEventsEnabled = false;
         mIsDisplayMagnificationEnabled = false;
         mIsAutoclickEnabled = false;
         mUserNonInteractiveUiTimeout = 0;
         mUserInteractiveUiTimeout = 0;
         mMagnificationMode = ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN;
+        mFocusStrokeWidth = mFocusStrokeWidthDefaultValue;
+        mFocusColor = mFocusColorDefaultValue;
     }
 
     void addServiceLocked(AccessibilityServiceConnection serviceConnection) {
@@ -349,7 +392,7 @@ class AccessibilityUserState {
         return mBoundServices;
     }
 
-    int getClientStateLocked(boolean isUiAutomationRunning) {
+    int getClientStateLocked(boolean isUiAutomationRunning, boolean isTracingEnabled) {
         int clientState = 0;
         final boolean a11yEnabled = isUiAutomationRunning
                 || isHandlingAccessibilityEventsLocked();
@@ -364,6 +407,9 @@ class AccessibilityUserState {
         }
         if (mIsTextHighContrastEnabled) {
             clientState |= AccessibilityManager.STATE_FLAG_HIGH_TEXT_CONTRAST_ENABLED;
+        }
+        if (isTracingEnabled) {
+            clientState |= AccessibilityManager.STATE_FLAG_ACCESSIBILITY_TRACING_ENABLED;
         }
         return clientState;
     }
@@ -445,12 +491,18 @@ class AccessibilityUserState {
                 .append(String.valueOf(mServiceHandlesDoubleTap));
         pw.append(", requestMultiFingerGestures=")
                 .append(String.valueOf(mRequestMultiFingerGestures));
+        pw.append(", requestTwoFingerPassthrough=")
+                .append(String.valueOf(mRequestTwoFingerPassthrough));
+        pw.append(", sendMotionEventsEnabled").append(String.valueOf(mSendMotionEventsEnabled));
         pw.append(", displayMagnificationEnabled=").append(String.valueOf(
                 mIsDisplayMagnificationEnabled));
         pw.append(", autoclickEnabled=").append(String.valueOf(mIsAutoclickEnabled));
         pw.append(", nonInteractiveUiTimeout=").append(String.valueOf(mNonInteractiveUiTimeout));
         pw.append(", interactiveUiTimeout=").append(String.valueOf(mInteractiveUiTimeout));
         pw.append(", installedServiceCount=").append(String.valueOf(mInstalledServices.size()));
+        pw.append(", magnificationMode=").append(String.valueOf(mMagnificationMode));
+        pw.append(", magnificationCapabilities=")
+                .append(String.valueOf(mMagnificationCapabilities));
         pw.append("}");
         pw.println();
         pw.append("     shortcut key:{");
@@ -472,6 +524,8 @@ class AccessibilityUserState {
                 pw.append(", ");
             }
         }
+        pw.println("}");
+        pw.append("     button target:{").append(mTargetAssignedToAccessibilityButton);
         pw.println("}");
         pw.append("     Bound services:{");
         final int serviceCount = mBoundServices.size();
@@ -519,6 +573,15 @@ class AccessibilityUserState {
                 pw.append(", ");
                 pw.append(componentName.toShortString());
             }
+        }
+        pw.println("}");
+        pw.println("     Client list info:{");
+        mUserClients.dump(pw, "          Client list ");
+        pw.println("          Registered clients:{");
+        for (int i = 0; i < mUserClients.getRegisteredCallbackCount(); i++) {
+            AccessibilityManagerService.Client client = (AccessibilityManagerService.Client)
+                    mUserClients.getRegisteredCallbackCookie(i);
+            pw.append(Arrays.toString(client.mPackageNames));
         }
         pw.println("}]");
     }
@@ -580,6 +643,31 @@ class AccessibilityUserState {
      */
     public int getMagnificationModeLocked() {
         return mMagnificationMode;
+    }
+
+
+    /**
+     * Gets the magnification capabilities setting of current user.
+     *
+     * @return magnification capabilities
+     *
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_ALL
+     */
+    int getMagnificationCapabilitiesLocked() {
+        return mMagnificationCapabilities;
+    }
+
+    /**
+     * Sets the magnification capabilities from Settings value.
+     *
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW
+     * @see Settings.Secure#ACCESSIBILITY_MAGNIFICATION_MODE_ALL
+     */
+    public void setMagnificationCapabilitiesLocked(int capabilities) {
+        mMagnificationCapabilities = capabilities;
     }
 
     /**
@@ -648,6 +736,25 @@ class AccessibilityUserState {
     }
 
     /**
+     * Removes given shortcut target in the list.
+     *
+     * @param shortcutType The shortcut type.
+     * @param target The component name of the shortcut target.
+     * @return true if the shortcut target is removed.
+     */
+    public boolean removeShortcutTargetLocked(@ShortcutType int shortcutType,
+            ComponentName target) {
+        return getShortcutTargetsLocked(shortcutType).removeIf(name -> {
+            ComponentName componentName;
+            if (name == null
+                    || (componentName = ComponentName.unflattenFromString(name)) == null) {
+                return false;
+            }
+            return componentName.equals(target);
+        });
+    }
+
+    /**
      * Returns installed accessibility service info by the given service component name.
      */
     public AccessibilityServiceInfo getInstalledServiceInfoLocked(ComponentName componentName) {
@@ -683,6 +790,13 @@ class AccessibilityUserState {
         mIsPerformGesturesEnabled = enabled;
     }
 
+    public boolean isAccessibilityFocusOnlyInActiveWindow() {
+        return mAccessibilityFocusOnlyInActiveWindow;
+    }
+
+    public void setAccessibilityFocusOnlyInActiveWindow(boolean enabled) {
+        mAccessibilityFocusOnlyInActiveWindow = enabled;
+    }
     public ComponentName getServiceChangingSoftKeyboardModeLocked() {
         return mServiceChangingSoftKeyboardMode;
     }
@@ -723,6 +837,21 @@ class AccessibilityUserState {
     public void setMultiFingerGesturesLocked(boolean enabled) {
         mRequestMultiFingerGestures = enabled;
     }
+    public boolean isTwoFingerPassthroughEnabledLocked() {
+        return mRequestTwoFingerPassthrough;
+    }
+
+    public void setTwoFingerPassthroughLocked(boolean enabled) {
+        mRequestTwoFingerPassthrough = enabled;
+    }
+
+    public boolean isSendMotionEventsEnabled() {
+        return mSendMotionEventsEnabled;
+    }
+
+    public void setSendMotionEventsEnabled(boolean mode) {
+        mSendMotionEventsEnabled = mode;
+    }
 
     public int getUserInteractiveUiTimeoutLocked() {
         return mUserInteractiveUiTimeout;
@@ -738,5 +867,84 @@ class AccessibilityUserState {
 
     public void setUserNonInteractiveUiTimeoutLocked(int timeout) {
         mUserNonInteractiveUiTimeout = timeout;
+    }
+
+    /**
+     * Gets a shortcut target which is assigned to the accessibility button by the chooser
+     * activity.
+     *
+     * @return The flattened component name or the system class name of the shortcut target.
+     */
+    public String getTargetAssignedToAccessibilityButton() {
+        return mTargetAssignedToAccessibilityButton;
+    }
+
+    /**
+     * Sets a shortcut target which is assigned to the accessibility button by the chooser
+     * activity.
+     *
+     * @param target The flattened component name or the system class name of the shortcut target.
+     */
+    public void setTargetAssignedToAccessibilityButton(String target) {
+        mTargetAssignedToAccessibilityButton = target;
+    }
+
+    /**
+     * Whether or not the given target name is contained in the shortcut collection. Since the
+     * component name string format could be short or long, this function un-flatten the component
+     * name from the string in {@code shortcutTargets} and compared with the given target name.
+     *
+     * @param shortcutTargets The shortcut type.
+     * @param targetName The target name.
+     * @return {@code true} if the target is in the shortcut collection.
+     */
+    public static boolean doesShortcutTargetsStringContain(Collection<String> shortcutTargets,
+            String targetName) {
+        if (shortcutTargets == null || targetName == null) {
+            return false;
+        }
+        // Some system features, such as magnification, don't have component name. Using string
+        // compare first.
+        if (shortcutTargets.contains(targetName)) {
+            return true;
+        }
+        final ComponentName targetComponentName = ComponentName.unflattenFromString(targetName);
+        if (targetComponentName == null) {
+            return false;
+        }
+        for (String stringName : shortcutTargets) {
+            if (!TextUtils.isEmpty(stringName)
+                    && targetComponentName.equals(ComponentName.unflattenFromString(stringName))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Gets the stroke width of the focus rectangle.
+     * @return The stroke width.
+     */
+    public int getFocusStrokeWidthLocked() {
+        return mFocusStrokeWidth;
+    }
+
+    /**
+     * Gets the color of the focus rectangle.
+     * @return The color.
+     */
+    public int getFocusColorLocked() {
+        return mFocusColor;
+    }
+
+    /**
+     * Sets the stroke width and color of the focus rectangle.
+     *
+     * @param strokeWidth The strokeWidth of the focus rectangle.
+     * @param color The color of the focus rectangle.
+     */
+    public void setFocusAppearanceLocked(int strokeWidth, int color) {
+        mFocusStrokeWidth = strokeWidth;
+        mFocusColor = color;
     }
 }
