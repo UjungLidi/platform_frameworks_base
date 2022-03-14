@@ -17,83 +17,72 @@
 package com.android.server.location.listeners;
 
 import android.annotation.Nullable;
-import android.location.util.identity.CallerIdentity;
-import android.util.Log;
 
 import java.util.Objects;
+import java.util.concurrent.Executor;
 
 /**
  * A listener registration that stores its own key, and thus can remove itself. By default it will
  * remove itself if any checked exception occurs on listener execution.
  *
- * @param <TRequest>  request type
- * @param <TListener> listener type
+ * @param <TRequest>           request type
+ * @param <TListener>          listener type
  */
 public abstract class RemovableListenerRegistration<TRequest, TListener> extends
-        ListenerRegistration<TRequest, TListener> {
-
-    private static final String TAG = "RemovableRegistration";
+        RequestListenerRegistration<TRequest, TListener> {
 
     private volatile @Nullable Object mKey;
 
-    protected RemovableListenerRegistration(@Nullable TRequest request,
-            CallerIdentity callerIdentity, TListener listener) {
-        super(request, callerIdentity, listener);
+    protected RemovableListenerRegistration(Executor executor, @Nullable TRequest request,
+            TListener listener) {
+        super(executor, request, listener);
     }
 
     /**
-     * Removes this registration. If called before {@link #onRegister(Object)} or after
-     * {@link #onUnregister()}, then this will have no effect.
+     * Must be implemented to return the {@link ListenerMultiplexer} this registration is registered
+     * with. Often this is easiest to accomplish by defining registration subclasses as non-static
+     * inner classes of the multiplexer they are to be used with.
+     */
+    protected abstract ListenerMultiplexer<?, ? super TListener, ?, ?> getOwner();
+
+    /**
+     * Returns the key associated with this registration. May not be invoked before
+     * {@link #onRegister(Object)} or after {@link #onUnregister()}.
+     */
+    protected final Object getKey() {
+        return Objects.requireNonNull(mKey);
+    }
+
+    /**
+     * Removes this registration. Does nothing if invoked before {@link #onRegister(Object)} or
+     * after {@link #onUnregister()}. It is safe to invoke this from within either function.
      */
     public final void remove() {
         Object key = mKey;
         if (key != null) {
-            remove(key);
+            getOwner().removeRegistration(key, this);
         }
     }
 
     @Override
-    protected void onOperationFailure(ListenerOperation<TListener> operation, Exception e) {
-        if (e instanceof RuntimeException) {
-            throw (RuntimeException) e;
-        } else {
-            Log.w(TAG, "registration " + this + " (" + mKey + "/" + getIdentity()
-                    + ") removed due to unexpected exception", e);
-            remove();
-        }
-    }
-
-    /**
-     * Must be implemented to remove this registration from the owning manager via
-     * {@link ListenerMultiplexer#removeRegistration(Object, ListenerRegistration)}.
-     */
-    protected abstract void remove(Object key);
-
-    /**
-     * May be overridden in place of {@link #onRegister(Object)}.
-     */
-    protected boolean onRemovableRegister(Object key) {
-        return true;
-    }
-
-    /**
-     * May be overridden in place of {@link #onUnregister()}.
-     */
-    protected void onRemovableUnregister(Object key) {}
-
-    @Override
-    protected final boolean onRegister(Object key) {
+    protected final void onRegister(Object key) {
         mKey = Objects.requireNonNull(key);
-        if (!onRemovableRegister(key)) {
-            mKey = null;
-            return false;
-        }
-        return true;
+        onRemovableListenerRegister();
     }
 
     @Override
     protected final void onUnregister() {
-        onRemovableUnregister(mKey);
+        onRemovableListenerUnregister();
         mKey = null;
     }
+
+    /**
+     * May be overridden in place of {@link #onRegister(Object)}.
+     */
+    protected void onRemovableListenerRegister() {}
+
+    /**
+     * May be overridden in place of {@link #onUnregister()}.
+     */
+    protected void onRemovableListenerUnregister() {}
 }

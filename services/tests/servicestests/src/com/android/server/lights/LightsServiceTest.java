@@ -16,12 +16,11 @@
 
 package com.android.server.lights;
 
-import static android.hardware.lights.LightsRequest.Builder;
-
-import static android.graphics.Color.BLACK;
 import static android.graphics.Color.BLUE;
 import static android.graphics.Color.GREEN;
+import static android.graphics.Color.TRANSPARENT;
 import static android.graphics.Color.WHITE;
+import static android.hardware.lights.LightsRequest.Builder;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -32,6 +31,7 @@ import android.hardware.light.ILights;
 import android.hardware.lights.Light;
 import android.hardware.lights.LightState;
 import android.hardware.lights.LightsManager;
+import android.hardware.lights.SystemLightsManager;
 import android.os.Looper;
 
 import androidx.test.filters.SmallTest;
@@ -46,6 +46,9 @@ import org.mockito.MockitoAnnotations;
 @RunWith(AndroidJUnit4.class)
 @SmallTest
 public class LightsServiceTest {
+
+    private static final int HIGH_PRIORITY = Integer.MAX_VALUE;
+    private static final int DEFAULT_PRIORITY = 0;
 
     private final ILights mHal = new ILights.Stub() {
         @Override
@@ -93,8 +96,8 @@ public class LightsServiceTest {
 
     @Test
     public void testGetLights_filtersSystemLights() {
-        LightsService service = new LightsService(mContext, mHal, Looper.getMainLooper());
-        LightsManager manager = new LightsManager(mContext, service.mManagerService);
+        LightsService service = new LightsService(mContext, () -> mHal, Looper.getMainLooper());
+        LightsManager manager = new SystemLightsManager(mContext, service.mManagerService);
 
         // When lights are listed, only the 4 MICROPHONE lights should be visible.
         assertThat(manager.getLights().size()).isEqualTo(4);
@@ -102,15 +105,15 @@ public class LightsServiceTest {
 
     @Test
     public void testControlMultipleLights() {
-        LightsService service = new LightsService(mContext, mHal, Looper.getMainLooper());
-        LightsManager manager = new LightsManager(mContext, service.mManagerService);
+        LightsService service = new LightsService(mContext, () -> mHal, Looper.getMainLooper());
+        LightsManager manager = new SystemLightsManager(mContext, service.mManagerService);
 
         // When the session requests to turn 3/4 lights on:
         LightsManager.LightsSession session = manager.openSession();
         session.requestLights(new Builder()
-                .setLight(manager.getLights().get(0), new LightState(0xf1))
-                .setLight(manager.getLights().get(1), new LightState(0xf2))
-                .setLight(manager.getLights().get(2), new LightState(0xf3))
+                .addLight(manager.getLights().get(0), new LightState(0xf1))
+                .addLight(manager.getLights().get(1), new LightState(0xf2))
+                .addLight(manager.getLights().get(2), new LightState(0xf3))
                 .build());
 
         // Then all 3 should turn on.
@@ -123,66 +126,95 @@ public class LightsServiceTest {
     }
 
     @Test
-    public void testControlLights_onlyEffectiveForLifetimeOfClient() {
-        LightsService service = new LightsService(mContext, mHal, Looper.getMainLooper());
-        LightsManager manager = new LightsManager(mContext, service.mManagerService);
+    public void testControlLights_onlyEffectiveForLifetimeOfClient() throws Exception {
+        LightsService service = new LightsService(mContext, () -> mHal, Looper.getMainLooper());
+        LightsManager manager = new SystemLightsManager(mContext, service.mManagerService);
         Light micLight = manager.getLights().get(0);
 
         // The light should begin by being off.
-        assertThat(manager.getLightState(micLight).getColor()).isEqualTo(BLACK);
+        assertThat(manager.getLightState(micLight).getColor()).isEqualTo(TRANSPARENT);
 
         // When a session commits changes:
         LightsManager.LightsSession session = manager.openSession();
-        session.requestLights(new Builder().setLight(micLight, new LightState(GREEN)).build());
+        session.requestLights(new Builder().addLight(micLight, new LightState(GREEN)).build());
         // Then the light should turn on.
         assertThat(manager.getLightState(micLight).getColor()).isEqualTo(GREEN);
 
         // When the session goes away:
         session.close();
+
         // Then the light should turn off.
-        assertThat(manager.getLightState(micLight).getColor()).isEqualTo(BLACK);
+        assertThat(manager.getLightState(micLight).getColor()).isEqualTo(TRANSPARENT);
     }
 
     @Test
-    public void testControlLights_firstCallerWinsContention() {
-        LightsService service = new LightsService(mContext, mHal, Looper.getMainLooper());
-        LightsManager manager = new LightsManager(mContext, service.mManagerService);
+    public void testControlLights_firstCallerWinsContention() throws Exception {
+        LightsService service = new LightsService(mContext, () -> mHal, Looper.getMainLooper());
+        LightsManager manager = new SystemLightsManager(mContext, service.mManagerService);
         Light micLight = manager.getLights().get(0);
 
         LightsManager.LightsSession session1 = manager.openSession();
         LightsManager.LightsSession session2 = manager.openSession();
 
         // When session1 and session2 both request the same light:
-        session1.requestLights(new Builder().setLight(micLight, new LightState(BLUE)).build());
-        session2.requestLights(new Builder().setLight(micLight, new LightState(WHITE)).build());
+        session1.requestLights(new Builder().addLight(micLight, new LightState(BLUE)).build());
+        session2.requestLights(new Builder().addLight(micLight, new LightState(WHITE)).build());
         // Then session1 should win because it was created first.
         assertThat(manager.getLightState(micLight).getColor()).isEqualTo(BLUE);
 
         // When session1 goes away:
         session1.close();
+
         // Then session2 should have its request go into effect.
         assertThat(manager.getLightState(micLight).getColor()).isEqualTo(WHITE);
 
         // When session2 goes away:
         session2.close();
+
         // Then the light should turn off because there are no more sessions.
         assertThat(manager.getLightState(micLight).getColor()).isEqualTo(0);
     }
 
     @Test
     public void testClearLight() {
-        LightsService service = new LightsService(mContext, mHal, Looper.getMainLooper());
-        LightsManager manager = new LightsManager(mContext, service.mManagerService);
+        LightsService service = new LightsService(mContext, () -> mHal, Looper.getMainLooper());
+        LightsManager manager = new SystemLightsManager(mContext, service.mManagerService);
         Light micLight = manager.getLights().get(0);
 
         // When the session turns a light on:
         LightsManager.LightsSession session = manager.openSession();
-        session.requestLights(new Builder().setLight(micLight, new LightState(WHITE)).build());
+        session.requestLights(new Builder().addLight(micLight, new LightState(WHITE)).build());
 
         // And then the session clears it again:
         session.requestLights(new Builder().clearLight(micLight).build());
 
         // Then the light should turn back off.
         assertThat(manager.getLightState(micLight).getColor()).isEqualTo(0);
+    }
+
+    @Test
+    public void testControlLights_higherPriorityCallerWinsContention() throws Exception {
+        LightsService service = new LightsService(mContext, () -> mHal, Looper.getMainLooper());
+        LightsManager manager = new SystemLightsManager(mContext, service.mManagerService);
+        Light micLight = manager.getLights().get(0);
+
+        // The light should begin by being off.
+        assertThat(manager.getLightState(micLight).getColor()).isEqualTo(TRANSPARENT);
+
+        try (LightsManager.LightsSession session1 = manager.openSession(DEFAULT_PRIORITY)) {
+            try (LightsManager.LightsSession session2 = manager.openSession(HIGH_PRIORITY)) {
+                // When session1 and session2 both request the same light:
+                session1.requestLights(
+                        new Builder().addLight(micLight, new LightState(BLUE)).build());
+                session2.requestLights(
+                        new Builder().addLight(micLight, new LightState(WHITE)).build());
+                // Then session2 should win because it has a higher priority.
+                assertThat(manager.getLightState(micLight).getColor()).isEqualTo(WHITE);
+            }
+            // Then session1 should have its request go into effect.
+            assertThat(manager.getLightState(micLight).getColor()).isEqualTo(BLUE);
+        }
+        // Then the light should turn off because there are no more sessions.
+        assertThat(manager.getLightState(micLight).getColor()).isEqualTo(TRANSPARENT);
     }
 }

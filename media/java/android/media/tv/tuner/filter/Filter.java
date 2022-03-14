@@ -25,6 +25,7 @@ import android.hardware.tv.tuner.V1_0.Constants;
 import android.media.tv.tuner.Tuner;
 import android.media.tv.tuner.Tuner.Result;
 import android.media.tv.tuner.TunerUtils;
+import android.media.tv.tuner.TunerVersionChecker;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -148,7 +149,6 @@ public class Filter implements AutoCloseable {
     public static final int SUBTYPE_PTP = 16;
 
 
-
     /** @hide */
     @IntDef(flag = true, prefix = "STATUS_", value = {STATUS_DATA_READY, STATUS_LOW_WATER,
             STATUS_HIGH_WATER, STATUS_OVERFLOW})
@@ -180,18 +180,67 @@ public class Filter implements AutoCloseable {
      */
     public static final int STATUS_OVERFLOW = Constants.DemuxFilterStatus.OVERFLOW;
 
+    /** @hide */
+    @IntDef(flag = true,
+            prefix = "SCRAMBLING_STATUS_",
+            value = {SCRAMBLING_STATUS_UNKNOWN, SCRAMBLING_STATUS_NOT_SCRAMBLED,
+                    SCRAMBLING_STATUS_SCRAMBLED})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ScramblingStatus {}
+
+    /**
+     * Content’s scrambling status is unknown
+     */
+    public static final int SCRAMBLING_STATUS_UNKNOWN =
+            android.hardware.tv.tuner.V1_1.Constants.ScramblingStatus.UNKNOWN;
+    /**
+     * Content is not scrambled.
+     */
+    public static final int SCRAMBLING_STATUS_NOT_SCRAMBLED =
+            android.hardware.tv.tuner.V1_1.Constants.ScramblingStatus.NOT_SCRAMBLED;
+    /**
+     * Content is scrambled.
+     */
+    public static final int SCRAMBLING_STATUS_SCRAMBLED =
+            android.hardware.tv.tuner.V1_1.Constants.ScramblingStatus.SCRAMBLED;
+
+    /** @hide */
+    @IntDef(flag = true,
+            prefix = "MONITOR_EVENT_",
+            value = {MONITOR_EVENT_SCRAMBLING_STATUS, MONITOR_EVENT_IP_CID_CHANGE})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface MonitorEventMask {}
+
+    /**
+     * Monitor scrambling status change.
+     */
+    public static final int MONITOR_EVENT_SCRAMBLING_STATUS =
+            android.hardware.tv.tuner.V1_1.Constants.DemuxFilterMonitorEventType.SCRAMBLING_STATUS;
+    /**
+     * Monitor ip cid change.
+     */
+    public static final int MONITOR_EVENT_IP_CID_CHANGE =
+            android.hardware.tv.tuner.V1_1.Constants.DemuxFilterMonitorEventType.IP_CID_CHANGE;
+
+    private static final String TAG = "Filter";
+
     private long mNativeContext;
     private FilterCallback mCallback;
     private Executor mExecutor;
-    private final int mId;
+    private final Object mCallbackLock = new Object();
+    private final long mId;
     private int mMainType;
     private int mSubtype;
     private Filter mSource;
     private boolean mStarted;
+    private boolean mIsClosed = false;
+    private final Object mLock = new Object();
 
     private native int nativeConfigureFilter(
             int type, int subType, FilterConfiguration settings);
     private native int nativeGetId();
+    private native long nativeGetId64Bit();
+    private native int nativeConfigureMonitorEvent(int monitorEventMask);
     private native int nativeSetDataSource(Filter source);
     private native int nativeStartFilter();
     private native int nativeStopFilter();
@@ -200,65 +249,132 @@ public class Filter implements AutoCloseable {
     private native int nativeClose();
 
     // Called by JNI
-    private Filter(int id) {
+    private Filter(long id) {
         mId = id;
     }
 
     private void onFilterStatus(int status) {
-        if (mCallback != null && mExecutor != null) {
-            mExecutor.execute(() -> mCallback.onFilterStatusChanged(this, status));
+        synchronized (mCallbackLock) {
+            if (mCallback != null && mExecutor != null) {
+                mExecutor.execute(() -> mCallback.onFilterStatusChanged(this, status));
+            }
         }
     }
 
     private void onFilterEvent(FilterEvent[] events) {
-        if (mCallback != null && mExecutor != null) {
-            mExecutor.execute(() -> mCallback.onFilterEvent(this, events));
+        synchronized (mCallbackLock) {
+            if (mCallback != null && mExecutor != null) {
+                mExecutor.execute(() -> mCallback.onFilterEvent(this, events));
+            }
         }
     }
 
     /** @hide */
-    public void setMainType(@Type int mainType) {
+    public void setType(@Type int mainType, @Subtype int subtype) {
         mMainType = mainType;
-    }
-    /** @hide */
-    public void setSubtype(@Subtype int subtype) {
-        mSubtype = subtype;
+        mSubtype = TunerUtils.getFilterSubtype(mainType, subtype);
     }
 
     /** @hide */
     public void setCallback(FilterCallback cb, Executor executor) {
-        mCallback = cb;
-        mExecutor = executor;
+        synchronized (mCallbackLock) {
+            mCallback = cb;
+            mExecutor = executor;
+        }
     }
 
     /** @hide */
     public FilterCallback getCallback() {
-        return mCallback;
+        synchronized (mCallbackLock) {
+            return mCallback;
+        }
     }
 
     /**
      * Configures the filter.
+     *
+     * <p>Recofiguring must happen after stopping the filter.
+     *
+     * <p>When stopping, reconfiguring and restarting the filter, the client should discard all
+     * coming events until it receives {@link RestartEvent} through {@link FilterCallback} to avoid
+     * using the events from the previous configuration.
      *
      * @param config the configuration of the filter.
      * @return result status of the operation.
      */
     @Result
     public int configure(@NonNull FilterConfiguration config) {
-        Settings s = config.getSettings();
-        int subType = (s == null) ? mSubtype : s.getType();
-        if (mMainType != config.getType() || mSubtype != subType) {
-            throw new IllegalArgumentException("Invalid filter config. filter main type="
-                    + mMainType + ", filter subtype=" + mSubtype + ". config main type="
-                    + config.getType() + ", config subtype=" + subType);
+        synchronized (mLock) {
+            TunerUtils.checkResourceState(TAG, mIsClosed);
+            Settings s = config.getSettings();
+            int subType = (s == null) ? mSubtype : s.getType();
+            if (mMainType != config.getType() || mSubtype != subType) {
+                throw new IllegalArgumentException("Invalid filter config. filter main type="
+                        + mMainType + ", filter subtype=" + mSubtype + ". config main type="
+                        + config.getType() + ", config subtype=" + subType);
+            }
+            return nativeConfigureFilter(config.getType(), subType, config);
         }
-        return nativeConfigureFilter(config.getType(), subType, config);
     }
 
     /**
-     * Gets the filter Id.
+     * Gets the filter Id in 32-bit. For any Tuner SoC that supports 64-bit filter architecture,
+     * use {@link #getIdLong()}.
      */
     public int getId() {
-        return nativeGetId();
+        synchronized (mLock) {
+            TunerUtils.checkResourceState(TAG, mIsClosed);
+            return nativeGetId();
+        }
+    }
+
+    /**
+     * Gets the 64-bit filter Id. For any Tuner SoC that supports 32-bit filter architecture,
+     * use {@link #getId()}.
+     */
+    public long getIdLong() {
+        synchronized (mLock) {
+            TunerUtils.checkResourceState(TAG, mIsClosed);
+            return nativeGetId64Bit();
+        }
+    }
+
+    /**
+     * Configure the Filter to monitor scrambling status and ip cid change. Set corresponding bit
+     * to monitor the change. Reset to stop monitoring.
+     *
+     * <p>{@link ScramblingStatusEvent} should be sent at the following two scenarios:
+     * <ul>
+     *   <li>When this method is called with {@link #MONITOR_EVENT_SCRAMBLING_STATUS}, the first
+     *       detected scrambling status should be sent.
+     *   <li>When the Scrambling status transits into different status, event should be sent.
+     *     <ul/>
+     *
+     * <p>{@link IpCidChangeEvent} should be sent at the following two scenarios:
+     * <ul>
+     *   <li>When this method is called with {@link #MONITOR_EVENT_IP_CID_CHANGE}, the first
+     *       detected CID for the IP should be sent.
+     *   <li>When the CID is changed to different value for the IP filter, event should be sent.
+     *     <ul/>
+     *
+     * <p>This configuration is only supported in Tuner 1.1 or higher version. Unsupported version
+     * will cause no-op. Use {@link TunerVersionChecker#getTunerVersion()} to get the version
+     * information.
+     *
+     * @param monitorEventMask Types of event to be monitored. Set corresponding bit to
+     *                         monitor it. Reset to stop monitoring.
+     * @return result status of the operation.
+     */
+    @Result
+    public int setMonitorEventMask(@MonitorEventMask int monitorEventMask) {
+        synchronized (mLock) {
+            TunerUtils.checkResourceState(TAG, mIsClosed);
+            if (!TunerVersionChecker.checkHigherOrEqualVersionTo(
+                    TunerVersionChecker.TUNER_VERSION_1_1, "setMonitorEventMask")) {
+                return Tuner.RESULT_UNAVAILABLE;
+            }
+            return nativeConfigureMonitorEvent(monitorEventMask);
+        }
     }
 
     /**
@@ -276,14 +392,17 @@ public class Filter implements AutoCloseable {
      */
     @Result
     public int setDataSource(@Nullable Filter source) {
-        if (mSource != null) {
-            throw new IllegalStateException("Data source is existing");
+        synchronized (mLock) {
+            TunerUtils.checkResourceState(TAG, mIsClosed);
+            if (mSource != null) {
+                throw new IllegalStateException("Data source is existing");
+            }
+            int res = nativeSetDataSource(source);
+            if (res == Tuner.RESULT_SUCCESS) {
+                mSource = source;
+            }
+            return res;
         }
-        int res = nativeSetDataSource(source);
-        if (res == Tuner.RESULT_SUCCESS) {
-            mSource = source;
-        }
-        return res;
     }
 
     /**
@@ -291,11 +410,18 @@ public class Filter implements AutoCloseable {
      *
      * <p>Does nothing if the filter is already started.
      *
+     * <p>When stopping, reconfiguring and restarting the filter, the client should discard all
+     * coming events until it receives {@link RestartEvent} through {@link FilterCallback} to avoid
+     * using the events from the previous configuration.
+     *
      * @return result status of the operation.
      */
     @Result
     public int start() {
-        return nativeStartFilter();
+        synchronized (mLock) {
+            TunerUtils.checkResourceState(TAG, mIsClosed);
+            return nativeStartFilter();
+        }
     }
 
 
@@ -304,11 +430,20 @@ public class Filter implements AutoCloseable {
      *
      * <p>Does nothing if the filter is stopped or not started.
      *
+     * <p>Filter must be stopped to reconfigure.
+     *
+     * <p>When stopping, reconfiguring and restarting the filter, the client should discard all
+     * coming events until it receives {@link RestartEvent} through {@link FilterCallback} to avoid
+     * using the events from the previous configuration.
+     *
      * @return result status of the operation.
      */
     @Result
     public int stop() {
-        return nativeStopFilter();
+        synchronized (mLock) {
+            TunerUtils.checkResourceState(TAG, mIsClosed);
+            return nativeStopFilter();
+        }
     }
 
     /**
@@ -321,7 +456,10 @@ public class Filter implements AutoCloseable {
      */
     @Result
     public int flush() {
-        return nativeFlushFilter();
+        synchronized (mLock) {
+            TunerUtils.checkResourceState(TAG, mIsClosed);
+            return nativeFlushFilter();
+        }
     }
 
     /**
@@ -333,8 +471,11 @@ public class Filter implements AutoCloseable {
      * @return the number of bytes read.
      */
     public int read(@NonNull byte[] buffer, @BytesLong long offset, @BytesLong long size) {
-        size = Math.min(size, buffer.length - offset);
-        return nativeRead(buffer, offset, size);
+        synchronized (mLock) {
+            TunerUtils.checkResourceState(TAG, mIsClosed);
+            size = Math.min(size, buffer.length - offset);
+            return nativeRead(buffer, offset, size);
+        }
     }
 
     /**
@@ -342,9 +483,16 @@ public class Filter implements AutoCloseable {
      */
     @Override
     public void close() {
-        int res = nativeClose();
-        if (res != Tuner.RESULT_SUCCESS) {
-            TunerUtils.throwExceptionForResult(res, "Failed to close filter.");
+        synchronized (mLock) {
+            if (mIsClosed) {
+                return;
+            }
+            int res = nativeClose();
+            if (res != Tuner.RESULT_SUCCESS) {
+                TunerUtils.throwExceptionForResult(res, "Failed to close filter.");
+            } else {
+                mIsClosed = true;
+            }
         }
     }
 }

@@ -26,6 +26,7 @@ import static android.view.contentcapture.ContentCaptureEvent.TYPE_VIEW_INSETS_C
 import static android.view.contentcapture.ContentCaptureEvent.TYPE_VIEW_TEXT_CHANGED;
 import static android.view.contentcapture.ContentCaptureEvent.TYPE_VIEW_TREE_APPEARED;
 import static android.view.contentcapture.ContentCaptureEvent.TYPE_VIEW_TREE_APPEARING;
+import static android.view.contentcapture.ContentCaptureEvent.TYPE_WINDOW_BOUNDS_CHANGED;
 import static android.view.contentcapture.ContentCaptureHelper.getSanitizedString;
 import static android.view.contentcapture.ContentCaptureHelper.sDebug;
 import static android.view.contentcapture.ContentCaptureHelper.sVerbose;
@@ -38,20 +39,28 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.ParceledListSlice;
 import android.graphics.Insets;
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.IBinder.DeathRecipient;
 import android.os.RemoteException;
+import android.text.Selection;
+import android.text.Spannable;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.TextUtils;
 import android.util.LocalLog;
 import android.util.Log;
 import android.util.TimeUtils;
 import android.view.autofill.AutofillId;
 import android.view.contentcapture.ViewNode.ViewStructureImpl;
+import android.view.inputmethod.BaseInputConnection;
 
 import com.android.internal.os.IResultReceiver;
 
 import java.io.PrintWriter;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -121,6 +130,8 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
 
     @Nullable
     private IBinder mApplicationToken;
+    @Nullable
+    private IBinder mShareableActivityToken;
 
     @Nullable
     private ComponentName mComponentName;
@@ -146,7 +157,44 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
      * Binder object used to update the session state.
      */
     @NonNull
-    private final IResultReceiver.Stub mSessionStateReceiver;
+    private final SessionStateReceiver mSessionStateReceiver;
+
+    private static class SessionStateReceiver extends IResultReceiver.Stub {
+        private final WeakReference<MainContentCaptureSession> mMainSession;
+
+        SessionStateReceiver(MainContentCaptureSession session) {
+            mMainSession = new WeakReference<>(session);
+        }
+
+        @Override
+        public void send(int resultCode, Bundle resultData) {
+            final MainContentCaptureSession mainSession = mMainSession.get();
+            if (mainSession == null) {
+                Log.w(TAG, "received result after mina session released");
+                return;
+            }
+            final IBinder binder;
+            if (resultData != null) {
+                // Change in content capture enabled.
+                final boolean hasEnabled = resultData.getBoolean(EXTRA_ENABLED_STATE);
+                if (hasEnabled) {
+                    final boolean disabled = (resultCode == RESULT_CODE_FALSE);
+                    mainSession.mDisabled.set(disabled);
+                    return;
+                }
+                binder = resultData.getBinder(EXTRA_BINDER);
+                if (binder == null) {
+                    Log.wtf(TAG, "No " + EXTRA_BINDER + " extra result");
+                    mainSession.mHandler.post(() -> mainSession.resetSession(
+                            STATE_DISABLED | STATE_INTERNAL_ERROR));
+                    return;
+                }
+            } else {
+                binder = null;
+            }
+            mainSession.mHandler.post(() -> mainSession.onSessionStarted(resultCode, binder));
+        }
+    }
 
     protected MainContentCaptureSession(@NonNull Context context,
             @NonNull ContentCaptureManager manager, @NonNull Handler handler,
@@ -159,32 +207,7 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         final int logHistorySize = mManager.mOptions.logHistorySize;
         mFlushHistory = logHistorySize > 0 ? new LocalLog(logHistorySize) : null;
 
-        mSessionStateReceiver = new IResultReceiver.Stub() {
-            @Override
-            public void send(int resultCode, Bundle resultData) {
-                final IBinder binder;
-                if (resultData != null) {
-                    // Change in content capture enabled.
-                    final boolean hasEnabled = resultData.getBoolean(EXTRA_ENABLED_STATE);
-                    if (hasEnabled) {
-                        final boolean disabled = (resultCode == RESULT_CODE_FALSE);
-                        mDisabled.set(disabled);
-                        return;
-                    }
-                    binder = resultData.getBinder(EXTRA_BINDER);
-                    if (binder == null) {
-                        Log.wtf(TAG, "No " + EXTRA_BINDER + " extra result");
-                        mHandler.post(() -> resetSession(
-                                STATE_DISABLED | STATE_INTERNAL_ERROR));
-                        return;
-                    }
-                } else {
-                    binder = null;
-                }
-                mHandler.post(() -> onSessionStarted(resultCode, binder));
-            }
-        };
-
+        mSessionStateReceiver = new SessionStateReceiver(this);
     }
 
     @Override
@@ -203,8 +226,8 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
      * Starts this session.
      */
     @UiThread
-    void start(@NonNull IBinder token, @NonNull ComponentName component,
-            int flags) {
+    void start(@NonNull IBinder token, @NonNull IBinder shareableActivityToken,
+            @NonNull ComponentName component, int flags) {
         if (!isContentCaptureEnabled()) return;
 
         if (sVerbose) {
@@ -223,6 +246,7 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         }
         mState = STATE_WAITING_FOR_SERVER;
         mApplicationToken = token;
+        mShareableActivityToken = shareableActivityToken;
         mComponentName = component;
 
         if (sVerbose) {
@@ -231,8 +255,8 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         }
 
         try {
-            mSystemServerInterface.startSession(mApplicationToken, component, mId, flags,
-                    mSessionStateReceiver);
+            mSystemServerInterface.startSession(mApplicationToken, mShareableActivityToken,
+                    component, mId, flags, mSessionStateReceiver);
         } catch (RemoteException e) {
             Log.w(TAG, "Error starting session for " + component.flattenToShortString() + ": " + e);
         }
@@ -241,7 +265,13 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
     @Override
     void onDestroy() {
         mHandler.removeMessages(MSG_FLUSH);
-        mHandler.post(() -> destroySession());
+        mHandler.post(() -> {
+            try {
+                flush(FLUSH_REASON_SESSION_FINISHED);
+            } finally {
+                destroySession();
+            }
+        });
     }
 
     /**
@@ -273,6 +303,8 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         } else {
             mState = resultCode;
             mDisabled.set(false);
+            // Flush any pending data immediately as buffering forced until now.
+            flushIfNeeded(FLUSH_REASON_SESSION_CONNECTED);
         }
         if (sVerbose) {
             Log.v(TAG, "handleSessionStarted() result: id=" + mId + " resultCode=" + resultCode
@@ -293,9 +325,11 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         if (!hasStarted() && eventType != ContentCaptureEvent.TYPE_SESSION_STARTED
                 && eventType != ContentCaptureEvent.TYPE_CONTEXT_UPDATED) {
             // TODO(b/120494182): comment when this could happen (dialogs?)
-            Log.v(TAG, "handleSendEvent(" + getDebugState() + ", "
-                    + ContentCaptureEvent.getTypeAsString(eventType)
-                    + "): dropping because session not started yet");
+            if (sVerbose) {
+                Log.v(TAG, "handleSendEvent(" + getDebugState() + ", "
+                        + ContentCaptureEvent.getTypeAsString(eventType)
+                        + "): dropping because session not started yet");
+            }
             return;
         }
         if (mDisabled.get()) {
@@ -316,18 +350,43 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         // Some type of events can be merged together
         boolean addEvent = true;
 
-        if (!mEvents.isEmpty() && eventType == TYPE_VIEW_TEXT_CHANGED) {
-            final ContentCaptureEvent lastEvent = mEvents.get(mEvents.size() - 1);
-
-            // TODO(b/121045053): check if flags match
-            if (lastEvent.getType() == TYPE_VIEW_TEXT_CHANGED
-                    && lastEvent.getId().equals(event.getId())) {
-                if (sVerbose) {
-                    Log.v(TAG, "Buffering VIEW_TEXT_CHANGED event, updated text="
-                            + getSanitizedString(event.getText()));
+        if (eventType == TYPE_VIEW_TEXT_CHANGED) {
+            // We determine whether to add or merge the current event by following criteria:
+            // 1. Don't have composing span: always add.
+            // 2. Have composing span:
+            //    2.1 either last or current text is empty: add.
+            //    2.2 last event doesn't have composing span: add.
+            // Otherwise, merge.
+            final CharSequence text = event.getText();
+            final boolean hasComposingSpan = event.hasComposingSpan();
+            if (hasComposingSpan) {
+                ContentCaptureEvent lastEvent = null;
+                for (int index = mEvents.size() - 1; index >= 0; index--) {
+                    final ContentCaptureEvent tmpEvent = mEvents.get(index);
+                    if (event.getId().equals(tmpEvent.getId())) {
+                        lastEvent = tmpEvent;
+                        break;
+                    }
                 }
-                lastEvent.mergeEvent(event);
-                addEvent = false;
+                if (lastEvent != null && lastEvent.hasComposingSpan()) {
+                    final CharSequence lastText = lastEvent.getText();
+                    final boolean bothNonEmpty = !TextUtils.isEmpty(lastText)
+                            && !TextUtils.isEmpty(text);
+                    boolean equalContent =
+                            TextUtils.equals(lastText, text)
+                            && lastEvent.hasSameComposingSpan(event)
+                            && lastEvent.hasSameSelectionSpan(event);
+                    if (equalContent) {
+                        addEvent = false;
+                    } else if (bothNonEmpty) {
+                        lastEvent.mergeEvent(event);
+                        addEvent = false;
+                    }
+                    if (!addEvent && sVerbose) {
+                        Log.v(TAG, "Buffering VIEW_TEXT_CHANGED event, updated text="
+                                + getSanitizedString(text));
+                    }
+                }
             }
         }
 
@@ -347,6 +406,11 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         if (addEvent) {
             mEvents.add(event);
         }
+
+        // TODO: we need to change when the flush happens so that we don't flush while the
+        //  composing span hasn't changed. But we might need to keep flushing the events for the
+        //  non-editable views and views that don't have the composing state; otherwise some other
+        //  Content Capture features may be delayed.
 
         final int numberEvents = mEvents.size();
 
@@ -382,7 +446,7 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
                         + " after " + numberEvents + " delayed events");
             }
             resetSession(STATE_DISABLED | STATE_NO_RESPONSE);
-            // TODO(b/111276913): blacklist activity / use special flag to indicate that
+            // TODO(b/111276913): denylist activity / use special flag to indicate that
             // when it's launched again
             return;
         }
@@ -520,10 +584,12 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
     private ParceledListSlice<ContentCaptureEvent> clearEvents() {
         // NOTE: we must save a reference to the current mEvents and then set it to to null,
         // otherwise clearing it would clear it in the receiving side if the service is also local.
-        final List<ContentCaptureEvent> events = mEvents == null
-                ? Collections.emptyList()
-                : mEvents;
-        mEvents = null;
+        if (mEvents == null) {
+            return new ParceledListSlice<>(Collections.EMPTY_LIST);
+        }
+
+        final List<ContentCaptureEvent> events = new ArrayList<>(mEvents);
+        mEvents.clear();
         return new ParceledListSlice<>(events);
     }
 
@@ -541,6 +607,11 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
             Log.e(TAG, "Error destroying system-service session " + mId + " for "
                     + getDebugState() + ": " + e);
         }
+
+        if (mDirectServiceInterface != null) {
+            mDirectServiceInterface.asBinder().unlinkToDeath(mDirectServiceVulture, 0);
+        }
+        mDirectServiceInterface = null;
     }
 
     // TODO(b/122454205): once we support multiple sessions, we might need to move some of these
@@ -555,6 +626,7 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         mDisabled.set((newState & STATE_DISABLED) != 0);
         // TODO(b/122454205): must reset children (which currently is owned by superclass)
         mApplicationToken = null;
+        mShareableActivityToken = null;
         mComponentName = null;
         mEvents = null;
         if (mDirectServiceInterface != null) {
@@ -623,54 +695,95 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
     // change should also get get rid of the "internalNotifyXXXX" methods above
     void notifyChildSessionStarted(int parentSessionId, int childSessionId,
             @NonNull ContentCaptureContext clientContext) {
-        sendEvent(new ContentCaptureEvent(childSessionId, TYPE_SESSION_STARTED)
+        mHandler.post(() -> sendEvent(new ContentCaptureEvent(childSessionId, TYPE_SESSION_STARTED)
                 .setParentSessionId(parentSessionId).setClientContext(clientContext),
-                FORCE_FLUSH);
+                FORCE_FLUSH));
     }
 
     void notifyChildSessionFinished(int parentSessionId, int childSessionId) {
-        sendEvent(new ContentCaptureEvent(childSessionId, TYPE_SESSION_FINISHED)
-                .setParentSessionId(parentSessionId), FORCE_FLUSH);
+        mHandler.post(() -> sendEvent(new ContentCaptureEvent(childSessionId, TYPE_SESSION_FINISHED)
+                .setParentSessionId(parentSessionId), FORCE_FLUSH));
     }
 
     void notifyViewAppeared(int sessionId, @NonNull ViewStructureImpl node) {
-        sendEvent(new ContentCaptureEvent(sessionId, TYPE_VIEW_APPEARED)
-                .setViewNode(node.mNode));
+        mHandler.post(() -> sendEvent(new ContentCaptureEvent(sessionId, TYPE_VIEW_APPEARED)
+                .setViewNode(node.mNode)));
     }
 
     /** Public because is also used by ViewRootImpl */
     public void notifyViewDisappeared(int sessionId, @NonNull AutofillId id) {
-        sendEvent(new ContentCaptureEvent(sessionId, TYPE_VIEW_DISAPPEARED).setAutofillId(id));
+        mHandler.post(() -> sendEvent(
+                new ContentCaptureEvent(sessionId, TYPE_VIEW_DISAPPEARED).setAutofillId(id)));
     }
 
     void notifyViewTextChanged(int sessionId, @NonNull AutofillId id, @Nullable CharSequence text) {
-        sendEvent(new ContentCaptureEvent(sessionId, TYPE_VIEW_TEXT_CHANGED).setAutofillId(id)
-                .setText(text));
+        // Since the same CharSequence instance may be reused in the TextView, we need to make
+        // a copy of its content so that its value will not be changed by subsequent updates
+        // in the TextView.
+        final CharSequence eventText = stringOrSpannedStringWithoutNoCopySpans(text);
+
+        final int composingStart;
+        final int composingEnd;
+        if (text instanceof Spannable) {
+            composingStart = BaseInputConnection.getComposingSpanStart((Spannable) text);
+            composingEnd = BaseInputConnection.getComposingSpanEnd((Spannable) text);
+        } else {
+            composingStart = ContentCaptureEvent.MAX_INVALID_VALUE;
+            composingEnd = ContentCaptureEvent.MAX_INVALID_VALUE;
+        }
+
+        final int startIndex = Selection.getSelectionStart(text);
+        final int endIndex = Selection.getSelectionEnd(text);
+        mHandler.post(() -> sendEvent(
+                new ContentCaptureEvent(sessionId, TYPE_VIEW_TEXT_CHANGED)
+                        .setAutofillId(id).setText(eventText)
+                        .setComposingIndex(composingStart, composingEnd)
+                        .setSelectionIndex(startIndex, endIndex)));
+    }
+
+    private CharSequence stringOrSpannedStringWithoutNoCopySpans(CharSequence source) {
+        if (source == null) {
+            return null;
+        } else if (source instanceof Spanned) {
+            return new SpannableString(source, /* ignoreNoCopySpan= */ true);
+        } else {
+            return source.toString();
+        }
     }
 
     /** Public because is also used by ViewRootImpl */
     public void notifyViewInsetsChanged(int sessionId, @NonNull Insets viewInsets) {
-        sendEvent(new ContentCaptureEvent(sessionId, TYPE_VIEW_INSETS_CHANGED)
-                .setInsets(viewInsets));
+        mHandler.post(() -> sendEvent(new ContentCaptureEvent(sessionId, TYPE_VIEW_INSETS_CHANGED)
+                .setInsets(viewInsets)));
     }
 
     /** Public because is also used by ViewRootImpl */
     public void notifyViewTreeEvent(int sessionId, boolean started) {
         final int type = started ? TYPE_VIEW_TREE_APPEARING : TYPE_VIEW_TREE_APPEARED;
-        sendEvent(new ContentCaptureEvent(sessionId, type), FORCE_FLUSH);
+        mHandler.post(() -> sendEvent(new ContentCaptureEvent(sessionId, type), FORCE_FLUSH));
     }
 
     void notifySessionResumed(int sessionId) {
-        sendEvent(new ContentCaptureEvent(sessionId, TYPE_SESSION_RESUMED), FORCE_FLUSH);
+        mHandler.post(() -> sendEvent(
+                new ContentCaptureEvent(sessionId, TYPE_SESSION_RESUMED), FORCE_FLUSH));
     }
 
     void notifySessionPaused(int sessionId) {
-        sendEvent(new ContentCaptureEvent(sessionId, TYPE_SESSION_PAUSED), FORCE_FLUSH);
+        mHandler.post(() -> sendEvent(
+                new ContentCaptureEvent(sessionId, TYPE_SESSION_PAUSED), FORCE_FLUSH));
     }
 
     void notifyContextUpdated(int sessionId, @Nullable ContentCaptureContext context) {
-        sendEvent(new ContentCaptureEvent(sessionId, TYPE_CONTEXT_UPDATED)
-                .setClientContext(context));
+        mHandler.post(() -> sendEvent(new ContentCaptureEvent(sessionId, TYPE_CONTEXT_UPDATED)
+                .setClientContext(context), FORCE_FLUSH));
+    }
+
+    /** public because is also used by ViewRootImpl */
+    public void notifyWindowBoundsChanged(int sessionId, @NonNull Rect bounds) {
+        mHandler.post(() -> sendEvent(
+                new ContentCaptureEvent(sessionId, TYPE_WINDOW_BOUNDS_CHANGED)
+                .setBounds(bounds)
+        ));
     }
 
     @Override
@@ -688,6 +801,10 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         pw.print(prefix); pw.print("state: "); pw.println(getStateAsString(mState));
         if (mApplicationToken != null) {
             pw.print(prefix); pw.print("app token: "); pw.println(mApplicationToken);
+        }
+        if (mShareableActivityToken != null) {
+            pw.print(prefix); pw.print("sharable activity token: ");
+            pw.println(mShareableActivityToken);
         }
         if (mComponentName != null) {
             pw.print(prefix); pw.print("component name: ");

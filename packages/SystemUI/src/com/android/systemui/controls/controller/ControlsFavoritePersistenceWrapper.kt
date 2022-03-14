@@ -25,6 +25,7 @@ import com.android.systemui.backup.BackupHelper
 import libcore.io.IoUtils
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserException
+import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileNotFoundException
@@ -86,6 +87,10 @@ class ControlsFavoritePersistenceWrapper(
      * @param list a list of favorite controls. The list will be stored in the same order.
      */
     fun storeFavorites(structures: List<StructureInfo>) {
+        if (structures.isEmpty() && !file.exists()) {
+            // Do not create a new file to store nothing
+            return
+        }
         executor.execute {
             Log.d(TAG, "Saving data to file: $file")
             val atomicFile = AtomicFile(file)
@@ -152,7 +157,7 @@ class ControlsFavoritePersistenceWrapper(
             return emptyList()
         }
         val reader = try {
-            FileInputStream(file)
+            BufferedInputStream(FileInputStream(file))
         } catch (fnfe: FileNotFoundException) {
             Log.i(TAG, "No file found")
             return emptyList()

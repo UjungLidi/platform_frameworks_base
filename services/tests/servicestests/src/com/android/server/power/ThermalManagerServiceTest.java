@@ -216,11 +216,11 @@ public class ThermalManagerServiceTest {
         verify(mEventListener1, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
                 .times(0)).notifyThrottling(any(Temperature.class));
         verify(mStatusListener1, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
-                .times(1)).onStatusChange(anyInt());
+                .times(1)).onStatusChange(Temperature.THROTTLING_NONE);
         verify(mEventListener2, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
                 .times(0)).notifyThrottling(any(Temperature.class));
         verify(mStatusListener2, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
-                .times(1)).onStatusChange(anyInt());
+                .times(1)).onStatusChange(Temperature.THROTTLING_NONE);
         resetListenerMock();
         mService.onBootPhase(SystemService.PHASE_ACTIVITY_MANAGER_READY);
         ArgumentCaptor<Temperature> captor = ArgumentCaptor.forClass(Temperature.class);
@@ -228,7 +228,7 @@ public class ThermalManagerServiceTest {
                 .times(4)).notifyThrottling(captor.capture());
         assertListEqualsIgnoringOrder(mFakeHal.mTemperatureList, captor.getAllValues());
         verify(mStatusListener1, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
-                .times(1)).onStatusChange(Temperature.THROTTLING_NONE);
+                .times(0)).onStatusChange(Temperature.THROTTLING_NONE);
         captor = ArgumentCaptor.forClass(Temperature.class);
         verify(mEventListener2, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
                 .times(2)).notifyThrottling(captor.capture());
@@ -236,7 +236,7 @@ public class ThermalManagerServiceTest {
                 new ArrayList<>(Arrays.asList(mFakeHal.mSkin1, mFakeHal.mSkin2)),
                 captor.getAllValues());
         verify(mStatusListener2, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
-                .times(1)).onStatusChange(Temperature.THROTTLING_NONE);
+                .times(0)).onStatusChange(Temperature.THROTTLING_NONE);
     }
 
     private void resetListenerMock() {
@@ -284,28 +284,29 @@ public class ThermalManagerServiceTest {
     @Test
     public void testNotify() throws RemoteException {
         int status = Temperature.THROTTLING_SEVERE;
+        // Should only notify event not status
         Temperature newBattery = new Temperature(50, Temperature.TYPE_BATTERY, "batt", status);
         mFakeHal.mCallback.onValues(newBattery);
         verify(mEventListener1, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
                 .times(1)).notifyThrottling(newBattery);
         verify(mStatusListener1, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
-                .times(1)).onStatusChange(status);
+                .times(0)).onStatusChange(anyInt());
         verify(mEventListener2, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
                 .times(0)).notifyThrottling(newBattery);
         verify(mStatusListener2, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
-                .times(1)).onStatusChange(status);
+                .times(0)).onStatusChange(anyInt());
         resetListenerMock();
-        // Should only notify event not status
+        // Notify both event and status
         Temperature newSkin = new Temperature(50, Temperature.TYPE_SKIN, "skin1", status);
         mFakeHal.mCallback.onValues(newSkin);
         verify(mEventListener1, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
                 .times(1)).notifyThrottling(newSkin);
         verify(mStatusListener1, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
-                .times(0)).onStatusChange(anyInt());
+                .times(1)).onStatusChange(status);
         verify(mEventListener2, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
                 .times(1)).notifyThrottling(newSkin);
         verify(mStatusListener2, timeout(CALLBACK_TIMEOUT_MILLI_SEC)
-                .times(0)).onStatusChange(anyInt());
+                .times(1)).onStatusChange(status);
         resetListenerMock();
         // Back to None, should only notify event not status
         status = Temperature.THROTTLING_NONE;
@@ -345,9 +346,12 @@ public class ThermalManagerServiceTest {
 
     @Test
     public void testGetCurrentStatus() throws RemoteException {
-        int status = Temperature.THROTTLING_EMERGENCY;
+        int status = Temperature.THROTTLING_SEVERE;
         Temperature newSkin = new Temperature(100, Temperature.TYPE_SKIN, "skin1", status);
         mFakeHal.mCallback.onValues(newSkin);
+        assertEquals(status, mService.mService.getCurrentThermalStatus());
+        int battStatus = Temperature.THROTTLING_EMERGENCY;
+        Temperature newBattery = new Temperature(60, Temperature.TYPE_BATTERY, "batt", battStatus);
         assertEquals(status, mService.mService.getCurrentThermalStatus());
     }
 

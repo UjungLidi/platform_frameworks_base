@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 The Android Open Source Project
+ * Copyright (C) 2020 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,178 +16,149 @@
 
 package com.android.internal.app;
 
+import static android.graphics.PixelFormat.TRANSLUCENT;
+
 import android.animation.ObjectAnimator;
-import android.animation.TimeAnimator;
+import android.app.ActionBar;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
-import android.content.res.ColorStateList;
-import android.graphics.Bitmap;
-import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.ColorFilter;
-import android.graphics.Matrix;
 import android.graphics.Paint;
-import android.graphics.Path;
-import android.graphics.PixelFormat;
-import android.graphics.Shader;
+import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.util.DisplayMetrics;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
+import android.view.animation.DecelerateInterpolator;
+import android.view.animation.OvershootInterpolator;
+import android.widget.AnalogClock;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 
 import com.android.internal.R;
 
 import org.json.JSONObject;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+
 /**
  * @hide
  */
 public class PlatLogoActivity extends Activity {
-    ImageView mZeroView, mOneView;
-    BackslashDrawable mBackslash;
-    int mClicks;
+    private static final String TAG = "PlatLogoActivity";
 
-    static final Paint sPaint = new Paint();
-    static {
-        sPaint.setStyle(Paint.Style.STROKE);
-        sPaint.setStrokeWidth(4f);
-        sPaint.setStrokeCap(Paint.Cap.SQUARE);
-    }
+    private static final String S_EGG_UNLOCK_SETTING = "egg_mode_s";
+
+    private SettableAnalogClock mClock;
+    private ImageView mLogo;
+    private BubblesDrawable mBg;
 
     @Override
     protected void onPause() {
-        if (mBackslash != null) {
-            mBackslash.stopAnimating();
-        }
-        mClicks = 0;
         super.onPause();
     }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        final float dp = getResources().getDisplayMetrics().density;
 
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
         getWindow().setNavigationBarColor(0);
         getWindow().setStatusBarColor(0);
 
-        getActionBar().hide();
+        final ActionBar ab = getActionBar();
+        if (ab != null) ab.hide();
 
-        setContentView(R.layout.platlogo_layout);
+        final FrameLayout layout = new FrameLayout(this);
 
-        mBackslash = new BackslashDrawable((int) (50 * dp));
+        mClock = new SettableAnalogClock(this);
 
-        mOneView = findViewById(R.id.one);
-        mOneView.setImageDrawable(new OneDrawable());
-        mZeroView = findViewById(R.id.zero);
-        mZeroView.setImageDrawable(new ZeroDrawable());
+        final DisplayMetrics dm = getResources().getDisplayMetrics();
+        final float dp = dm.density;
+        final int minSide = Math.min(dm.widthPixels, dm.heightPixels);
+        final int widgetSize = (int) (minSide * 0.75);
+        final FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(widgetSize, widgetSize);
+        lp.gravity = Gravity.CENTER;
+        layout.addView(mClock, lp);
 
-        final ViewGroup root = (ViewGroup) mOneView.getParent();
-        root.setClipChildren(false);
-        root.setBackground(mBackslash);
-        root.getBackground().setAlpha(0x20);
+        mLogo = new ImageView(this);
+        mLogo.setVisibility(View.GONE);
+        mLogo.setImageResource(R.drawable.platlogo);
+        layout.addView(mLogo, lp);
 
-        View.OnTouchListener tl = new View.OnTouchListener() {
-            float mOffsetX, mOffsetY;
-            long mClickTime;
-            ObjectAnimator mRotAnim;
-            @Override
-            public boolean onTouch(View v, MotionEvent event) {
-                measureTouchPressure(event);
-                switch (event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        v.animate().scaleX(1.1f).scaleY(1.1f);
-                        v.getParent().bringChildToFront(v);
-                        mOffsetX = event.getRawX() - v.getX();
-                        mOffsetY = event.getRawY() - v.getY();
-                        long now = System.currentTimeMillis();
-                        if (now - mClickTime < 350) {
-                            mRotAnim = ObjectAnimator.ofFloat(v, View.ROTATION,
-                                    v.getRotation(), v.getRotation() + 3600);
-                            mRotAnim.setDuration(10000);
-                            mRotAnim.start();
-                            mClickTime = 0;
-                        } else {
-                            mClickTime = now;
-                        }
-                        break;
-                    case MotionEvent.ACTION_MOVE:
-                        v.setX(event.getRawX() - mOffsetX);
-                        v.setY(event.getRawY() - mOffsetY);
-                        v.performHapticFeedback(HapticFeedbackConstants.TEXT_HANDLE_MOVE);
-                        break;
-                    case MotionEvent.ACTION_UP:
-                        v.performClick();
-                        // fall through
-                    case MotionEvent.ACTION_CANCEL:
-                        v.animate().scaleX(1f).scaleY(1f);
-                        if (mRotAnim != null) mRotAnim.cancel();
-                        testOverlap();
-                        break;
-                }
-                return true;
-            }
-        };
+        mBg = new BubblesDrawable();
+        mBg.setLevel(0);
+        mBg.avoid = widgetSize / 2;
+        mBg.padding = 0.5f * dp;
+        mBg.minR = 1 * dp;
+        layout.setBackground(mBg);
 
-        findViewById(R.id.one).setOnTouchListener(tl);
-        findViewById(R.id.zero).setOnTouchListener(tl);
-        findViewById(R.id.text).setOnTouchListener(tl);
+        setContentView(layout);
     }
 
-    private void testOverlap() {
-        final float width = mZeroView.getWidth();
-        final float targetX = mZeroView.getX() + width * .2f;
-        final float targetY = mZeroView.getY() + width * .3f;
-        if (Math.hypot(targetX - mOneView.getX(), targetY - mOneView.getY()) < width * .2f
-                && Math.abs(mOneView.getRotation() % 360 - 315) < 15) {
-            mOneView.animate().x(mZeroView.getX() + width * .2f);
-            mOneView.animate().y(mZeroView.getY() + width * .3f);
-            mOneView.setRotation(mOneView.getRotation() % 360);
-            mOneView.animate().rotation(315);
-            mOneView.performHapticFeedback(HapticFeedbackConstants.CONFIRM);
-
-            mBackslash.startAnimating();
-
-            mClicks++;
-            if (mClicks >= 7) {
-                launchNextStage();
-            }
-        } else {
-            mBackslash.stopAnimating();
-        }
+    private boolean shouldWriteSettings() {
+        return getPackageName().equals("android");
     }
 
-    private void launchNextStage() {
+    private void launchNextStage(boolean locked) {
+        mClock.animate()
+                .alpha(0f).scaleX(0.5f).scaleY(0.5f)
+                .withEndAction(() -> mClock.setVisibility(View.GONE))
+                .start();
+
+        mLogo.setAlpha(0f);
+        mLogo.setScaleX(0.5f);
+        mLogo.setScaleY(0.5f);
+        mLogo.setVisibility(View.VISIBLE);
+        mLogo.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setInterpolator(new OvershootInterpolator())
+                .start();
+
+        mLogo.postDelayed(() -> {
+                    final ObjectAnimator anim = ObjectAnimator.ofInt(mBg, "level", 0, 10000);
+                    anim.setInterpolator(new DecelerateInterpolator(1f));
+                    anim.start();
+                },
+                500
+        );
+
         final ContentResolver cr = getContentResolver();
 
-        if (Settings.System.getLong(cr, "egg_mode" /* Settings.System.EGG_MODE */, 0) == 0) {
-            // For posterity: the moment this user unlocked the easter egg
-            try {
+        try {
+            if (shouldWriteSettings()) {
+                Log.v(TAG, "Saving egg unlock=" + locked);
+                syncTouchPressure();
                 Settings.System.putLong(cr,
-                        "egg_mode", // Settings.System.EGG_MODE,
-                        System.currentTimeMillis());
-            } catch (RuntimeException e) {
-                Log.e("com.android.internal.app.PlatLogoActivity", "Can't write settings", e);
+                        S_EGG_UNLOCK_SETTING,
+                        locked ? 0 : System.currentTimeMillis());
             }
+        } catch (RuntimeException e) {
+            Log.e(TAG, "Can't write settings", e);
         }
+
         try {
             startActivity(new Intent(Intent.ACTION_MAIN)
                     .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                        | Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                            | Intent.FLAG_ACTIVITY_CLEAR_TASK)
                     .addCategory("com.android.internal.category.PLATLOGO"));
         } catch (ActivityNotFoundException ex) {
             Log.e("com.android.internal.app.PlatLogoActivity", "No more eggs.");
         }
-        finish();
+        //finish(); // no longer finish upon unlock; it's fun to frob the dial
     }
 
     static final String TOUCH_STATS = "touch.stats";
@@ -223,7 +194,10 @@ public class PlatLogoActivity extends Activity {
             if (mPressureMax >= 0) {
                 touchData.put("min", mPressureMin);
                 touchData.put("max", mPressureMax);
-                Settings.System.putString(getContentResolver(), TOUCH_STATS, touchData.toString());
+                if (shouldWriteSettings()) {
+                    Settings.System.putString(getContentResolver(), TOUCH_STATS,
+                            touchData.toString());
+                }
             }
         } catch (Exception e) {
             Log.e("com.android.internal.app.PlatLogoActivity", "Can't write touch settings", e);
@@ -242,18 +216,201 @@ public class PlatLogoActivity extends Activity {
         super.onStop();
     }
 
-    static class ZeroDrawable extends Drawable {
-        int mTintColor;
+    /**
+     * Subclass of AnalogClock that allows the user to flip up the glass and adjust the hands.
+     */
+    public class SettableAnalogClock extends AnalogClock {
+        private int mOverrideHour = -1;
+        private int mOverrideMinute = -1;
+        private boolean mOverride = false;
+
+        public SettableAnalogClock(Context context) {
+            super(context);
+        }
+
+        @Override
+        protected Instant now() {
+            final Instant realNow = super.now();
+            final ZoneId tz = Clock.systemDefaultZone().getZone();
+            final ZonedDateTime zdTime = realNow.atZone(tz);
+            if (mOverride) {
+                if (mOverrideHour < 0) {
+                    mOverrideHour = zdTime.getHour();
+                }
+                return Clock.fixed(zdTime
+                        .withHour(mOverrideHour)
+                        .withMinute(mOverrideMinute)
+                        .withSecond(0)
+                        .toInstant(), tz).instant();
+            } else {
+                return realNow;
+            }
+        }
+
+        double toPositiveDegrees(double rad) {
+            return (Math.toDegrees(rad) + 360 - 90) % 360;
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent ev) {
+            switch (ev.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    mOverride = true;
+                    // pass through
+                case MotionEvent.ACTION_MOVE:
+                    measureTouchPressure(ev);
+
+                    float x = ev.getX();
+                    float y = ev.getY();
+                    float cx = getWidth() / 2f;
+                    float cy = getHeight() / 2f;
+                    float angle = (float) toPositiveDegrees(Math.atan2(x - cx, y - cy));
+
+                    int minutes = (75 - (int) (angle / 6)) % 60;
+                    int minuteDelta = minutes - mOverrideMinute;
+                    if (minuteDelta != 0) {
+                        if (Math.abs(minuteDelta) > 45 && mOverrideHour >= 0) {
+                            int hourDelta = (minuteDelta < 0) ? 1 : -1;
+                            mOverrideHour = (mOverrideHour + 24 + hourDelta) % 24;
+                        }
+                        mOverrideMinute = minutes;
+                        if (mOverrideMinute == 0) {
+                            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                            if (getScaleX() == 1f) {
+                                setScaleX(1.05f);
+                                setScaleY(1.05f);
+                                animate().scaleX(1f).scaleY(1f).setDuration(150).start();
+                            }
+                        } else {
+                            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                        }
+
+                        onTimeChanged();
+                        postInvalidate();
+                    }
+
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    if (mOverrideMinute == 0 && (mOverrideHour % 12) == 0) {
+                        Log.v(TAG, "12:00 let's gooooo");
+                        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                        launchNextStage(false);
+                    }
+                    return true;
+            }
+            return false;
+        }
+    }
+
+    static class Bubble {
+        public float x, y, r;
+        public int color;
+    }
+
+    class BubblesDrawable extends Drawable {
+        private static final int MAX_BUBBS = 2000;
+
+        private final int[] mColorIds = {
+                android.R.color.system_accent1_400,
+                android.R.color.system_accent1_500,
+                android.R.color.system_accent1_600,
+
+                android.R.color.system_accent2_400,
+                android.R.color.system_accent2_500,
+                android.R.color.system_accent2_600,
+        };
+
+        private int[] mColors = new int[mColorIds.length];
+
+        private final Bubble[] mBubbs = new Bubble[MAX_BUBBS];
+        private int mNumBubbs;
+
+        private final Paint mPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        public float avoid = 0f;
+        public float padding = 0f;
+        public float minR = 0f;
+
+        BubblesDrawable() {
+            for (int i = 0; i < mColorIds.length; i++) {
+                mColors[i] = getColor(mColorIds[i]);
+            }
+            for (int j = 0; j < mBubbs.length; j++) {
+                mBubbs[j] = new Bubble();
+            }
+        }
 
         @Override
         public void draw(Canvas canvas) {
-            sPaint.setColor(mTintColor | 0xFF000000);
+            final float f = getLevel() / 10000f;
+            mPaint.setStyle(Paint.Style.FILL);
+            int drawn = 0;
+            for (int j = 0; j < mNumBubbs; j++) {
+                if (mBubbs[j].color == 0 || mBubbs[j].r == 0) continue;
+                mPaint.setColor(mBubbs[j].color);
+                canvas.drawCircle(mBubbs[j].x, mBubbs[j].y, mBubbs[j].r * f, mPaint);
+                drawn++;
+            }
+        }
 
-            canvas.save();
-            canvas.scale(canvas.getWidth() / 24f, canvas.getHeight() / 24f);
+        @Override
+        protected boolean onLevelChange(int level) {
+            invalidateSelf();
+            return true;
+        }
 
-            canvas.drawCircle(12f, 12f, 10f, sPaint);
-            canvas.restore();
+        @Override
+        protected void onBoundsChange(Rect bounds) {
+            super.onBoundsChange(bounds);
+            randomize();
+        }
+
+        private void randomize() {
+            final float w = getBounds().width();
+            final float h = getBounds().height();
+            final float maxR = Math.min(w, h) / 3f;
+            mNumBubbs = 0;
+            if (avoid > 0f) {
+                mBubbs[mNumBubbs].x = w / 2f;
+                mBubbs[mNumBubbs].y = h / 2f;
+                mBubbs[mNumBubbs].r = avoid;
+                mBubbs[mNumBubbs].color = 0;
+                mNumBubbs++;
+            }
+            for (int j = 0; j < MAX_BUBBS; j++) {
+                // a simple but time-tested bubble-packing algorithm:
+                // 1. pick a spot
+                // 2. shrink the bubble until it is no longer overlapping any other bubble
+                // 3. if the bubble hasn't popped, keep it
+                int tries = 5;
+                while (tries-- > 0) {
+                    float x = (float) Math.random() * w;
+                    float y = (float) Math.random() * h;
+                    float r = Math.min(Math.min(x, w - x), Math.min(y, h - y));
+
+                    // shrink radius to fit other bubbs
+                    for (int i = 0; i < mNumBubbs; i++) {
+                        r = (float) Math.min(r,
+                                Math.hypot(x - mBubbs[i].x, y - mBubbs[i].y) - mBubbs[i].r
+                                        - padding);
+                        if (r < minR) break;
+                    }
+
+                    if (r >= minR) {
+                        // we have found a spot for this bubble to live, let's save it and move on
+                        r = Math.min(maxR, r);
+
+                        mBubbs[mNumBubbs].x = x;
+                        mBubbs[mNumBubbs].y = y;
+                        mBubbs[mNumBubbs].r = r;
+                        mBubbs[mNumBubbs].color = mColors[(int) (Math.random() * mColors.length)];
+                        mNumBubbs++;
+                        break;
+                    }
+                }
+            }
+            Log.v(TAG, String.format("successfully placed %d bubbles (%d%%)",
+                    mNumBubbs, (int) (100f * mNumBubbs / MAX_BUBBS)));
         }
 
         @Override
@@ -263,128 +420,9 @@ public class PlatLogoActivity extends Activity {
         public void setColorFilter(ColorFilter colorFilter) { }
 
         @Override
-        public void setTintList(ColorStateList tint) {
-            mTintColor = tint.getDefaultColor();
-        }
-
-        @Override
         public int getOpacity() {
-            return PixelFormat.TRANSLUCENT;
+            return TRANSLUCENT;
         }
     }
 
-    static class OneDrawable extends Drawable {
-        int mTintColor;
-
-        @Override
-        public void draw(Canvas canvas) {
-            sPaint.setColor(mTintColor | 0xFF000000);
-
-            canvas.save();
-            canvas.scale(canvas.getWidth() / 24f, canvas.getHeight() / 24f);
-
-            final Path p = new Path();
-            p.moveTo(12f, 21.83f);
-            p.rLineTo(0f, -19.67f);
-            p.rLineTo(-5f, 0f);
-            canvas.drawPath(p, sPaint);
-            canvas.restore();
-        }
-
-        @Override
-        public void setAlpha(int alpha) { }
-
-        @Override
-        public void setColorFilter(ColorFilter colorFilter) { }
-
-        @Override
-        public void setTintList(ColorStateList tint) {
-            mTintColor = tint.getDefaultColor();
-        }
-
-        @Override
-        public int getOpacity() {
-            return PixelFormat.TRANSLUCENT;
-        }
-    }
-
-    private static class BackslashDrawable extends Drawable implements TimeAnimator.TimeListener {
-        Bitmap mTile;
-        Paint mPaint = new Paint();
-        BitmapShader mShader;
-        TimeAnimator mAnimator = new TimeAnimator();
-        Matrix mMatrix = new Matrix();
-
-        public void draw(Canvas canvas) {
-            canvas.drawPaint(mPaint);
-        }
-
-        BackslashDrawable(int width) {
-            mTile = Bitmap.createBitmap(width, width, Bitmap.Config.ALPHA_8);
-            mAnimator.setTimeListener(this);
-
-            final Canvas tileCanvas = new Canvas(mTile);
-            final float w = tileCanvas.getWidth();
-            final float h = tileCanvas.getHeight();
-
-            final Path path = new Path();
-            path.moveTo(0, 0);
-            path.lineTo(w / 2, 0);
-            path.lineTo(w, h / 2);
-            path.lineTo(w, h);
-            path.close();
-
-            path.moveTo(0, h / 2);
-            path.lineTo(w / 2, h);
-            path.lineTo(0, h);
-            path.close();
-
-            final Paint slashPaint = new Paint();
-            slashPaint.setAntiAlias(true);
-            slashPaint.setStyle(Paint.Style.FILL);
-            slashPaint.setColor(0xFF000000);
-            tileCanvas.drawPath(path, slashPaint);
-
-            //mPaint.setColor(0xFF0000FF);
-            mShader = new BitmapShader(mTile, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
-            mPaint.setShader(mShader);
-        }
-
-        public void startAnimating() {
-            if (!mAnimator.isStarted()) {
-                mAnimator.start();
-            }
-        }
-
-        public void stopAnimating() {
-            if (mAnimator.isStarted()) {
-                mAnimator.cancel();
-            }
-        }
-
-        @Override
-        public void setAlpha(int alpha) {
-            mPaint.setAlpha(alpha);
-        }
-
-        @Override
-        public void setColorFilter(ColorFilter colorFilter) {
-            mPaint.setColorFilter(colorFilter);
-        }
-
-        @Override
-        public int getOpacity() {
-            return PixelFormat.TRANSLUCENT;
-        }
-
-        @Override
-        public void onTimeUpdate(TimeAnimator animation, long totalTime, long deltaTime) {
-            if (mShader != null) {
-                mMatrix.postTranslate(deltaTime / 4f, 0);
-                mShader.setLocalMatrix(mMatrix);
-                invalidateSelf();
-            }
-        }
-    }
 }
-

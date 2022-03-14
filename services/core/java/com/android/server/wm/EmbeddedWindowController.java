@@ -28,6 +28,7 @@ import android.util.ArrayMap;
 import android.util.Slog;
 import android.view.IWindow;
 import android.view.InputApplicationHandle;
+import android.view.InputChannel;
 
 /**
  * Keeps track of embedded windows.
@@ -95,7 +96,7 @@ class EmbeddedWindowController {
     void remove(IWindow client) {
         for (int i = mWindows.size() - 1; i >= 0; i--) {
             if (mWindows.valueAt(i).mClient.asBinder() == client.asBinder()) {
-                mWindows.removeAt(i);
+                mWindows.removeAt(i).onRemoved();
                 return;
             }
         }
@@ -104,7 +105,7 @@ class EmbeddedWindowController {
     void onWindowRemoved(WindowState host) {
         for (int i = mWindows.size() - 1; i >= 0; i--) {
             if (mWindows.valueAt(i).mHostWindowState == host) {
-                mWindows.removeAt(i);
+                mWindows.removeAt(i).onRemoved();
             }
         }
     }
@@ -126,14 +127,20 @@ class EmbeddedWindowController {
         }
     }
 
-    static class EmbeddedWindow {
+    static class EmbeddedWindow implements InputTarget {
         final IWindow mClient;
         @Nullable final WindowState mHostWindowState;
         @Nullable final ActivityRecord mHostActivityRecord;
         final int mOwnerUid;
         final int mOwnerPid;
+        final WindowManagerService mWmService;
+        final int mDisplayId;
+        public Session mSession;
+        InputChannel mInputChannel;
+        final int mWindowType;
 
         /**
+         * @param session  calling session to check ownership of the window
          * @param clientToken client token used to clean up the map if the embedding process dies
          * @param hostWindowState input channel token belonging to the host window. This is needed
          *                        to handle input callbacks to wm. It's used when raising ANR and
@@ -141,18 +148,26 @@ class EmbeddedWindowController {
          *                        can be null if there is no host window.
          * @param ownerUid  calling uid
          * @param ownerPid  calling pid used for anr blaming
+         * @param windowType to forward to input
+         * @param displayId used for focus requests
          */
-        EmbeddedWindow(IWindow clientToken, WindowState hostWindowState, int ownerUid,
-                int ownerPid) {
+        EmbeddedWindow(Session session, WindowManagerService service, IWindow clientToken,
+                       WindowState hostWindowState, int ownerUid, int ownerPid, int windowType,
+                       int displayId) {
+            mSession = session;
+            mWmService = service;
             mClient = clientToken;
             mHostWindowState = hostWindowState;
             mHostActivityRecord = (mHostWindowState != null) ? mHostWindowState.mActivityRecord
                     : null;
             mOwnerUid = ownerUid;
             mOwnerPid = ownerPid;
+            mWindowType = windowType;
+            mDisplayId = displayId;
         }
 
-        String getName() {
+        @Override
+        public String toString() {
             final String hostWindowName = (mHostWindowState != null)
                     ? mHostWindowState.getWindowTag().toString() : "Internal";
             return "EmbeddedWindow{ u" + UserHandle.getUserId(mOwnerUid) + " " + hostWindowName
@@ -161,11 +176,45 @@ class EmbeddedWindowController {
 
         InputApplicationHandle getApplicationHandle() {
             if (mHostWindowState == null
-                    || mHostWindowState.mInputWindowHandle.inputApplicationHandle == null) {
+                    || mHostWindowState.mInputWindowHandle.getInputApplicationHandle() == null) {
                 return null;
             }
             return new InputApplicationHandle(
-                    mHostWindowState.mInputWindowHandle.inputApplicationHandle);
+                    mHostWindowState.mInputWindowHandle.getInputApplicationHandle());
+        }
+
+        InputChannel openInputChannel() {
+            final String name = toString();
+            mInputChannel = mWmService.mInputManager.createInputChannel(name);
+            return mInputChannel;
+        }
+
+        void onRemoved() {
+            if (mInputChannel != null) {
+                mWmService.mInputManager.removeInputChannel(mInputChannel.getToken());
+                mInputChannel.dispose();
+                mInputChannel = null;
+            }
+        }
+
+        @Override
+        public WindowState getWindowState() {
+            return mHostWindowState;
+        }
+
+        @Override
+        public int getDisplayId() {
+            return mDisplayId;
+        }
+
+        @Override
+        public IWindow getIWindow() {
+            return mClient;
+        }
+
+        @Override
+        public int getPid() {
+            return mOwnerPid;
         }
     }
 }

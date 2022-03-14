@@ -16,8 +16,11 @@
 
 package android.accessibilityservice;
 
+import static android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
+
 import android.accessibilityservice.GestureDescription.MotionEventGenerator;
 import android.annotation.CallbackExecutor;
+import android.annotation.ColorInt;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -26,6 +29,7 @@ import android.annotation.TestApi;
 import android.app.Service;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.pm.ParceledListSlice;
 import android.graphics.Bitmap;
@@ -35,6 +39,7 @@ import android.graphics.Region;
 import android.hardware.HardwareBuffer;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -48,7 +53,6 @@ import android.util.Slog;
 import android.util.SparseArray;
 import android.view.Display;
 import android.view.KeyEvent;
-import android.view.SurfaceControl;
 import android.view.SurfaceView;
 import android.view.WindowManager;
 import android.view.WindowManagerImpl;
@@ -234,6 +238,29 @@ import java.util.function.Consumer;
  * @see android.view.accessibility.AccessibilityManager
  */
 public abstract class AccessibilityService extends Service {
+
+    /**
+     * The user has performed a touch-exploration gesture on the touch screen without ever
+     * triggering gesture detection. This gesture is only dispatched when {@link
+     * AccessibilityServiceInfo#FLAG_SEND_MOTION_EVENTS} is set.
+     *
+     * @hide
+     */
+    public static final int GESTURE_TOUCH_EXPLORATION = -2;
+
+    /**
+     * The user has performed a passthrough gesture on the touch screen without ever triggering
+     * gesture detection. This gesture is only dispatched when {@link
+     * AccessibilityServiceInfo#FLAG_SEND_MOTION_EVENTS} is set.
+     * @hide
+     */
+    public static final int GESTURE_PASSTHROUGH = -1;
+
+    /**
+     * The user has performed an unrecognized gesture on the touch screen. This gesture is only
+     * dispatched when {@link AccessibilityServiceInfo#FLAG_SEND_MOTION_EVENTS} is set.
+     */
+    public static final int GESTURE_UNKNOWN = 0;
 
     /**
      * The user has performed a swipe up gesture on the touch screen.
@@ -422,6 +449,15 @@ public abstract class AccessibilityService extends Service {
     /** The user has performed a three-finger double tap and hold gesture on the touch screen. */
     public static final int GESTURE_3_FINGER_DOUBLE_TAP_AND_HOLD = 41;
 
+    /** The user has performed a two-finger  triple-tap and hold gesture on the touch screen. */
+    public static final int GESTURE_2_FINGER_TRIPLE_TAP_AND_HOLD = 43;
+
+    /** The user has performed a three-finger  single-tap and hold gesture on the touch screen. */
+    public static final int GESTURE_3_FINGER_SINGLE_TAP_AND_HOLD = 44;
+
+    /** The user has performed a three-finger  triple-tap and hold gesture on the touch screen. */
+    public static final int GESTURE_3_FINGER_TRIPLE_TAP_AND_HOLD = 45;
+
     /** The user has performed a two-finger double tap and hold gesture on the touch screen. */
     public static final int GESTURE_4_FINGER_DOUBLE_TAP_AND_HOLD = 42;
 
@@ -482,7 +518,9 @@ public abstract class AccessibilityService extends Service {
     public static final int GLOBAL_ACTION_POWER_DIALOG = 6;
 
     /**
-     * Action to toggle docking the current app's window
+     * Action to toggle docking the current app's window.
+     * <p>
+     * <strong>Note:</strong>  It is effective only if it appears in {@link #getSystemActions()}.
      */
     public static final int GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN = 7;
 
@@ -495,6 +533,38 @@ public abstract class AccessibilityService extends Service {
      * Action to take a screenshot
      */
     public static final int GLOBAL_ACTION_TAKE_SCREENSHOT = 9;
+
+    /**
+     * Action to send the KEYCODE_HEADSETHOOK KeyEvent, which is used to answer/hang up calls and
+     * play/stop media
+     */
+    public static final int GLOBAL_ACTION_KEYCODE_HEADSETHOOK = 10;
+
+    /**
+     * Action to trigger the Accessibility Button
+     */
+    public static final int GLOBAL_ACTION_ACCESSIBILITY_BUTTON = 11;
+
+    /**
+     * Action to bring up the Accessibility Button's chooser menu
+     */
+    public static final int GLOBAL_ACTION_ACCESSIBILITY_BUTTON_CHOOSER = 12;
+
+    /**
+     * Action to trigger the Accessibility Shortcut. This shortcut has a hardware trigger and can
+     * be activated by holding down the two volume keys.
+     */
+    public static final int GLOBAL_ACTION_ACCESSIBILITY_SHORTCUT = 13;
+
+    /**
+     * Action to show Launcher's all apps.
+     */
+    public static final int GLOBAL_ACTION_ACCESSIBILITY_ALL_APPS = 14;
+
+    /**
+     * Action to dismiss the notification shade
+     */
+    public static final int GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE = 15;
 
     private static final String LOG_TAG = "AccessibilityService";
 
@@ -621,7 +691,7 @@ public abstract class AccessibilityService extends Service {
      * @hide
      */
     @TestApi
-    public static final int ACCESSIBILITY_TAKE_SCREENSHOT_REQUEST_INTERVAL_TIMES_MS = 1000;
+    public static final int ACCESSIBILITY_TAKE_SCREENSHOT_REQUEST_INTERVAL_TIMES_MS = 333;
 
     /** @hide */
     public static final String KEY_ACCESSIBILITY_SCREENSHOT_STATUS =
@@ -822,7 +892,7 @@ public abstract class AccessibilityService extends Service {
      *         them, otherwise an empty list.
      */
     public List<AccessibilityWindowInfo> getWindows() {
-        return AccessibilityInteractionClient.getInstance().getWindows(mConnectionId);
+        return AccessibilityInteractionClient.getInstance(this).getWindows(mConnectionId);
     }
 
     /**
@@ -850,7 +920,8 @@ public abstract class AccessibilityService extends Service {
      */
     @NonNull
     public final SparseArray<List<AccessibilityWindowInfo>> getWindowsOnAllDisplays() {
-        return AccessibilityInteractionClient.getInstance().getWindowsOnAllDisplays(mConnectionId);
+        return AccessibilityInteractionClient.getInstance(this).getWindowsOnAllDisplays(
+                mConnectionId);
     }
 
     /**
@@ -876,7 +947,8 @@ public abstract class AccessibilityService extends Service {
      * @return The root node if this service can retrieve window content.
      */
     public AccessibilityNodeInfo getRootInActiveWindow() {
-        return AccessibilityInteractionClient.getInstance().getRootInActiveWindow(mConnectionId);
+        return AccessibilityInteractionClient.getInstance(this).getRootInActiveWindow(
+                mConnectionId);
     }
 
     /**
@@ -885,7 +957,7 @@ public abstract class AccessibilityService extends Service {
      */
     public final void disableSelf() {
         final IAccessibilityServiceConnection connection =
-                AccessibilityInteractionClient.getInstance().getConnection(mConnectionId);
+                AccessibilityInteractionClient.getInstance(this).getConnection(mConnectionId);
         if (connection != null) {
             try {
                 connection.disableSelf();
@@ -895,30 +967,31 @@ public abstract class AccessibilityService extends Service {
         }
     }
 
+    @NonNull
     @Override
     public Context createDisplayContext(Display display) {
-        final Context context = super.createDisplayContext(display);
-        final int displayId = display.getDisplayId();
-        setDefaultTokenInternal(context, displayId);
-        return context;
+        return new AccessibilityContext(super.createDisplayContext(display), mConnectionId);
     }
 
-    private void setDefaultTokenInternal(Context context, int displayId) {
-        final WindowManagerImpl wm = (WindowManagerImpl) context.getSystemService(WINDOW_SERVICE);
-        final IAccessibilityServiceConnection connection =
-                AccessibilityInteractionClient.getInstance().getConnection(mConnectionId);
-        IBinder token = null;
-        if (connection != null) {
-            synchronized (mLock) {
-                try {
-                    token = connection.getOverlayWindowToken(displayId);
-                } catch (RemoteException re) {
-                    Log.w(LOG_TAG, "Failed to get window token", re);
-                    re.rethrowFromSystemServer();
-                }
-            }
-            wm.setDefaultToken(token);
+    @NonNull
+    @Override
+    public Context createWindowContext(int type, @Nullable Bundle options) {
+        final Context context = super.createWindowContext(type, options);
+        if (type != TYPE_ACCESSIBILITY_OVERLAY) {
+            return context;
         }
+        return new AccessibilityContext(context, mConnectionId);
+    }
+
+    @NonNull
+    @Override
+    public Context createWindowContext(@NonNull Display display, int type,
+            @Nullable Bundle options) {
+        final Context context = super.createWindowContext(display, type, options);
+        if (type != TYPE_ACCESSIBILITY_OVERLAY) {
+            return context;
+        }
+        return new AccessibilityContext(context, mConnectionId);
     }
 
     /**
@@ -978,7 +1051,7 @@ public abstract class AccessibilityService extends Service {
     public final @NonNull FingerprintGestureController getFingerprintGestureController() {
         if (mFingerprintGestureController == null) {
             mFingerprintGestureController = new FingerprintGestureController(
-                    AccessibilityInteractionClient.getInstance().getConnection(mConnectionId));
+                AccessibilityInteractionClient.getInstance(this).getConnection(mConnectionId));
         }
         return mFingerprintGestureController;
     }
@@ -1010,8 +1083,7 @@ public abstract class AccessibilityService extends Service {
             @Nullable GestureResultCallback callback,
             @Nullable Handler handler) {
         final IAccessibilityServiceConnection connection =
-                AccessibilityInteractionClient.getInstance().getConnection(
-                        mConnectionId);
+                AccessibilityInteractionClient.getInstance(this).getConnection(mConnectionId);
         if (connection == null) {
             return false;
         }
@@ -1223,7 +1295,7 @@ public abstract class AccessibilityService extends Service {
 
         private void setMagnificationCallbackEnabled(boolean enabled) {
             final IAccessibilityServiceConnection connection =
-                    AccessibilityInteractionClient.getInstance().getConnection(
+                    AccessibilityInteractionClient.getInstance(mService).getConnection(
                             mService.mConnectionId);
             if (connection != null) {
                 try {
@@ -1284,7 +1356,7 @@ public abstract class AccessibilityService extends Service {
          */
         public float getScale() {
             final IAccessibilityServiceConnection connection =
-                    AccessibilityInteractionClient.getInstance().getConnection(
+                    AccessibilityInteractionClient.getInstance(mService).getConnection(
                             mService.mConnectionId);
             if (connection != null) {
                 try {
@@ -1313,7 +1385,7 @@ public abstract class AccessibilityService extends Service {
          */
         public float getCenterX() {
             final IAccessibilityServiceConnection connection =
-                    AccessibilityInteractionClient.getInstance().getConnection(
+                    AccessibilityInteractionClient.getInstance(mService).getConnection(
                             mService.mConnectionId);
             if (connection != null) {
                 try {
@@ -1342,7 +1414,7 @@ public abstract class AccessibilityService extends Service {
          */
         public float getCenterY() {
             final IAccessibilityServiceConnection connection =
-                    AccessibilityInteractionClient.getInstance().getConnection(
+                    AccessibilityInteractionClient.getInstance(mService).getConnection(
                             mService.mConnectionId);
             if (connection != null) {
                 try {
@@ -1376,7 +1448,7 @@ public abstract class AccessibilityService extends Service {
         @NonNull
         public Region getMagnificationRegion() {
             final IAccessibilityServiceConnection connection =
-                    AccessibilityInteractionClient.getInstance().getConnection(
+                    AccessibilityInteractionClient.getInstance(mService).getConnection(
                             mService.mConnectionId);
             if (connection != null) {
                 try {
@@ -1405,7 +1477,7 @@ public abstract class AccessibilityService extends Service {
          */
         public boolean reset(boolean animate) {
             final IAccessibilityServiceConnection connection =
-                    AccessibilityInteractionClient.getInstance().getConnection(
+                    AccessibilityInteractionClient.getInstance(mService).getConnection(
                             mService.mConnectionId);
             if (connection != null) {
                 try {
@@ -1433,7 +1505,7 @@ public abstract class AccessibilityService extends Service {
          */
         public boolean setScale(float scale, boolean animate) {
             final IAccessibilityServiceConnection connection =
-                    AccessibilityInteractionClient.getInstance().getConnection(
+                    AccessibilityInteractionClient.getInstance(mService).getConnection(
                             mService.mConnectionId);
             if (connection != null) {
                 try {
@@ -1465,7 +1537,7 @@ public abstract class AccessibilityService extends Service {
          */
         public boolean setCenter(float centerX, float centerY, boolean animate) {
             final IAccessibilityServiceConnection connection =
-                    AccessibilityInteractionClient.getInstance().getConnection(
+                    AccessibilityInteractionClient.getInstance(mService).getConnection(
                             mService.mConnectionId);
             if (connection != null) {
                 try {
@@ -1637,7 +1709,7 @@ public abstract class AccessibilityService extends Service {
 
         private void setSoftKeyboardCallbackEnabled(boolean enabled) {
             final IAccessibilityServiceConnection connection =
-                    AccessibilityInteractionClient.getInstance().getConnection(
+                    AccessibilityInteractionClient.getInstance(mService).getConnection(
                             mService.mConnectionId);
             if (connection != null) {
                 try {
@@ -1696,7 +1768,7 @@ public abstract class AccessibilityService extends Service {
         @SoftKeyboardShowMode
         public int getShowMode() {
             final IAccessibilityServiceConnection connection =
-                    AccessibilityInteractionClient.getInstance().getConnection(
+                    AccessibilityInteractionClient.getInstance(mService).getConnection(
                             mService.mConnectionId);
             if (connection != null) {
                 try {
@@ -1725,7 +1797,7 @@ public abstract class AccessibilityService extends Service {
          */
         public boolean setShowMode(@SoftKeyboardShowMode int showMode) {
            final IAccessibilityServiceConnection connection =
-                   AccessibilityInteractionClient.getInstance().getConnection(
+                   AccessibilityInteractionClient.getInstance(mService).getConnection(
                            mService.mConnectionId);
            if (connection != null) {
                try {
@@ -1771,7 +1843,7 @@ public abstract class AccessibilityService extends Service {
          */
         public boolean switchToInputMethod(@NonNull String imeId) {
             final IAccessibilityServiceConnection connection =
-                    AccessibilityInteractionClient.getInstance().getConnection(
+                    AccessibilityInteractionClient.getInstance(mService).getConnection(
                             mService.mConnectionId);
             if (connection != null) {
                 try {
@@ -1824,7 +1896,7 @@ public abstract class AccessibilityService extends Service {
                     displayId);
             if (controller == null) {
                 controller = new AccessibilityButtonController(
-                        AccessibilityInteractionClient.getInstance().getConnection(mConnectionId));
+                    AccessibilityInteractionClient.getInstance(this).getConnection(mConnectionId));
                 mAccessibilityButtonControllers.put(displayId, controller);
             }
             return controller;
@@ -1858,7 +1930,7 @@ public abstract class AccessibilityService extends Service {
      */
     public final @NonNull List<AccessibilityAction> getSystemActions() {
         IAccessibilityServiceConnection connection =
-                AccessibilityInteractionClient.getInstance().getConnection(mConnectionId);
+                AccessibilityInteractionClient.getInstance(this).getConnection(mConnectionId);
         if (connection != null) {
             try {
                 return connection.getSystemActions();
@@ -1876,6 +1948,11 @@ public abstract class AccessibilityService extends Service {
      * location in that application. For example going back, going
      * home, opening recents, etc.
      *
+     * <p>
+     * Note: The global action ids themselves give no information about the current availability
+     * of their corresponding actions. To determine if a global action is available, use
+     * {@link #getSystemActions()}
+     *
      * @param action The action to perform.
      * @return Whether the action was successfully performed.
      *
@@ -1886,7 +1963,7 @@ public abstract class AccessibilityService extends Service {
      */
     public final boolean performGlobalAction(int action) {
         IAccessibilityServiceConnection connection =
-            AccessibilityInteractionClient.getInstance().getConnection(mConnectionId);
+                AccessibilityInteractionClient.getInstance(this).getConnection(mConnectionId);
         if (connection != null) {
             try {
                 return connection.performGlobalAction(action);
@@ -1927,7 +2004,7 @@ public abstract class AccessibilityService extends Service {
      * @see AccessibilityNodeInfo#FOCUS_ACCESSIBILITY
      */
     public AccessibilityNodeInfo findFocus(int focus) {
-        return AccessibilityInteractionClient.getInstance().findFocus(mConnectionId,
+        return AccessibilityInteractionClient.getInstance(this).findFocus(mConnectionId,
                 AccessibilityWindowInfo.ANY_WINDOW_ID, AccessibilityNodeInfo.ROOT_NODE_ID, focus);
     }
 
@@ -1943,7 +2020,7 @@ public abstract class AccessibilityService extends Service {
      */
     public final AccessibilityServiceInfo getServiceInfo() {
         IAccessibilityServiceConnection connection =
-            AccessibilityInteractionClient.getInstance().getConnection(mConnectionId);
+                AccessibilityInteractionClient.getInstance(this).getConnection(mConnectionId);
         if (connection != null) {
             try {
                 return connection.getServiceInfo();
@@ -1975,12 +2052,12 @@ public abstract class AccessibilityService extends Service {
      */
     private void sendServiceInfo() {
         IAccessibilityServiceConnection connection =
-            AccessibilityInteractionClient.getInstance().getConnection(mConnectionId);
+                AccessibilityInteractionClient.getInstance(this).getConnection(mConnectionId);
         if (mInfo != null && connection != null) {
             try {
                 connection.setServiceInfo(mInfo);
                 mInfo = null;
-                AccessibilityInteractionClient.getInstance().clearCache();
+                AccessibilityInteractionClient.getInstance(this).clearCache();
             } catch (RemoteException re) {
                 Log.w(LOG_TAG, "Error while setting AccessibilityServiceInfo", re);
                 re.rethrowFromSystemServer();
@@ -1999,6 +2076,10 @@ public abstract class AccessibilityService extends Service {
         if (WINDOW_SERVICE.equals(name)) {
             if (mWindowManager == null) {
                 mWindowManager = (WindowManager) getBaseContext().getSystemService(name);
+                final WindowManagerImpl wm = (WindowManagerImpl) mWindowManager;
+                // Set e default token obtained from the connection to ensure client could use
+                // accessibility overlay.
+                wm.setDefaultToken(mWindowToken);
             }
             return mWindowManager;
         }
@@ -2014,8 +2095,6 @@ public abstract class AccessibilityService extends Service {
      * to declare the capability to take screenshot by setting the
      * {@link android.R.styleable#AccessibilityService_canTakeScreenshot}
      * property in its meta-data. For details refer to {@link #SERVICE_META_DATA}.
-     * This API only will support {@link Display#DEFAULT_DISPLAY} until {@link SurfaceControl}
-     * supports non-default displays.
      * </p>
      *
      * @param displayId The logic display id, must be {@link Display#DEFAULT_DISPLAY} for
@@ -2023,21 +2102,13 @@ public abstract class AccessibilityService extends Service {
      * @param executor Executor on which to run the callback.
      * @param callback The callback invoked when taking screenshot has succeeded or failed.
      *                 See {@link TakeScreenshotCallback} for details.
-     *
-     * @throws IllegalArgumentException if displayId is not {@link Display#DEFAULT_DISPLAY}.
      */
     public void takeScreenshot(int displayId, @NonNull @CallbackExecutor Executor executor,
             @NonNull TakeScreenshotCallback callback) {
         Preconditions.checkNotNull(executor, "executor cannot be null");
         Preconditions.checkNotNull(callback, "callback cannot be null");
-
-        if (displayId != Display.DEFAULT_DISPLAY) {
-            throw new IllegalArgumentException("DisplayId isn't the default display");
-        }
-
         final IAccessibilityServiceConnection connection =
-                AccessibilityInteractionClient.getInstance().getConnection(
-                        mConnectionId);
+                AccessibilityInteractionClient.getInstance(this).getConnection(mConnectionId);
         if (connection == null) {
             sendScreenshotFailure(ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR, executor, callback);
             return;
@@ -2060,6 +2131,31 @@ public abstract class AccessibilityService extends Service {
             }));
         } catch (RemoteException re) {
             throw new RuntimeException(re);
+        }
+    }
+
+    /**
+     * Sets the strokeWidth and color of the accessibility focus rectangle.
+     * <p>
+     * <strong>Note:</strong> This setting persists until this or another active
+     * AccessibilityService changes it or the device reboots.
+     * </p>
+     *
+     * @param strokeWidth The stroke width of the rectangle in pixels.
+     *                    Setting this value to zero results in no focus rectangle being drawn.
+     * @param color The color of the rectangle.
+     */
+    public void setAccessibilityFocusAppearance(int strokeWidth, @ColorInt int color) {
+        IAccessibilityServiceConnection connection =
+                AccessibilityInteractionClient.getInstance(this).getConnection(mConnectionId);
+        if (connection != null) {
+            try {
+                connection.setFocusAppearance(strokeWidth, color);
+            } catch (RemoteException re) {
+                Log.w(LOG_TAG, "Error while setting the strokeWidth and color of the "
+                        + "accessibility focus rectangle", re);
+                re.rethrowFromSystemServer();
+            }
         }
     }
 
@@ -2092,8 +2188,10 @@ public abstract class AccessibilityService extends Service {
 
                 // The client may have already obtained the window manager, so
                 // update the default token on whatever manager we gave them.
-                final WindowManagerImpl wm = (WindowManagerImpl) getSystemService(WINDOW_SERVICE);
-                wm.setDefaultToken(windowToken);
+                if (mWindowManager != null) {
+                    final WindowManagerImpl wm = (WindowManagerImpl) mWindowManager;
+                    wm.setDefaultToken(mWindowToken);
+                }
             }
 
             @Override
@@ -2176,12 +2274,14 @@ public abstract class AccessibilityService extends Service {
         private final HandlerCaller mCaller;
 
         private final Callbacks mCallback;
+        private final Context mContext;
 
         private int mConnectionId = AccessibilityInteractionClient.NO_ID;
 
         public IAccessibilityServiceClientWrapper(Context context, Looper looper,
                 Callbacks callback) {
             mCallback = callback;
+            mContext = context;
             mCaller = new HandlerCaller(context, looper, this, true /*asyncHandler*/);
         }
 
@@ -2281,7 +2381,8 @@ public abstract class AccessibilityService extends Service {
                     boolean serviceWantsEvent = message.arg1 != 0;
                     if (event != null) {
                         // Send the event to AccessibilityCache via AccessibilityInteractionClient
-                        AccessibilityInteractionClient.getInstance().onAccessibilityEvent(event);
+                        AccessibilityInteractionClient.getInstance(mContext).onAccessibilityEvent(
+                                event);
                         if (serviceWantsEvent
                                 && (mConnectionId != AccessibilityInteractionClient.NO_ID)) {
                             // Send the event to AccessibilityService
@@ -2310,15 +2411,15 @@ public abstract class AccessibilityService extends Service {
                     IBinder windowToken = (IBinder) args.arg2;
                     args.recycle();
                     if (connection != null) {
-                        AccessibilityInteractionClient.getInstance().addConnection(mConnectionId,
-                                connection);
+                        AccessibilityInteractionClient.getInstance(mContext).addConnection(
+                                mConnectionId, connection);
                         mCallback.init(mConnectionId, windowToken);
                         mCallback.onServiceConnected();
                     } else {
-                        AccessibilityInteractionClient.getInstance().removeConnection(
+                        AccessibilityInteractionClient.getInstance(mContext).removeConnection(
                                 mConnectionId);
                         mConnectionId = AccessibilityInteractionClient.NO_ID;
-                        AccessibilityInteractionClient.getInstance().clearCache();
+                        AccessibilityInteractionClient.getInstance(mContext).clearCache();
                         mCallback.init(AccessibilityInteractionClient.NO_ID, null);
                     }
                     return;
@@ -2330,14 +2431,14 @@ public abstract class AccessibilityService extends Service {
                     return;
                 }
                 case DO_CLEAR_ACCESSIBILITY_CACHE: {
-                    AccessibilityInteractionClient.getInstance().clearCache();
+                    AccessibilityInteractionClient.getInstance(mContext).clearCache();
                     return;
                 }
                 case DO_ON_KEY_EVENT: {
                     KeyEvent event = (KeyEvent) message.obj;
                     try {
                         IAccessibilityServiceConnection connection = AccessibilityInteractionClient
-                                .getInstance().getConnection(mConnectionId);
+                                .getInstance(mContext).getConnection(mConnectionId);
                         if (connection != null) {
                             final boolean result = mCallback.onKeyEvent(event);
                             final int sequence = message.arg1;
@@ -2552,7 +2653,7 @@ public abstract class AccessibilityService extends Service {
     public void setGestureDetectionPassthroughRegion(int displayId, @NonNull Region region) {
         Preconditions.checkNotNull(region, "region cannot be null");
         final IAccessibilityServiceConnection connection =
-                AccessibilityInteractionClient.getInstance().getConnection(mConnectionId);
+                AccessibilityInteractionClient.getInstance(this).getConnection(mConnectionId);
         if (connection != null) {
             try {
                 connection.setGestureDetectionPassthroughRegion(displayId, region);
@@ -2578,12 +2679,66 @@ public abstract class AccessibilityService extends Service {
     public void setTouchExplorationPassthroughRegion(int displayId, @NonNull Region region) {
         Preconditions.checkNotNull(region, "region cannot be null");
         final IAccessibilityServiceConnection connection =
-                AccessibilityInteractionClient.getInstance().getConnection(mConnectionId);
+                AccessibilityInteractionClient.getInstance(this).getConnection(mConnectionId);
         if (connection != null) {
             try {
                 connection.setTouchExplorationPassthroughRegion(displayId, region);
             } catch (RemoteException re) {
                 throw new RuntimeException(re);
+            }
+        }
+    }
+
+    private static class AccessibilityContext extends ContextWrapper {
+        private final int mConnectionId;
+
+        private AccessibilityContext(Context base, int connectionId) {
+            super(base);
+            mConnectionId = connectionId;
+            setDefaultTokenInternal(this, getDisplayId());
+        }
+
+        @NonNull
+        @Override
+        public Context createDisplayContext(Display display) {
+            return new AccessibilityContext(super.createDisplayContext(display), mConnectionId);
+        }
+
+        @NonNull
+        @Override
+        public Context createWindowContext(int type, @Nullable Bundle options) {
+            final Context context = super.createWindowContext(type, options);
+            if (type != TYPE_ACCESSIBILITY_OVERLAY) {
+                return context;
+            }
+            return new AccessibilityContext(context, mConnectionId);
+        }
+
+        @NonNull
+        @Override
+        public Context createWindowContext(@NonNull Display display, int type,
+                @Nullable Bundle options) {
+            final Context context = super.createWindowContext(display, type, options);
+            if (type != TYPE_ACCESSIBILITY_OVERLAY) {
+                return context;
+            }
+            return new AccessibilityContext(context, mConnectionId);
+        }
+
+        private void setDefaultTokenInternal(Context context, int displayId) {
+            final WindowManagerImpl wm = (WindowManagerImpl) context.getSystemService(
+                    WINDOW_SERVICE);
+            final IAccessibilityServiceConnection connection =
+                    AccessibilityInteractionClient.getConnection(mConnectionId);
+            IBinder token = null;
+            if (connection != null) {
+                try {
+                    token = connection.getOverlayWindowToken(displayId);
+                } catch (RemoteException re) {
+                    Log.w(LOG_TAG, "Failed to get window token", re);
+                    re.rethrowFromSystemServer();
+                }
+                wm.setDefaultToken(token);
             }
         }
     }

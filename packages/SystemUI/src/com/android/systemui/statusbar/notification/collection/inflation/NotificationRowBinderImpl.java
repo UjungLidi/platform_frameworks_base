@@ -24,6 +24,7 @@ import android.os.Build;
 import android.view.ViewGroup;
 
 import com.android.internal.util.NotificationMessagingUtil;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.statusbar.NotificationLockscreenUserManager;
 import com.android.systemui.statusbar.NotificationPresenter;
 import com.android.systemui.statusbar.NotificationRemoteInputManager;
@@ -32,7 +33,6 @@ import com.android.systemui.statusbar.notification.InflationException;
 import com.android.systemui.statusbar.notification.NotificationClicker;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.icon.IconManager;
-import com.android.systemui.statusbar.notification.interruption.NotificationInterruptStateProvider;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRowController;
 import com.android.systemui.statusbar.notification.row.NotifBindPipeline;
@@ -45,10 +45,9 @@ import com.android.systemui.statusbar.notification.stack.NotificationListContain
 
 import javax.inject.Inject;
 import javax.inject.Provider;
-import javax.inject.Singleton;
 
 /** Handles inflating and updating views for notifications. */
-@Singleton
+@SysUISingleton
 public class NotificationRowBinderImpl implements NotificationRowBinder {
 
     private static final String TAG = "NotificationViewManager";
@@ -59,11 +58,11 @@ public class NotificationRowBinderImpl implements NotificationRowBinder {
     private final NotificationLockscreenUserManager mNotificationLockscreenUserManager;
     private final NotifBindPipeline mNotifBindPipeline;
     private final RowContentBindStage mRowContentBindStage;
-    private final NotificationInterruptStateProvider mNotificationInterruptStateProvider;
     private final Provider<RowInflaterTask> mRowInflaterTaskProvider;
     private final ExpandableNotificationRowComponent.Builder
             mExpandableNotificationRowComponentBuilder;
     private final IconManager mIconManager;
+    private final LowPriorityInflationHelper mLowPriorityInflationHelper;
 
     private NotificationPresenter mPresenter;
     private NotificationListContainer mListContainer;
@@ -78,20 +77,20 @@ public class NotificationRowBinderImpl implements NotificationRowBinder {
             NotificationLockscreenUserManager notificationLockscreenUserManager,
             NotifBindPipeline notifBindPipeline,
             RowContentBindStage rowContentBindStage,
-            NotificationInterruptStateProvider notificationInterruptionStateProvider,
             Provider<RowInflaterTask> rowInflaterTaskProvider,
             ExpandableNotificationRowComponent.Builder expandableNotificationRowComponentBuilder,
-            IconManager iconManager) {
+            IconManager iconManager,
+            LowPriorityInflationHelper lowPriorityInflationHelper) {
         mContext = context;
         mNotifBindPipeline = notifBindPipeline;
         mRowContentBindStage = rowContentBindStage;
         mMessagingUtil = notificationMessagingUtil;
         mNotificationRemoteInputManager = notificationRemoteInputManager;
         mNotificationLockscreenUserManager = notificationLockscreenUserManager;
-        mNotificationInterruptStateProvider = notificationInterruptionStateProvider;
         mRowInflaterTaskProvider = rowInflaterTaskProvider;
         mExpandableNotificationRowComponentBuilder = expandableNotificationRowComponentBuilder;
         mIconManager = iconManager;
+        mLowPriorityInflationHelper = lowPriorityInflationHelper;
     }
 
     /**
@@ -117,7 +116,6 @@ public class NotificationRowBinderImpl implements NotificationRowBinder {
     @Override
     public void inflateViews(
             NotificationEntry entry,
-            Runnable onDismissRunnable,
             NotificationRowContentBinder.InflationCallback callback)
             throws InflationException {
         ViewGroup parent = mListContainer.getViewParentForNotification(entry);
@@ -128,7 +126,6 @@ public class NotificationRowBinderImpl implements NotificationRowBinder {
             row.reset();
             updateRow(entry, row);
             inflateContentViews(entry, row, callback);
-            entry.getRowController().setOnDismissRunnable(onDismissRunnable);
         } else {
             mIconManager.createIcons(entry);
             mRowInflaterTaskProvider.get().inflate(mContext, parent, entry,
@@ -138,13 +135,12 @@ public class NotificationRowBinderImpl implements NotificationRowBinder {
                                 mExpandableNotificationRowComponentBuilder
                                         .expandableNotificationRow(row)
                                         .notificationEntry(entry)
-                                        .onDismissRunnable(onDismissRunnable)
-                                        .rowContentBindStage(mRowContentBindStage)
                                         .onExpandClickListener(mPresenter)
+                                        .listContainer(mListContainer)
                                         .build();
                         ExpandableNotificationRowController rowController =
                                 component.getExpandableNotificationRowController();
-                        rowController.init();
+                        rowController.init(entry);
                         entry.setRowController(rowController);
                         bindRow(entry, row);
                         updateRow(entry, row);
@@ -164,7 +160,6 @@ public class NotificationRowBinderImpl implements NotificationRowBinder {
         mNotificationRemoteInputManager.bindRow(row);
         row.setOnActivatedListener(mPresenter);
         entry.setRow(row);
-        row.setEntry(entry);
         mNotifBindPipeline.manageRow(entry, row);
         mBindRowCallback.onBindRow(row);
     }
@@ -180,13 +175,14 @@ public class NotificationRowBinderImpl implements NotificationRowBinder {
             NotificationEntry entry,
             @Nullable Integer oldImportance,
             NotificationUiAdjustment oldAdjustment,
-            NotificationUiAdjustment newAdjustment) {
+            NotificationUiAdjustment newAdjustment,
+            NotificationRowContentBinder.InflationCallback callback) {
         if (NotificationUiAdjustment.needReinflate(oldAdjustment, newAdjustment)) {
             if (entry.rowExists()) {
                 ExpandableNotificationRow row = entry.getRow();
                 row.reset();
                 updateRow(entry, row);
-                inflateContentViews(entry, row, null /* callback */);
+                inflateContentViews(entry, row, callback);
             } else {
                 // Once the RowInflaterTask is done, it will pick up the updated entry, so
                 // no-op here.
@@ -221,14 +217,18 @@ public class NotificationRowBinderImpl implements NotificationRowBinder {
     private void inflateContentViews(
             NotificationEntry entry,
             ExpandableNotificationRow row,
-            NotificationRowContentBinder.InflationCallback inflationCallback) {
+            @Nullable NotificationRowContentBinder.InflationCallback inflationCallback) {
         final boolean useIncreasedCollapsedHeight =
                 mMessagingUtil.isImportantMessaging(entry.getSbn(), entry.getImportance());
-        final boolean isLowPriority = entry.isAmbient();
+        // If this is our first time inflating, we don't actually know the groupings for real
+        // yet, so we might actually inflate a low priority content view incorrectly here and have
+        // to correct it later in the pipeline. On subsequent inflations (i.e. updates), this
+        // should inflate the correct view.
+        final boolean isLowPriority = mLowPriorityInflationHelper.shouldUseLowPriorityView(entry);
 
         RowContentBindParams params = mRowContentBindStage.getStageParams(entry);
         params.setUseIncreasedCollapsedHeight(useIncreasedCollapsedHeight);
-        params.setUseLowPriority(entry.isAmbient());
+        params.setUseLowPriority(isLowPriority);
 
         // TODO: Replace this API with RowContentBindParams directly. Also move to a separate
         // redaction controller.
@@ -238,7 +238,9 @@ public class NotificationRowBinderImpl implements NotificationRowBinder {
         mRowContentBindStage.requestRebind(entry, en -> {
             row.setUsesIncreasedCollapsedHeight(useIncreasedCollapsedHeight);
             row.setIsLowPriority(isLowPriority);
-            inflationCallback.onAsyncInflationFinished(en);
+            if (inflationCallback != null) {
+                inflationCallback.onAsyncInflationFinished(en);
+            }
         });
     }
 

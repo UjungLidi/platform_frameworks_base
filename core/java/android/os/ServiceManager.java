@@ -16,6 +16,7 @@
 
 package android.os;
 
+import android.annotation.NonNull;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.util.ArrayMap;
 import android.util.Log;
@@ -189,7 +190,7 @@ public final class ServiceManager {
      * @param dumpPriority supported dump priority levels as a bitmask
      * to access this service
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static void addService(String name, IBinder service, boolean allowIsolated,
             int dumpPriority) {
         try {
@@ -219,6 +220,59 @@ public final class ServiceManager {
     }
 
     /**
+     * Returns whether the specified service is declared.
+     *
+     * @return true if the service is declared somewhere (eg. VINTF manifest) and
+     * waitForService should always be able to return the service.
+     */
+    public static boolean isDeclared(@NonNull String name) {
+        try {
+            return getIServiceManager().isDeclared(name);
+        } catch (RemoteException e) {
+            Log.e(TAG, "error in isDeclared", e);
+            return false;
+        }
+    }
+
+    /**
+     * Returns the list of declared instances for an interface.
+     *
+     * @return true if the service is declared somewhere (eg. VINTF manifest) and
+     * waitForService should always be able to return the service.
+     */
+    public static String[] getDeclaredInstances(@NonNull String iface) {
+        try {
+            return getIServiceManager().getDeclaredInstances(iface);
+        } catch (RemoteException e) {
+            Log.e(TAG, "error in getDeclaredInstances", e);
+            return null;
+        }
+    }
+
+    /**
+     * Returns the specified service from the service manager.
+     *
+     * If the service is not running, servicemanager will attempt to start it, and this function
+     * will wait for it to be ready.
+     *
+     * @return {@code null} only if there are permission problems or fatal errors.
+     */
+    public static native IBinder waitForService(@NonNull String name);
+
+    /**
+     * Returns the specified service from the service manager, if declared.
+     *
+     * If the service is not running, servicemanager will attempt to start it, and this function
+     * will wait for it to be ready.
+     *
+     * @return {@code null} if the service is not declared in the manifest, or if there are
+     * permission problems, or if there are fatal errors.
+     */
+    public static IBinder waitForDeclaredService(@NonNull String name) {
+        return isDeclared(name) ? waitForService(name) : null;
+    }
+
+    /**
      * Return a list of all currently running services.
      * @return an array of all currently running services, or <code>null</code> in
      * case of an exception
@@ -229,6 +283,20 @@ public final class ServiceManager {
             return getIServiceManager().listServices(IServiceManager.DUMP_FLAG_PRIORITY_ALL);
         } catch (RemoteException e) {
             Log.e(TAG, "error in listServices", e);
+            return null;
+        }
+    }
+
+    /**
+     * Get service debug info.
+     * @return an array of information for each service (like listServices, but with PIDs)
+     * @hide
+     */
+    public static ServiceDebugInfo[] getServiceDebugInfo() {
+        try {
+            return getIServiceManager().getServiceDebugInfo();
+        } catch (RemoteException e) {
+            Log.e(TAG, "error in getServiceDebugInfo", e);
             return null;
         }
     }

@@ -16,25 +16,25 @@
 
 package com.android.server.appops;
 
-import android.Manifest;
-import android.app.AppOpsManager;
-import android.app.AppOpsManager.OnOpNotedListener;
-import android.content.Context;
-import android.os.Process;
-import androidx.test.InstrumentationRegistry;
-import androidx.test.runner.AndroidJUnit4;
-import androidx.test.filters.SmallTest;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.InOrder;
-
-
-import static org.junit.Assert.fail;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
+
+import android.app.AppOpsManager;
+import android.app.AppOpsManager.OnOpNotedListener;
+import android.content.Context;
+import android.os.Process;
+
+import androidx.test.InstrumentationRegistry;
+import androidx.test.filters.SmallTest;
+import androidx.test.runner.AndroidJUnit4;
+
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.InOrder;
 
 /**
  * Tests watching noted ops.
@@ -66,10 +66,12 @@ public class AppOpsNotedWatcherTest {
         inOrder.verify(listener, timeout(NOTIFICATION_TIMEOUT_MILLIS)
                 .times(1)).onOpNoted(eq(AppOpsManager.OP_FINE_LOCATION),
                 eq(Process.myUid()), eq(getContext().getPackageName()),
+                eq(getContext().getAttributionTag()), eq(AppOpsManager.OP_FLAG_SELF),
                 eq(AppOpsManager.MODE_ALLOWED));
         inOrder.verify(listener, timeout(NOTIFICATION_TIMEOUT_MILLIS)
                 .times(1)).onOpNoted(eq(AppOpsManager.OP_CAMERA),
                 eq(Process.myUid()), eq(getContext().getPackageName()),
+                eq(getContext().getAttributionTag()), eq(AppOpsManager.OP_FLAG_SELF),
                 eq(AppOpsManager.MODE_ALLOWED));
 
         // Stop watching
@@ -77,6 +79,28 @@ public class AppOpsNotedWatcherTest {
 
         // This should be the only two callbacks we got
         verifyNoMoreInteractions(listener);
+
+        // Note the op again and verify it isn't being watched
+        appOpsManager.noteOp(AppOpsManager.OP_FINE_LOCATION);
+        verifyNoMoreInteractions(listener);
+
+        // Start watching again
+        appOpsManager.startWatchingNoted(new int[]{AppOpsManager.OP_FINE_LOCATION,
+                AppOpsManager.OP_CAMERA}, listener);
+
+        // Note the op again
+        appOpsManager.noteOp(AppOpsManager.OP_FINE_LOCATION, Process.myUid(),
+                getContext().getPackageName());
+
+        // Verify it's watched again
+        verify(listener, timeout(NOTIFICATION_TIMEOUT_MILLIS)
+                .times(2)).onOpNoted(eq(AppOpsManager.OP_FINE_LOCATION),
+                eq(Process.myUid()), eq(getContext().getPackageName()),
+                eq(getContext().getAttributionTag()), eq(AppOpsManager.OP_FLAG_SELF),
+                eq(AppOpsManager.MODE_ALLOWED));
+
+        // Finish up
+        appOpsManager.stopWatchingNoted(listener);
     }
 
     private static Context getContext() {

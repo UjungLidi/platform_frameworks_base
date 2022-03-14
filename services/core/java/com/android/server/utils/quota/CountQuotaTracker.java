@@ -27,7 +27,6 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
-import android.os.UserHandle;
 import android.util.ArrayMap;
 import android.util.LongArrayQueue;
 import android.util.Slog;
@@ -294,12 +293,11 @@ public class CountQuotaTracker extends QuotaTracker {
 
     @Override
     @GuardedBy("mLock")
-    void handleRemovedAppLocked(String packageName, int uid) {
+    void handleRemovedAppLocked(final int userId, @NonNull String packageName) {
         if (packageName == null) {
             Slog.wtf(TAG, "Told app removed but given null package name.");
             return;
         }
-        final int userId = UserHandle.getUserId(uid);
 
         mEventTimes.delete(userId, packageName);
         mExecutionStatsCache.delete(userId, packageName);
@@ -408,7 +406,12 @@ public class CountQuotaTracker extends QuotaTracker {
     void updateExecutionStatsLocked(final int userId, @NonNull final String packageName,
             @Nullable final String tag, @NonNull ExecutionStats stats) {
         stats.countInWindow = 0;
-        stats.inQuotaTimeElapsed = 0;
+        if (stats.countLimit == 0) {
+            // UPTC won't be in quota until configuration changes.
+            stats.inQuotaTimeElapsed = Long.MAX_VALUE;
+        } else {
+            stats.inQuotaTimeElapsed = 0;
+        }
 
         // This can be used to determine when an app will have enough quota to transition from
         // out-of-quota to in-quota.

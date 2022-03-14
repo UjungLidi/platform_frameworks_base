@@ -23,11 +23,14 @@ import static com.android.internal.util.FrameworkStatsLog.TOUCH_GESTURE_CLASSIFI
 import static com.android.internal.util.FrameworkStatsLog.TOUCH_GESTURE_CLASSIFIED__CLASSIFICATION__SINGLE_TAP;
 import static com.android.internal.util.FrameworkStatsLog.TOUCH_GESTURE_CLASSIFIED__CLASSIFICATION__UNKNOWN_CLASSIFICATION;
 
+import android.annotation.UiContext;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
+import android.os.StrictMode;
 import android.os.SystemClock;
 
 import com.android.internal.util.FrameworkStatsLog;
@@ -228,6 +231,7 @@ public class GestureDetector {
         }
     }
 
+    private static final String TAG = GestureDetector.class.getSimpleName();
     @UnsupportedAppUsage
     private int mTouchSlopSquare;
     private int mDoubleTapTouchSlopSquare;
@@ -378,7 +382,8 @@ public class GestureDetector {
      * You may only use this constructor from a {@link android.os.Looper} thread.
      * @see android.os.Handler#Handler()
      *
-     * @param context the application's context
+     * @param context An {@link android.app.Activity} or a {@link Context} created from
+     * {@link Context#createWindowContext(int, Bundle)}
      * @param listener the listener invoked for all the callbacks, this must
      * not be null. If the listener implements the {@link OnDoubleTapListener} or
      * {@link OnContextClickListener} then it will also be set as the listener for
@@ -386,7 +391,8 @@ public class GestureDetector {
      *
      * @throws NullPointerException if {@code listener} is null.
      */
-    public GestureDetector(Context context, OnGestureListener listener) {
+    // TODO(b/182007470): Use @ConfigurationContext instead
+    public GestureDetector(@UiContext Context context, OnGestureListener listener) {
         this(context, listener, null);
     }
 
@@ -395,7 +401,8 @@ public class GestureDetector {
      * thread associated with the supplied {@link android.os.Handler}.
      * @see android.os.Handler#Handler()
      *
-     * @param context the application's context
+     * @param context An {@link android.app.Activity} or a {@link Context} created from
+     * {@link Context#createWindowContext(int, Bundle)}
      * @param listener the listener invoked for all the callbacks, this must
      * not be null. If the listener implements the {@link OnDoubleTapListener} or
      * {@link OnContextClickListener} then it will also be set as the listener for
@@ -404,7 +411,8 @@ public class GestureDetector {
      *
      * @throws NullPointerException if {@code listener} is null.
      */
-    public GestureDetector(Context context, OnGestureListener listener, Handler handler) {
+    public GestureDetector(@UiContext Context context, OnGestureListener listener,
+            Handler handler) {
         if (handler != null) {
             mHandler = new GestureHandler(handler);
         } else {
@@ -425,7 +433,8 @@ public class GestureDetector {
      * thread associated with the supplied {@link android.os.Handler}.
      * @see android.os.Handler#Handler()
      *
-     * @param context the application's context
+     * @param context An {@link android.app.Activity} or a {@link Context} created from
+     * {@link Context#createWindowContext(int, Bundle)}
      * @param listener the listener invoked for all the callbacks, this must
      * not be null.
      * @param handler the handler to use for running deferred listener events.
@@ -433,12 +442,12 @@ public class GestureDetector {
      *
      * @throws NullPointerException if {@code listener} is null.
      */
-    public GestureDetector(Context context, OnGestureListener listener, Handler handler,
+    public GestureDetector(@UiContext Context context, OnGestureListener listener, Handler handler,
             boolean unused) {
         this(context, listener, handler);
     }
 
-    private void init(Context context) {
+    private void init(@UiContext Context context) {
         if (mListener == null) {
             throw new NullPointerException("OnGestureListener must not be null");
         }
@@ -456,6 +465,7 @@ public class GestureDetector {
             mMaximumFlingVelocity = ViewConfiguration.getMaximumFlingVelocity();
             mAmbiguousGestureMultiplier = ViewConfiguration.getAmbiguousGestureMultiplier();
         } else {
+            StrictMode.assertConfigurationContext(context, "GestureDetector#init");
             final ViewConfiguration configuration = ViewConfiguration.get(context);
             touchSlop = configuration.getScaledTouchSlop();
             doubleTapTouchSlop = configuration.getScaledDoubleTapTouchSlop();

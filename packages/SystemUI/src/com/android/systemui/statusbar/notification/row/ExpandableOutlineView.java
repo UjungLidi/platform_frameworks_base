@@ -27,7 +27,6 @@ import android.util.AttributeSet;
 import android.view.View;
 import android.view.ViewOutlineProvider;
 
-import com.android.settingslib.Utils;
 import com.android.systemui.R;
 import com.android.systemui.statusbar.notification.AnimatableProperty;
 import com.android.systemui.statusbar.notification.PropertyAnimator;
@@ -54,7 +53,8 @@ public abstract class ExpandableOutlineView extends ExpandableView {
             R.id.bottom_roundess_animator_end_tag,
             R.id.bottom_roundess_animator_start_tag);
     private static final AnimationProperties ROUNDNESS_PROPERTIES =
-            new AnimationProperties().setDuration(StackStateAnimator.ANIMATION_DURATION_STANDARD);
+            new AnimationProperties().setDuration(
+                    StackStateAnimator.ANIMATION_DURATION_CORNER_RADIUS);
     private static final Path EMPTY_PATH = new Path();
 
     private final Rect mOutlineRect = new Rect();
@@ -71,20 +71,19 @@ public abstract class ExpandableOutlineView extends ExpandableView {
     private int mBackgroundTop;
 
     /**
-     * {@code true} if the children views of the {@link ExpandableOutlineView} are translated when
+     * {@code false} if the children views of the {@link ExpandableOutlineView} are translated when
      * it is moved. Otherwise, the translation is set on the {@code ExpandableOutlineView} itself.
      */
-    protected boolean mShouldTranslateContents;
-    private boolean mTopAmountRounded;
-    private float mDistanceToTopRoundness = -1;
+    protected boolean mDismissUsingRowTranslationX = true;
+    private float[] mTmpCornerRadii = new float[8];
 
     private final ViewOutlineProvider mProvider = new ViewOutlineProvider() {
         @Override
         public void getOutline(View view, Outline outline) {
-            if (!mCustomOutline && mCurrentTopRoundness == 0.0f
-                    && mCurrentBottomRoundness == 0.0f && !mAlwaysRoundBothCorners
-                    && !mTopAmountRounded) {
-                int translation = mShouldTranslateContents ? (int) getTranslation() : 0;
+            if (!mCustomOutline && getCurrentTopRoundness() == 0.0f
+                    && getCurrentBottomRoundness() == 0.0f && !mAlwaysRoundBothCorners) {
+                // Only when translating just the contents, does the outline need to be shifted.
+                int translation = !mDismissUsingRowTranslationX ? (int) getTranslation() : 0;
                 int left = Math.max(translation, 0);
                 int top = mClipTopAmount + mBackgroundTop;
                 int right = getWidth() + Math.min(translation, 0);
@@ -109,7 +108,9 @@ public abstract class ExpandableOutlineView extends ExpandableView {
         float topRoundness = mAlwaysRoundBothCorners
                 ? mOutlineRadius : getCurrentBackgroundRadiusTop();
         if (!mCustomOutline) {
-            int translation = mShouldTranslateContents && !ignoreTranslation
+            // The outline just needs to be shifted if we're translating the contents. Otherwise
+            // it's already in the right place.
+            int translation = !mDismissUsingRowTranslationX && !ignoreTranslation
                     ? (int) getTranslation() : 0;
             int halfExtraWidth = (int) (mExtraWidthForClipping / 2.0f);
             left = Math.max(translation, 0) - halfExtraWidth;
@@ -133,43 +134,29 @@ public abstract class ExpandableOutlineView extends ExpandableView {
                 ? mOutlineRadius : getCurrentBackgroundRadiusBottom();
         if (topRoundness + bottomRoundness > height) {
             float overShoot = topRoundness + bottomRoundness - height;
-            topRoundness -= overShoot * mCurrentTopRoundness
-                    / (mCurrentTopRoundness + mCurrentBottomRoundness);
-            bottomRoundness -= overShoot * mCurrentBottomRoundness
-                    / (mCurrentTopRoundness + mCurrentBottomRoundness);
+            float currentTopRoundness = getCurrentTopRoundness();
+            float currentBottomRoundness = getCurrentBottomRoundness();
+            topRoundness -= overShoot * currentTopRoundness
+                    / (currentTopRoundness + currentBottomRoundness);
+            bottomRoundness -= overShoot * currentBottomRoundness
+                    / (currentTopRoundness + currentBottomRoundness);
         }
-        getRoundedRectPath(left, top, right, bottom, topRoundness,
-                bottomRoundness, mTmpPath);
+        getRoundedRectPath(left, top, right, bottom, topRoundness, bottomRoundness, mTmpPath);
         return mTmpPath;
     }
 
-    public static void getRoundedRectPath(int left, int top, int right, int bottom,
+    public void getRoundedRectPath(int left, int top, int right, int bottom,
             float topRoundness, float bottomRoundness, Path outPath) {
         outPath.reset();
-        int width = right - left;
-        float topRoundnessX = topRoundness;
-        float bottomRoundnessX = bottomRoundness;
-        topRoundnessX = Math.min(width / 2, topRoundnessX);
-        bottomRoundnessX = Math.min(width / 2, bottomRoundnessX);
-        if (topRoundness > 0.0f) {
-            outPath.moveTo(left, top + topRoundness);
-            outPath.quadTo(left, top, left + topRoundnessX, top);
-            outPath.lineTo(right - topRoundnessX, top);
-            outPath.quadTo(right, top, right, top + topRoundness);
-        } else {
-            outPath.moveTo(left, top);
-            outPath.lineTo(right, top);
-        }
-        if (bottomRoundness > 0.0f) {
-            outPath.lineTo(right, bottom - bottomRoundness);
-            outPath.quadTo(right, bottom, right - bottomRoundnessX, bottom);
-            outPath.lineTo(left + bottomRoundnessX, bottom);
-            outPath.quadTo(left, bottom, left, bottom - bottomRoundness);
-        } else {
-            outPath.lineTo(right, bottom);
-            outPath.lineTo(left, bottom);
-        }
-        outPath.close();
+        mTmpCornerRadii[0] = topRoundness;
+        mTmpCornerRadii[1] = topRoundness;
+        mTmpCornerRadii[2] = topRoundness;
+        mTmpCornerRadii[3] = topRoundness;
+        mTmpCornerRadii[4] = bottomRoundness;
+        mTmpCornerRadii[5] = bottomRoundness;
+        mTmpCornerRadii[6] = bottomRoundness;
+        mTmpCornerRadii[7] = bottomRoundness;
+        outPath.addRoundRect(left, top, right, bottom, mTmpCornerRadii, Path.Direction.CW);
     }
 
     public ExpandableOutlineView(Context context, AttributeSet attrs) {
@@ -181,34 +168,14 @@ public abstract class ExpandableOutlineView extends ExpandableView {
     @Override
     protected boolean drawChild(Canvas canvas, View child, long drawingTime) {
         canvas.save();
-        Path intersectPath = null;
-        if (mTopAmountRounded && topAmountNeedsClipping()) {
-            int left = (int) (- mExtraWidthForClipping / 2.0f);
-            int top = (int) (mClipTopAmount - mDistanceToTopRoundness);
-            int right = getWidth() + (int) (mExtraWidthForClipping + left);
-            int bottom = (int) Math.max(mMinimumHeightForClipping,
-                    Math.max(getActualHeight() - mClipBottomAmount, top + mOutlineRadius));
-            ExpandableOutlineView.getRoundedRectPath(left, top, right, bottom, mOutlineRadius,
-                    0.0f,
-                    mClipPath);
-            intersectPath = mClipPath;
-        }
-        boolean clipped = false;
         if (childNeedsClipping(child)) {
             Path clipPath = getCustomClipPath(child);
             if (clipPath == null) {
                 clipPath = getClipPath(false /* ignoreTranslation */);
             }
             if (clipPath != null) {
-                if (intersectPath != null) {
-                    clipPath.op(intersectPath, Path.Op.INTERSECT);
-                }
                 canvas.clipPath(clipPath);
-                clipped = true;
             }
-        }
-        if (!clipped && intersectPath != null) {
-            canvas.clipPath(intersectPath);
         }
         boolean result = super.drawChild(canvas, child, drawingTime);
         canvas.restore();
@@ -227,50 +194,42 @@ public abstract class ExpandableOutlineView extends ExpandableView {
         invalidate();
     }
 
-    @Override
-    public void setDistanceToTopRoundness(float distanceToTopRoundness) {
-        super.setDistanceToTopRoundness(distanceToTopRoundness);
-        if (distanceToTopRoundness != mDistanceToTopRoundness) {
-            mTopAmountRounded = distanceToTopRoundness >= 0;
-            mDistanceToTopRoundness = distanceToTopRoundness;
-            applyRoundness();
-        }
-    }
-
     protected boolean childNeedsClipping(View child) {
         return false;
     }
 
-    public boolean topAmountNeedsClipping() {
-        return true;
-    }
-
     protected boolean isClippingNeeded() {
-        return mAlwaysRoundBothCorners || mCustomOutline || getTranslation() != 0 ;
+        // When translating the contents instead of the overall view, we need to make sure we clip
+        // rounded to the contents.
+        boolean forTranslation = getTranslation() != 0 && !mDismissUsingRowTranslationX;
+        return mAlwaysRoundBothCorners || mCustomOutline || forTranslation;
     }
 
     private void initDimens() {
         Resources res = getResources();
-        mShouldTranslateContents =
-                res.getBoolean(R.bool.config_translateNotificationContentsOnSwipe);
         mOutlineRadius = res.getDimension(R.dimen.notification_shadow_radius);
         mAlwaysRoundBothCorners = res.getBoolean(R.bool.config_clipNotificationsToOutline);
         if (!mAlwaysRoundBothCorners) {
-            mOutlineRadius = res.getDimensionPixelSize(
-                    Utils.getThemeAttr(mContext, android.R.attr.dialogCornerRadius));
+            mOutlineRadius = res.getDimensionPixelSize(R.dimen.notification_corner_radius);
         }
         setClipToOutline(mAlwaysRoundBothCorners);
     }
 
-    /**
-     * Set the topRoundness of this view.
-     * @return Whether the roundness was changed.
-     */
+    @Override
     public boolean setTopRoundness(float topRoundness, boolean animate) {
         if (mTopRoundness != topRoundness) {
+            float diff = Math.abs(topRoundness - mTopRoundness);
             mTopRoundness = topRoundness;
+            boolean shouldAnimate = animate;
+            if (PropertyAnimator.isAnimating(this, TOP_ROUNDNESS) && diff > 0.5f) {
+                // Fail safe:
+                // when we've been animating previously and we're now getting an update in the
+                // other direction, make sure to animate it too, otherwise, the localized updating
+                // may make the start larger than 1.0.
+                shouldAnimate = true;
+            }
             PropertyAnimator.setProperty(this, TOP_ROUNDNESS, topRoundness,
-                    ROUNDNESS_PROPERTIES, animate);
+                    ROUNDNESS_PROPERTIES, shouldAnimate);
             return true;
         }
         return false;
@@ -282,12 +241,7 @@ public abstract class ExpandableOutlineView extends ExpandableView {
     }
 
     public float getCurrentBackgroundRadiusTop() {
-        // If this view is top amount notification view, it should always has round corners on top.
-        // It will be applied with applyRoundness()
-        if (mTopAmountRounded) {
-            return mOutlineRadius;
-        }
-        return mCurrentTopRoundness * mOutlineRadius;
+        return getCurrentTopRoundness() * mOutlineRadius;
     }
 
     public float getCurrentTopRoundness() {
@@ -298,19 +252,25 @@ public abstract class ExpandableOutlineView extends ExpandableView {
         return mCurrentBottomRoundness;
     }
 
-    protected float getCurrentBackgroundRadiusBottom() {
-        return mCurrentBottomRoundness * mOutlineRadius;
+    public float getCurrentBackgroundRadiusBottom() {
+        return getCurrentBottomRoundness() * mOutlineRadius;
     }
 
-    /**
-     * Set the bottom roundness of this view.
-     * @return Whether the roundness was changed.
-     */
+    @Override
     public boolean setBottomRoundness(float bottomRoundness, boolean animate) {
         if (mBottomRoundness != bottomRoundness) {
+            float diff = Math.abs(bottomRoundness - mBottomRoundness);
             mBottomRoundness = bottomRoundness;
+            boolean shouldAnimate = animate;
+            if (PropertyAnimator.isAnimating(this, BOTTOM_ROUNDNESS) && diff > 0.5f) {
+                // Fail safe:
+                // when we've been animating previously and we're now getting an update in the
+                // other direction, make sure to animate it too, otherwise, the localized updating
+                // may make the start larger than 1.0.
+                shouldAnimate = true;
+            }
             PropertyAnimator.setProperty(this, BOTTOM_ROUNDNESS, bottomRoundness,
-                    ROUNDNESS_PROPERTIES, animate);
+                    ROUNDNESS_PROPERTIES, shouldAnimate);
             return true;
         }
         return false;
@@ -386,9 +346,25 @@ public abstract class ExpandableOutlineView extends ExpandableView {
         }
     }
 
+    /**
+     * Set the dismiss behavior of the view.
+     * @param usingRowTranslationX {@code true} if the view should translate using regular
+     *                                          translationX, otherwise the contents will be
+     *                                          translated.
+     */
+    public void setDismissUsingRowTranslationX(boolean usingRowTranslationX) {
+        mDismissUsingRowTranslationX = usingRowTranslationX;
+    }
+
     @Override
     public int getOutlineTranslation() {
-        return mCustomOutline ? mOutlineRect.left : (int) getTranslation();
+        if (mCustomOutline) {
+            return mOutlineRect.left;
+        }
+        if (mDismissUsingRowTranslationX) {
+            return 0;
+        }
+        return (int) getTranslation();
     }
 
     public void updateOutline() {

@@ -400,6 +400,24 @@
             </intent-filter>
         </activity>
 
+        <activity android:name="StretchySurfaceViewActivity"
+                  android:label="SurfaceView/Stretchy Movement"
+                  android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="com.android.test.hwui.TEST"/>
+            </intent-filter>
+        </activity>
+
+        <activity android:name="ScrollingStretchSurfaceViewActivity"
+                  android:label="SurfaceView/Scrolling Stretched SurfaceView"
+                  android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="com.android.test.hwui.TEST"/>
+            </intent-filter>
+        </activity>
+
         <activity android:name="GetBitmapSurfaceViewActivity"
              android:label="SurfaceView/GetBitmap with Camera source"
              android:exported="true">
@@ -744,6 +762,42 @@
             </intent-filter>
         </activity>
 
+        <activity android:name="BlurActivity"
+                  android:label="RenderEffect/Blur"
+                  android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="com.android.test.hwui.TEST"/>
+            </intent-filter>
+        </activity>
+
+        <activity android:name="RenderEffectShaderActivity"
+                  android:label="RenderEffect/Shader"
+                  android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="com.android.test.hwui.TEST"/>
+            </intent-filter>
+        </activity>
+
+        <activity android:name="StretchShaderActivity"
+                  android:label="RenderEffect/Stretch"
+                  android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="com.android.test.hwui.TEST"/>
+            </intent-filter>
+        </activity>
+
+        <activity android:name="EdgeEffectStretchActivity"
+                  android:label="RenderEffect/EdgeEffect stretch"
+                  android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="com.android.test.hwui.TEST"/>
+            </intent-filter>
+        </activity>
+
         <activity android:name="TextActivity"
              android:label="Text/Simple Text"
              android:theme="@android:style/Theme.NoTitleBar"
@@ -1001,6 +1055,15 @@
         <activity android:name="RevealActivity"
              android:label="Animation/Reveal Animation"
              android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="com.android.test.hwui.TEST"/>
+            </intent-filter>
+        </activity>
+
+        <activity android:name="RippleActivity"
+                  android:label="Animation/Ripple Animation"
+                  android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="com.android.test.hwui.TEST"/>

@@ -46,8 +46,10 @@ public final class InputMethodDebug {
                 return "UNSPECIFIED";
             case StartInputReason.WINDOW_FOCUS_GAIN:
                 return "WINDOW_FOCUS_GAIN";
-            case StartInputReason.WINDOW_FOCUS_GAIN_REPORT_ONLY:
-                return "WINDOW_FOCUS_GAIN_REPORT_ONLY";
+            case StartInputReason.WINDOW_FOCUS_GAIN_REPORT_WITH_CONNECTION:
+                return "WINDOW_FOCUS_GAIN_REPORT_WITH_CONNECTION";
+            case StartInputReason.WINDOW_FOCUS_GAIN_REPORT_WITHOUT_CONNECTION:
+                return "WINDOW_FOCUS_GAIN_REPORT_WITHOUT_CONNECTION";
             case StartInputReason.APP_CALLED_RESTART_INPUT_API:
                 return "APP_CALLED_RESTART_INPUT_API";
             case StartInputReason.CHECK_FOCUS:
@@ -222,6 +224,20 @@ public final class InputMethodDebug {
                 return "HIDE_DOCKED_STACK_ATTACHED";
             case SoftInputShowHideReason.HIDE_RECENTS_ANIMATION:
                 return "HIDE_RECENTS_ANIMATION";
+            case SoftInputShowHideReason.HIDE_SAME_WINDOW_FOCUSED_WITHOUT_EDITOR:
+                return "HIDE_SAME_WINDOW_FOCUSED_WITHOUT_EDITOR";
+            case SoftInputShowHideReason.HIDE_REMOVE_CLIENT:
+                return "HIDE_REMOVE_CLIENT";
+            case SoftInputShowHideReason.SHOW_RESTORE_IME_VISIBILITY:
+                return "SHOW_RESTORE_IME_VISIBILITY";
+            case SoftInputShowHideReason.SHOW_TOGGLE_SOFT_INPUT:
+                return "SHOW_TOGGLE_SOFT_INPUT";
+            case SoftInputShowHideReason.HIDE_TOGGLE_SOFT_INPUT:
+                return "HIDE_TOGGLE_SOFT_INPUT";
+            case SoftInputShowHideReason.SHOW_SOFT_INPUT_BY_INSETS_API:
+                return "SHOW_SOFT_INPUT_BY_INSETS_API";
+            case SoftInputShowHideReason.HIDE_DISPLAY_IME_POLICY_HIDE:
+                return "HIDE_DISPLAY_IME_POLICY_HIDE";
             default:
                 return "Unknown=" + reason;
         }

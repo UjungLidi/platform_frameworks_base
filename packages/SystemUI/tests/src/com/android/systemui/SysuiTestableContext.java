@@ -26,11 +26,14 @@ import android.util.ArraySet;
 import android.util.Log;
 import android.view.Display;
 
+import com.android.internal.annotations.GuardedBy;
+
 import java.util.Set;
 
 public class SysuiTestableContext extends TestableContext {
 
-    private Set<BroadcastReceiver> mRegisteredReceivers = new ArraySet<>();
+    @GuardedBy("mRegisteredReceivers")
+    private final Set<BroadcastReceiver> mRegisteredReceivers = new ArraySet<>();
 
     public SysuiTestableContext(Context base) {
         super(base);
@@ -54,7 +57,11 @@ public class SysuiTestableContext extends TestableContext {
     }
 
     public void cleanUpReceivers(String testName) {
-        Set<BroadcastReceiver> copy = new ArraySet<>(mRegisteredReceivers);
+        Set<BroadcastReceiver> copy;
+        synchronized (mRegisteredReceivers) {
+            copy = new ArraySet<>(mRegisteredReceivers);
+            mRegisteredReceivers.clear();
+        }
         for (BroadcastReceiver r : copy) {
             try {
                 unregisterReceiver(r);
@@ -67,27 +74,43 @@ public class SysuiTestableContext extends TestableContext {
 
     @Override
     public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter) {
-        mRegisteredReceivers.add(receiver);
+        if (receiver != null) {
+            synchronized (mRegisteredReceivers) {
+                mRegisteredReceivers.add(receiver);
+            }
+        }
         return super.registerReceiver(receiver, filter);
     }
 
     @Override
     public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter,
             String broadcastPermission, Handler scheduler) {
-        mRegisteredReceivers.add(receiver);
+        if (receiver != null) {
+            synchronized (mRegisteredReceivers) {
+                mRegisteredReceivers.add(receiver);
+            }
+        }
         return super.registerReceiver(receiver, filter, broadcastPermission, scheduler);
     }
 
     @Override
     public Intent registerReceiverAsUser(BroadcastReceiver receiver, UserHandle user,
             IntentFilter filter, String broadcastPermission, Handler scheduler) {
-        mRegisteredReceivers.add(receiver);
+        if (receiver != null) {
+            synchronized (mRegisteredReceivers) {
+                mRegisteredReceivers.add(receiver);
+            }
+        }
         return super.registerReceiverAsUser(receiver, user, filter, broadcastPermission, scheduler);
     }
 
     @Override
     public void unregisterReceiver(BroadcastReceiver receiver) {
-        mRegisteredReceivers.remove(receiver);
+        if (receiver != null) {
+            synchronized (mRegisteredReceivers) {
+                mRegisteredReceivers.remove(receiver);
+            }
+        }
         super.unregisterReceiver(receiver);
     }
 }

@@ -22,6 +22,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.os.BadParcelableException;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
@@ -43,7 +44,7 @@ import java.util.List;
 public abstract class AbstractResolverComparator implements Comparator<ResolvedComponentInfo> {
 
     private static final int NUM_OF_TOP_ANNOTATIONS_TO_USE = 3;
-    private static final boolean DEBUG = false;
+    private static final boolean DEBUG = true;
     private static final String TAG = "AbstractResolverComp";
 
     protected AfterCompute mAfterCompute;
@@ -54,8 +55,6 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
 
     // True if the current share is a link.
     private final boolean mHttp;
-    // can be null if mHttp == false or current user has no default browser package
-    private final String mDefaultBrowserPackageName;
 
     // message types
     static final int RANKER_SERVICE_RESULT = 0;
@@ -66,6 +65,7 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
     private static final int WATCHDOG_TIMEOUT_MILLIS = 500;
 
     private final Comparator<ResolveInfo> mAzComparator;
+    private ChooserActivityLogger mChooserActivityLogger;
 
     protected final Handler mHandler = new Handler(Looper.getMainLooper()) {
         public void handleMessage(Message msg) {
@@ -87,6 +87,9 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
                     }
                     mHandler.removeMessages(RANKER_SERVICE_RESULT);
                     afterCompute();
+                    if (mChooserActivityLogger != null) {
+                        mChooserActivityLogger.logSharesheetAppShareRankingTimeout();
+                    }
                     break;
 
                 default:
@@ -102,25 +105,27 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
         getContentAnnotations(intent);
         mPm = context.getPackageManager();
         mUsm = (UsageStatsManager) context.getSystemService(Context.USAGE_STATS_SERVICE);
-        mDefaultBrowserPackageName = mHttp
-                ? mPm.getDefaultBrowserPackageNameAsUser(UserHandle.myUserId())
-                : null;
         mAzComparator = new AzInfoComparator(context);
     }
 
     // get annotations of content from intent.
     private void getContentAnnotations(Intent intent) {
-        ArrayList<String> annotations = intent.getStringArrayListExtra(
-                Intent.EXTRA_CONTENT_ANNOTATIONS);
-        if (annotations != null) {
-            int size = annotations.size();
-            if (size > NUM_OF_TOP_ANNOTATIONS_TO_USE) {
-                size = NUM_OF_TOP_ANNOTATIONS_TO_USE;
+        try {
+            ArrayList<String> annotations = intent.getStringArrayListExtra(
+                    Intent.EXTRA_CONTENT_ANNOTATIONS);
+            if (annotations != null) {
+                int size = annotations.size();
+                if (size > NUM_OF_TOP_ANNOTATIONS_TO_USE) {
+                    size = NUM_OF_TOP_ANNOTATIONS_TO_USE;
+                }
+                mAnnotations = new String[size];
+                for (int i = 0; i < size; i++) {
+                    mAnnotations[i] = annotations.get(i);
+                }
             }
-            mAnnotations = new String[size];
-            for (int i = 0; i < size; i++) {
-                mAnnotations[i] = annotations.get(i);
-            }
+        } catch (BadParcelableException e) {
+            Log.i(TAG, "Couldn't unparcel intent annotations. Ignoring.");
+            mAnnotations = new String[0];
         }
     }
 
@@ -134,6 +139,14 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
 
     void setCallBack(AfterCompute afterCompute) {
         mAfterCompute = afterCompute;
+    }
+
+    void setChooserActivityLogger(ChooserActivityLogger chooserActivityLogger) {
+        mChooserActivityLogger = chooserActivityLogger;
+    }
+
+    ChooserActivityLogger getChooserActivityLogger() {
+        return mChooserActivityLogger;
     }
 
     protected final void afterCompute() {
@@ -157,17 +170,6 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
         }
 
         if (mHttp) {
-            // Special case: we want filters that match URI paths/schemes to be
-            // ordered before others.  This is for the case when opening URIs,
-            // to make native apps go above browsers - except for 1 even more special case
-            // which is the default browser, as we want that to go above them all.
-            if (isDefaultBrowser(lhs)) {
-                return -1;
-            }
-
-            if (isDefaultBrowser(rhs)) {
-                return 1;
-            }
             final boolean lhsSpecific = ResolverActivity.isSpecificUriMatch(lhs.match);
             final boolean rhsSpecific = ResolverActivity.isSpecificUriMatch(rhs.match);
             if (lhsSpecific != rhsSpecific) {
@@ -271,21 +273,6 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
         afterCompute();
         mAfterCompute = null;
     }
-
-    private boolean isDefaultBrowser(ResolveInfo ri) {
-        // It makes sense to prefer the default browser
-        // only if the targeted user is the current user
-        if (ri.targetUserId != UserHandle.USER_CURRENT) {
-            return false;
-        }
-
-        if (ri.activityInfo.packageName != null
-                    && ri.activityInfo.packageName.equals(mDefaultBrowserPackageName)) {
-            return true;
-        }
-        return false;
-    }
-
 
     /**
      * Sort intents alphabetically based on package name.

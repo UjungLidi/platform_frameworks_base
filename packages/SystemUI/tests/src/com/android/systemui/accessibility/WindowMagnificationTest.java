@@ -16,14 +16,24 @@
 
 package com.android.systemui.accessibility;
 
+import static com.android.systemui.recents.OverviewProxyService.OverviewProxyListener;
+import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_MAGNIFICATION_OVERLAP;
+
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Rect;
+import android.hardware.display.DisplayManager;
 import android.os.RemoteException;
 import android.testing.AndroidTestingRunner;
+import android.testing.TestableLooper;
 import android.view.Display;
 import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.IWindowMagnificationConnection;
@@ -32,33 +42,60 @@ import android.view.accessibility.IWindowMagnificationConnectionCallback;
 import androidx.test.filters.SmallTest;
 
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.model.SysUiState;
+import com.android.systemui.recents.OverviewProxyService;
 import com.android.systemui.statusbar.CommandQueue;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
 @SmallTest
 @RunWith(AndroidTestingRunner.class)
+@TestableLooper.RunWithLooper
 public class WindowMagnificationTest extends SysuiTestCase {
 
+    private static final int TEST_DISPLAY = Display.DEFAULT_DISPLAY;
     @Mock
     private AccessibilityManager mAccessibilityManager;
+    @Mock
+    private ModeSwitchesController mModeSwitchesController;
+    @Mock
+    private SysUiState mSysUiState;
+    @Mock
+    private IWindowMagnificationConnectionCallback mConnectionCallback;
+    @Mock
+    private OverviewProxyService mOverviewProxyService;
+
     private CommandQueue mCommandQueue;
     private WindowMagnification mWindowMagnification;
-
+    private OverviewProxyListener mOverviewProxyListener;
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
         getContext().addMockSystemService(Context.ACCESSIBILITY_SERVICE, mAccessibilityManager);
+        doAnswer(invocation -> {
+            IWindowMagnificationConnection connection = invocation.getArgument(0);
+            connection.setConnectionCallback(mConnectionCallback);
+            return null;
+        }).when(mAccessibilityManager).setWindowMagnificationConnection(
+                any(IWindowMagnificationConnection.class));
+
+        when(mSysUiState.setFlag(anyInt(), anyBoolean())).thenReturn(mSysUiState);
 
         mCommandQueue = new CommandQueue(getContext());
         mWindowMagnification = new WindowMagnification(getContext(),
-                getContext().getMainThreadHandler(), mCommandQueue);
+                getContext().getMainThreadHandler(), mCommandQueue, mModeSwitchesController,
+                mSysUiState, mOverviewProxyService);
         mWindowMagnification.start();
+
+        final ArgumentCaptor<OverviewProxyListener> listenerArgumentCaptor =
+                ArgumentCaptor.forClass(OverviewProxyListener.class);
+        verify(mOverviewProxyService).addCallback(listenerArgumentCaptor.capture());
+        mOverviewProxyListener = listenerArgumentCaptor.getValue();
     }
 
     @Test
@@ -77,21 +114,80 @@ public class WindowMagnificationTest extends SysuiTestCase {
 
     @Test
     public void onWindowMagnifierBoundsChanged() throws RemoteException {
-        final IWindowMagnificationConnectionCallback connectionCallback = Mockito.mock(
-                IWindowMagnificationConnectionCallback.class);
         final Rect testBounds = new Rect(0, 0, 500, 600);
-        doAnswer(invocation -> {
-            IWindowMagnificationConnection connection = invocation.getArgument(0);
-            connection.setConnectionCallback(connectionCallback);
-            return null;
-        }).when(mAccessibilityManager).setWindowMagnificationConnection(
-                any(IWindowMagnificationConnection.class));
         mCommandQueue.requestWindowMagnificationConnection(true);
         waitForIdleSync();
 
-        mWindowMagnification.onWindowMagnifierBoundsChanged(Display.DEFAULT_DISPLAY, testBounds);
+        mWindowMagnification.onWindowMagnifierBoundsChanged(TEST_DISPLAY, testBounds);
 
-        verify(connectionCallback).onWindowMagnifierBoundsChanged(Display.DEFAULT_DISPLAY,
-                testBounds);
+        verify(mConnectionCallback).onWindowMagnifierBoundsChanged(TEST_DISPLAY, testBounds);
+    }
+
+    @Test
+    public void onPerformScaleAction_enabled_notifyCallback() throws RemoteException {
+        final float newScale = 4.0f;
+        mCommandQueue.requestWindowMagnificationConnection(true);
+        waitForIdleSync();
+
+        mWindowMagnification.onPerformScaleAction(TEST_DISPLAY, newScale);
+
+        verify(mConnectionCallback).onPerformScaleAction(TEST_DISPLAY, newScale);
+    }
+
+    @Test
+    public void onAccessibilityActionPerformed_enabled_notifyCallback() throws RemoteException {
+        mCommandQueue.requestWindowMagnificationConnection(true);
+        waitForIdleSync();
+
+        mWindowMagnification.onAccessibilityActionPerformed(TEST_DISPLAY);
+
+        verify(mConnectionCallback).onAccessibilityActionPerformed(TEST_DISPLAY);
+    }
+
+    @Test
+    public void onConfigurationChanged_updateModeSwitches() {
+        final Configuration config = new Configuration();
+        config.densityDpi = Configuration.DENSITY_DPI_ANY;
+        mWindowMagnification.onConfigurationChanged(config);
+
+        verify(mModeSwitchesController).onConfigurationChanged(anyInt());
+    }
+
+    @Test
+    public void overviewProxyIsConnected_noController_resetFlag() {
+        mOverviewProxyListener.onConnectionChanged(true);
+
+        verify(mSysUiState).setFlag(SYSUI_STATE_MAGNIFICATION_OVERLAP, false);
+        verify(mSysUiState).commitUpdate(mContext.getDisplayId());
+    }
+
+    @Test
+    public void overviewProxyIsConnected_controllerIsAvailable_updateSysUiStateFlag() {
+        final WindowMagnificationAnimationController mController = mock(
+                WindowMagnificationAnimationController.class);
+        mWindowMagnification.mAnimationControllerSupplier = new FakeAnimationControllerSupplier(
+                mContext.getSystemService(DisplayManager.class), mController);
+        mWindowMagnification.mAnimationControllerSupplier.get(TEST_DISPLAY);
+
+        mOverviewProxyListener.onConnectionChanged(true);
+
+        verify(mController).updateSysUiStateFlag();
+    }
+
+    private static class FakeAnimationControllerSupplier extends
+            DisplayIdIndexSupplier<WindowMagnificationAnimationController> {
+
+        private final WindowMagnificationAnimationController mController;
+
+        FakeAnimationControllerSupplier(DisplayManager displayManager,
+                WindowMagnificationAnimationController controller) {
+            super(displayManager);
+            mController = controller;
+        }
+
+        @Override
+        protected WindowMagnificationAnimationController createInstance(Display display) {
+            return mController;
+        }
     }
 }

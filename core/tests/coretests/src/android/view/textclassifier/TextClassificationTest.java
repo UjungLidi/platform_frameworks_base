@@ -16,6 +16,8 @@
 
 package android.view.textclassifier;
 
+import static android.app.PendingIntent.FLAG_IMMUTABLE;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -57,6 +59,7 @@ public class TextClassificationTest {
     static {
         BUNDLE.putString(BUNDLE_KEY, BUNDLE_VALUE);
     }
+    private static final float EPSILON = 1e-7f;
 
     public Icon generateTestIcon(int width, int height, int colorValue) {
         final int numPixels = width * height;
@@ -78,7 +81,7 @@ public class TextClassificationTest {
         final String primaryDescription = "primaryDescription";
         final Intent primaryIntent = new Intent("primaryIntentAction");
         final PendingIntent primaryPendingIntent = PendingIntent.getActivity(context, 0,
-                primaryIntent, 0);
+                primaryIntent, FLAG_IMMUTABLE);
         final RemoteAction remoteAction0 = new RemoteAction(primaryIcon, primaryLabel,
                 primaryDescription, primaryPendingIntent);
 
@@ -87,7 +90,7 @@ public class TextClassificationTest {
         final String secondaryDescription = "secondaryDescription";
         final Intent secondaryIntent = new Intent("secondaryIntentAction");
         final PendingIntent secondaryPendingIntent = PendingIntent.getActivity(context, 0,
-                secondaryIntent, 0);
+                secondaryIntent, FLAG_IMMUTABLE);
         final RemoteAction remoteAction1 = new RemoteAction(secondaryIcon, secondaryLabel,
                 secondaryDescription, secondaryPendingIntent);
 
@@ -128,8 +131,8 @@ public class TextClassificationTest {
         assertEquals(2, result.getEntityCount());
         assertEquals(TextClassifier.TYPE_PHONE, result.getEntity(0));
         assertEquals(TextClassifier.TYPE_ADDRESS, result.getEntity(1));
-        assertEquals(0.7f, result.getConfidenceScore(TextClassifier.TYPE_PHONE), 1e-7f);
-        assertEquals(0.3f, result.getConfidenceScore(TextClassifier.TYPE_ADDRESS), 1e-7f);
+        assertEquals(0.7f, result.getConfidenceScore(TextClassifier.TYPE_PHONE), EPSILON);
+        assertEquals(0.3f, result.getConfidenceScore(TextClassifier.TYPE_ADDRESS), EPSILON);
 
         // Extras
         assertEquals(BUNDLE_VALUE, result.getExtras().getString(BUNDLE_KEY));
@@ -155,7 +158,7 @@ public class TextClassificationTest {
         final int iconColor = Color.RED;
         final String label = "label";
         final PendingIntent pendingIntent = PendingIntent.getActivity(
-                context, 0, new Intent("ACTION_0"), 0);
+                context, 0, new Intent("ACTION_0"), FLAG_IMMUTABLE);
         final RemoteAction remoteAction = new RemoteAction(
                 generateTestIcon(width, height, iconColor),
                 label,
@@ -225,5 +228,48 @@ public class TextClassificationTest {
         assertEquals(packageName, resultSystemTcMetadata.getCallingPackageName());
         assertEquals(1, resultSystemTcMetadata.getUserId());
         assertFalse(resultSystemTcMetadata.useDefaultTextClassifier());
+    }
+
+    @Test
+    public void testToBuilder() {
+        final Context context = InstrumentationRegistry.getInstrumentation().getContext();
+        final Icon icon1 = generateTestIcon(5, 5, Color.RED);
+        final Icon icon2 = generateTestIcon(2, 10, Color.BLUE);
+        final TextClassification classification = new TextClassification.Builder()
+                .setIcon(icon1.loadDrawable(context))
+                .setLabel("label")
+                .setIntent(new Intent("action"))
+                .setOnClickListener(view -> { })
+                .addAction(new RemoteAction(icon1, "title1", "desc1",
+                        PendingIntent.getActivity(
+                                context, 0, new Intent("action1"), FLAG_IMMUTABLE)))
+                .addAction(new RemoteAction(icon1, "title2", "desc2",
+                        PendingIntent.getActivity(context, 0, new Intent("action2"),
+                                FLAG_IMMUTABLE)))
+                .setEntityType(TextClassifier.TYPE_EMAIL, 0.5f)
+                .setEntityType(TextClassifier.TYPE_PHONE, 0.4f)
+                .build();
+
+        final TextClassification fromBuilder = classification.toBuilder().build();
+
+        assertEquals(classification.getId(), fromBuilder.getId());
+        assertEquals(classification.getText(), fromBuilder.getText());
+        assertEquals(classification.getIcon(), fromBuilder.getIcon());
+        assertEquals(classification.getLabel(), fromBuilder.getLabel());
+        assertEquals(classification.getIntent(), fromBuilder.getIntent());
+        assertEquals(classification.getOnClickListener(), fromBuilder.getOnClickListener());
+        assertEquals(classification.getExtras(), fromBuilder.getExtras());
+        assertEquals(classification.getActions(), fromBuilder.getActions());
+        assertEquals(classification.getEntityCount(), fromBuilder.getEntityCount());
+        assertEquals(classification.getEntity(0), fromBuilder.getEntity(0));
+        assertEquals(classification.getEntity(1), fromBuilder.getEntity(1));
+        assertEquals(
+                classification.getConfidenceScore(TextClassifier.TYPE_EMAIL),
+                fromBuilder.getConfidenceScore(TextClassifier.TYPE_EMAIL),
+                EPSILON);
+        assertEquals(
+                classification.getConfidenceScore(TextClassifier.TYPE_PHONE),
+                fromBuilder.getConfidenceScore(TextClassifier.TYPE_PHONE),
+                EPSILON);
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 The Android Open Source Project
+ * Copyright 2020 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,113 +16,160 @@
 
 package android.app.appsearch;
 
+import android.annotation.CallbackExecutor;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.appsearch.aidl.AppSearchResultParcel;
+import android.app.appsearch.aidl.IAppSearchManager;
+import android.app.appsearch.aidl.IAppSearchResultCallback;
+import android.os.Bundle;
+import android.os.RemoteException;
+import android.os.SystemClock;
+import android.os.UserHandle;
+import android.util.Log;
 
-import com.google.android.icing.proto.SearchResultProto;
-import com.google.android.icing.proto.SnippetMatchProto;
-import com.google.android.icing.proto.SnippetProto;
+import com.android.internal.util.Preconditions;
 
-import java.util.ArrayList;
-import java.util.Iterator;
+import java.io.Closeable;
 import java.util.List;
-import java.util.NoSuchElementException;
+import java.util.Objects;
+import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 /**
- * SearchResults are a list of results that are returned from a query. Each result from this
- * list contains a document and may contain other fields like snippets based on request.
- * This iterator class is not thread safe.
- * @hide
+ * Encapsulates results of a search operation.
+ *
+ * <p>Each {@link AppSearchSession#search} operation returns a list of {@link SearchResult} objects,
+ * referred to as a "page", limited by the size configured by {@link
+ * SearchSpec.Builder#setResultCountPerPage}.
+ *
+ * <p>To fetch a page of results, call {@link #getNextPage}.
+ *
+ * <p>All instances of {@link SearchResults} must call {@link SearchResults#close()} after the
+ * results are fetched.
+ *
+ * <p>This class is not thread safe.
  */
-public final class SearchResults implements Iterator<SearchResults.Result> {
+public class SearchResults implements Closeable {
+    private static final String TAG = "SearchResults";
 
-    private final SearchResultProto mSearchResultProto;
-    private int mNextIdx;
+    private final IAppSearchManager mService;
 
-    /** @hide */
-    public SearchResults(SearchResultProto searchResultProto) {
-        mSearchResultProto = searchResultProto;
+    // The package name of the caller.
+    private final String mPackageName;
+
+    // The database name to search over. If null, this will search over all database names.
+    @Nullable
+    private final String mDatabaseName;
+
+    private final String mQueryExpression;
+
+    private final SearchSpec mSearchSpec;
+
+    private final UserHandle mUserHandle;
+
+    private long mNextPageToken;
+
+    private boolean mIsFirstLoad = true;
+
+    private boolean mIsClosed = false;
+
+    SearchResults(
+            @NonNull IAppSearchManager service,
+            @NonNull String packageName,
+            @Nullable String databaseName,
+            @NonNull String queryExpression,
+            @NonNull SearchSpec searchSpec,
+            @NonNull UserHandle userHandle) {
+        mService = Objects.requireNonNull(service);
+        mPackageName = packageName;
+        mDatabaseName = databaseName;
+        mQueryExpression = Objects.requireNonNull(queryExpression);
+        mSearchSpec = Objects.requireNonNull(searchSpec);
+        mUserHandle = Objects.requireNonNull(userHandle);
     }
-
-    @Override
-    public boolean hasNext() {
-        return mNextIdx < mSearchResultProto.getResultsCount();
-    }
-
-    @NonNull
-    @Override
-    public Result next() {
-        if (!hasNext()) {
-            throw new NoSuchElementException();
-        }
-        Result result = new Result(mSearchResultProto.getResults(mNextIdx));
-        mNextIdx++;
-        return result;
-    }
-
-
 
     /**
-     * This class represents the result obtained from the query. It will contain the document which
-     * which matched the specified query string and specifications.
-     * @hide
+     * Retrieves the next page of {@link SearchResult} objects.
+     *
+     * <p>The page size is configured by {@link SearchSpec.Builder#setResultCountPerPage}.
+     *
+     * <p>Continue calling this method to access results until it returns an empty list, signifying
+     * there are no more results.
+     *
+     * @param executor Executor on which to invoke the callback.
+     * @param callback Callback to receive the pending result of performing this operation.
      */
-    public static final class Result {
-        private final SearchResultProto.ResultProto mResultProto;
-
-        @Nullable
-        private AppSearchDocument mDocument;
-
-        private Result(SearchResultProto.ResultProto resultProto) {
-            mResultProto = resultProto;
-        }
-
-        /**
-         * Contains the matching {@link AppSearchDocument}.
-         * @return Document object which matched the query.
-         * @hide
-         */
-        @NonNull
-        public AppSearchDocument getDocument() {
-            if (mDocument == null) {
-                mDocument = new AppSearchDocument(mResultProto.getDocument());
-            }
-            return mDocument;
-        }
-
-        /**
-         * Contains a list of Snippets that matched the request. Only populated when requested in
-         * {@link SearchSpec.Builder#setMaxSnippetSize(int)}.
-         * @return  List of matches based on {@link SearchSpec}, if snippeting is disabled and this
-         * method is called it will return {@code null}. Users can also restrict snippet population
-         * using {@link SearchSpec.Builder#setNumToSnippet} and
-         * {@link SearchSpec.Builder#setNumMatchesPerProperty}, for all results after that value
-         * this method will return {@code null}.
-         * @hide
-         */
-        // TODO(sidchhabra): Replace Document with proper constructor.
-        @Nullable
-        public List<MatchInfo> getMatchInfo() {
-            if (!mResultProto.hasSnippet()) {
-                return null;
-            }
-            AppSearchDocument document = getDocument();
-            List<MatchInfo> matchList = new ArrayList<>();
-            for (Iterator entryProtoIterator = mResultProto.getSnippet()
-                    .getEntriesList().iterator(); entryProtoIterator.hasNext(); ) {
-                SnippetProto.EntryProto entry = (SnippetProto.EntryProto) entryProtoIterator.next();
-                for (Iterator snippetMatchProtoIterator = entry.getSnippetMatchesList().iterator();
-                        snippetMatchProtoIterator.hasNext(); ) {
-                    matchList.add(new MatchInfo(entry.getPropertyName(),
-                            (SnippetMatchProto) snippetMatchProtoIterator.next(), document));
+    public void getNextPage(
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull Consumer<AppSearchResult<List<SearchResult>>> callback) {
+        Objects.requireNonNull(executor);
+        Objects.requireNonNull(callback);
+        Preconditions.checkState(!mIsClosed, "SearchResults has already been closed");
+        try {
+            if (mIsFirstLoad) {
+                mIsFirstLoad = false;
+                long binderCallStartTimeMillis = SystemClock.elapsedRealtime();
+                if (mDatabaseName == null) {
+                    // Global query, there's no one package-database combination to check.
+                    mService.globalQuery(mPackageName, mQueryExpression,
+                            mSearchSpec.getBundle(), mUserHandle,
+                            binderCallStartTimeMillis,
+                            wrapCallback(executor, callback));
+                } else {
+                    // Normal local query, pass in specified database.
+                    mService.query(mPackageName, mDatabaseName, mQueryExpression,
+                            mSearchSpec.getBundle(), mUserHandle,
+                            binderCallStartTimeMillis,
+                            wrapCallback(executor, callback));
                 }
+            } else {
+                mService.getNextPage(mPackageName, mNextPageToken, mUserHandle,
+                        wrapCallback(executor, callback));
             }
-            return matchList;
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
         }
     }
 
     @Override
-    public String toString() {
-        return mSearchResultProto.toString();
+    public void close() {
+        if (!mIsClosed) {
+            try {
+                mService.invalidateNextPageToken(mPackageName, mNextPageToken, mUserHandle);
+                mIsClosed = true;
+            } catch (RemoteException e) {
+                Log.e(TAG, "Unable to close the SearchResults", e);
+            }
+        }
+    }
+
+    private IAppSearchResultCallback wrapCallback(
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull Consumer<AppSearchResult<List<SearchResult>>> callback) {
+        return new IAppSearchResultCallback.Stub() {
+            @Override
+            public void onResult(AppSearchResultParcel resultParcel) {
+                executor.execute(() -> invokeCallback(resultParcel.getResult(), callback));
+            }
+        };
+    }
+
+    private void invokeCallback(
+            @NonNull AppSearchResult<Bundle> searchResultPageResult,
+            @NonNull Consumer<AppSearchResult<List<SearchResult>>> callback) {
+        if (searchResultPageResult.isSuccess()) {
+            try {
+                SearchResultPage searchResultPage =
+                        new SearchResultPage(searchResultPageResult.getResultValue());
+                mNextPageToken = searchResultPage.getNextPageToken();
+                callback.accept(AppSearchResult.newSuccessfulResult(
+                        searchResultPage.getResults()));
+            } catch (Throwable t) {
+                callback.accept(AppSearchResult.throwableToFailedResult(t));
+            }
+        } else {
+            callback.accept(AppSearchResult.newFailedResult(searchResultPageResult));
+        }
     }
 }

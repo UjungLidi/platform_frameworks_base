@@ -16,6 +16,8 @@
 
 package android.service.quickaccesswallet;
 
+import static android.service.quickaccesswallet.QuickAccessWalletService.ACTION_VIEW_WALLET;
+import static android.service.quickaccesswallet.QuickAccessWalletService.ACTION_VIEW_WALLET_SETTINGS;
 import static android.service.quickaccesswallet.QuickAccessWalletService.SERVICE_INTERFACE;
 
 import android.annotation.CallbackExecutor;
@@ -26,6 +28,9 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.pm.PackageManager;
+import android.content.pm.PackageManager.NameNotFoundException;
+import android.content.pm.ResolveInfo;
 import android.graphics.drawable.Drawable;
 import android.os.Handler;
 import android.os.IBinder;
@@ -56,6 +61,7 @@ import java.util.concurrent.Executor;
 public class QuickAccessWalletClientImpl implements QuickAccessWalletClient, ServiceConnection {
 
     private static final String TAG = "QAWalletSClient";
+    public static final String SETTING_KEY = "lockscreen_show_wallet";
     private final Handler mHandler;
     private final Context mContext;
     private final Queue<ApiCaller> mRequestQueue;
@@ -91,14 +97,12 @@ public class QuickAccessWalletClientImpl implements QuickAccessWalletClient, Ser
         int currentUser = ActivityManager.getCurrentUser();
         return currentUser == UserHandle.USER_SYSTEM
                 && checkUserSetupComplete()
-                && checkSecureSetting(Settings.Secure.GLOBAL_ACTIONS_PANEL_ENABLED)
                 && !new LockPatternUtils(mContext).isUserInLockdown(currentUser);
     }
 
     @Override
     public boolean isWalletFeatureAvailableWhenDeviceLocked() {
-        return checkSecureSetting(Settings.Secure.LOCK_SCREEN_SHOW_NOTIFICATIONS)
-                && checkSecureSetting(Settings.Secure.LOCK_SCREEN_ALLOW_PRIVATE_NOTIFICATIONS);
+        return checkSecureSetting(SETTING_KEY);
     }
 
     @Override
@@ -234,33 +238,79 @@ public class QuickAccessWalletClientImpl implements QuickAccessWalletClient, Ser
     @Override
     @Nullable
     public Intent createWalletIntent() {
-        if (mServiceInfo == null || TextUtils.isEmpty(mServiceInfo.getWalletActivity())) {
+        if (mServiceInfo == null) {
             return null;
         }
-        return new Intent(QuickAccessWalletService.ACTION_VIEW_WALLET)
-                .setComponent(
-                        new ComponentName(
-                                mServiceInfo.getComponentName().getPackageName(),
-                                mServiceInfo.getWalletActivity()));
+        String packageName = mServiceInfo.getComponentName().getPackageName();
+        String walletActivity = mServiceInfo.getWalletActivity();
+        return createIntent(walletActivity, packageName, ACTION_VIEW_WALLET);
     }
 
     @Override
     @Nullable
     public Intent createWalletSettingsIntent() {
-        if (mServiceInfo == null || TextUtils.isEmpty(mServiceInfo.getSettingsActivity())) {
+        if (mServiceInfo == null) {
             return null;
         }
-        return new Intent(QuickAccessWalletService.ACTION_VIEW_WALLET_SETTINGS)
-                .setComponent(
-                        new ComponentName(
-                                mServiceInfo.getComponentName().getPackageName(),
-                                mServiceInfo.getSettingsActivity()));
+        String packageName = mServiceInfo.getComponentName().getPackageName();
+        String settingsActivity = mServiceInfo.getSettingsActivity();
+        return createIntent(settingsActivity, packageName, ACTION_VIEW_WALLET_SETTINGS);
+    }
+
+    @Nullable
+    private Intent createIntent(@Nullable String activityName, String packageName, String action) {
+        PackageManager pm = mContext.getPackageManager();
+        if (TextUtils.isEmpty(activityName)) {
+            activityName = queryActivityForAction(pm, packageName, action);
+        }
+        if (TextUtils.isEmpty(activityName)) {
+            return null;
+        }
+        ComponentName component = new ComponentName(packageName, activityName);
+        if (!isActivityEnabled(pm, component)) {
+            return null;
+        }
+        return new Intent(action).setComponent(component);
+    }
+
+    @Nullable
+    private static String queryActivityForAction(PackageManager pm, String packageName,
+            String action) {
+        Intent intent = new Intent(action).setPackage(packageName);
+        ResolveInfo resolveInfo = pm.resolveActivity(intent, 0);
+        if (resolveInfo == null
+                || resolveInfo.activityInfo == null
+                || !resolveInfo.activityInfo.exported) {
+            return null;
+        }
+        return resolveInfo.activityInfo.name;
+    }
+
+    private static boolean isActivityEnabled(PackageManager pm, ComponentName component) {
+        int setting = pm.getComponentEnabledSetting(component);
+        if (setting == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) {
+            return true;
+        }
+        if (setting != PackageManager.COMPONENT_ENABLED_STATE_DEFAULT) {
+            return false;
+        }
+        try {
+            return pm.getActivityInfo(component, 0).isEnabled();
+        } catch (NameNotFoundException e) {
+            return false;
+        }
     }
 
     @Override
     @Nullable
     public Drawable getLogo() {
         return mServiceInfo == null ? null : mServiceInfo.getWalletLogo(mContext);
+    }
+
+    @Nullable
+    @Override
+    public Drawable getTileIcon() {
+        return mServiceInfo == null ? null : mServiceInfo.getTileIcon();
     }
 
     @Override

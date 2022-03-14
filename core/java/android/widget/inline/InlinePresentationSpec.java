@@ -42,8 +42,16 @@ public final class InlinePresentationSpec implements Parcelable {
     private final Size mMaxSize;
 
     /**
-     * The extras encoding the UI style information. Defaults to {@code Bundle.Empty} in which case
-     * the default system UI style will be used.
+     * The extras encoding the UI style information.
+     *
+     * <p>The style bundles can be created using the relevant Style classes and their builders in
+     * the androidx autofill library e.g. {@code androidx.autofill.inline.UiVersions.StylesBuilder}.
+     * </p>
+     *
+     * <p>The style must be set for the suggestion to render properly.</p>
+     *
+     * <p>Note: There should be no remote objects in the bundle, all included remote objects will
+     * be removed from the bundle before transmission.</p>
      */
     @NonNull
     private final Bundle mStyle;
@@ -55,6 +63,14 @@ public final class InlinePresentationSpec implements Parcelable {
 
     private boolean styleEquals(@NonNull Bundle style) {
         return InlinePresentationStyleUtils.bundleEquals(mStyle, style);
+    }
+
+    /**
+     * Removes the remote objects from the {@code mStyle}.
+     * @hide
+     */
+    public void filterContentTypes() {
+        InlinePresentationStyleUtils.filterContentTypes(mStyle);
     }
 
     /** @hide */
@@ -112,8 +128,16 @@ public final class InlinePresentationSpec implements Parcelable {
     }
 
     /**
-     * The extras encoding the UI style information. Defaults to {@code Bundle.Empty} in which case
-     * the default system UI style will be used.
+     * The extras encoding the UI style information.
+     *
+     * <p>The style bundles can be created using the relevant Style classes and their builders in
+     * the androidx autofill library e.g. {@code androidx.autofill.inline.UiVersions.StylesBuilder}.
+     * </p>
+     *
+     * <p>The style must be set for the suggestion to render properly.</p>
+     *
+     * <p>Note: There should be no remote objects in the bundle, all included remote objects will
+     * be removed from the bundle before transmission.</p>
      */
     @DataClass.Generated.Member
     public @NonNull Bundle getStyle() {
@@ -250,8 +274,16 @@ public final class InlinePresentationSpec implements Parcelable {
         }
 
         /**
-         * The extras encoding the UI style information. Defaults to {@code Bundle.Empty} in which case
-         * the default system UI style will be used.
+         * The extras encoding the UI style information.
+         *
+         * <p>The style bundles can be created using the relevant Style classes and their builders in
+         * the androidx autofill library e.g. {@code androidx.autofill.inline.UiVersions.StylesBuilder}.
+         * </p>
+         *
+         * <p>The style must be set for the suggestion to render properly.</p>
+         *
+         * <p>Note: There should be no remote objects in the bundle, all included remote objects will
+         * be removed from the bundle before transmission.</p>
          */
         @DataClass.Generated.Member
         public @NonNull Builder setStyle(@NonNull Bundle value) {
@@ -285,10 +317,10 @@ public final class InlinePresentationSpec implements Parcelable {
     }
 
     @DataClass.Generated(
-            time = 1585768046898L,
+            time = 1596485189661L,
             codegenVersion = "1.0.15",
             sourceFile = "frameworks/base/core/java/android/widget/inline/InlinePresentationSpec.java",
-            inputSignatures = "private final @android.annotation.NonNull android.util.Size mMinSize\nprivate final @android.annotation.NonNull android.util.Size mMaxSize\nprivate final @android.annotation.NonNull android.os.Bundle mStyle\nprivate static @android.annotation.NonNull android.os.Bundle defaultStyle()\nprivate  boolean styleEquals(android.os.Bundle)\nclass InlinePresentationSpec extends java.lang.Object implements [android.os.Parcelable]\n@com.android.internal.util.DataClass(genEqualsHashCode=true, genToString=true, genBuilder=true)\nclass BaseBuilder extends java.lang.Object implements []")
+            inputSignatures = "private final @android.annotation.NonNull android.util.Size mMinSize\nprivate final @android.annotation.NonNull android.util.Size mMaxSize\nprivate final @android.annotation.NonNull android.os.Bundle mStyle\nprivate static @android.annotation.NonNull android.os.Bundle defaultStyle()\nprivate  boolean styleEquals(android.os.Bundle)\npublic  void filterContentTypes()\nclass InlinePresentationSpec extends java.lang.Object implements [android.os.Parcelable]\n@com.android.internal.util.DataClass(genEqualsHashCode=true, genToString=true, genBuilder=true)\nclass BaseBuilder extends java.lang.Object implements []")
     @Deprecated
     private void __metadata() {}
 

@@ -19,7 +19,10 @@ package android.view.inputmethod;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ActivityThread;
-import android.compat.annotation.UnsupportedAppUsage;
+import android.app.compat.CompatChanges;
+import android.compat.annotation.ChangeId;
+import android.compat.annotation.EnabledSince;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.LocaleList;
@@ -48,6 +51,9 @@ public final class InlineSuggestionsRequest implements Parcelable {
     /**
      * Max number of suggestions expected from the response. It must be a positive value.
      * Defaults to {@code SUGGESTION_COUNT_UNLIMITED} if not set.
+     *
+     * <p>In practice, it is recommended that the max suggestion count does not exceed <b>5</b>
+     * for performance reasons.</p>
      */
     private final int mMaxSuggestionCount;
 
@@ -67,12 +73,19 @@ public final class InlineSuggestionsRequest implements Parcelable {
 
     /**
      * The IME provided locales for the request. If non-empty, the inline suggestions should
-     * return languages from the supported locales. If not provided, it'll default to system locale.
+     * return languages from the supported locales. If not provided, it'll default to be empty if
+     * target SDK is S or above, and default to system locale otherwise.
+     *
+     * <p>Note for Autofill Providers: It is <b>recommended</b> for the returned inline suggestions
+     * to have one locale to guarantee consistent UI rendering.</p>
      */
     private @NonNull LocaleList mSupportedLocales;
 
     /**
      * The extras state propagated from the IME to pass extra data.
+     *
+     * <p>Note: There should be no remote objects in the bundle, all included remote objects will
+     * be removed from the bundle before transmission.</p>
      */
     private @NonNull Bundle mExtras;
 
@@ -93,18 +106,9 @@ public final class InlineSuggestionsRequest implements Parcelable {
     private int mHostDisplayId;
 
     /**
-     * The {@link InlinePresentationSpec} for each suggestion in the response. If the max suggestion
-     * count is larger than the number of specs in the list, then the last spec is used for the
-     * remainder of the suggestions. The list should not be empty.
-     *
-     * @hide
-     * @removed
+     * Specifies the UI specification for the inline suggestion tooltip in the response.
      */
-    @UnsupportedAppUsage
-    @NonNull
-    public List<android.view.inline.InlinePresentationSpec> getPresentationSpecs() {
-        return android.view.inline.InlinePresentationSpec.fromWidgets(mInlinePresentationSpecs);
-    }
+    private @Nullable InlinePresentationSpec mInlineTooltipPresentationSpec;
 
     /**
      * @hide
@@ -141,6 +145,23 @@ public final class InlineSuggestionsRequest implements Parcelable {
         Preconditions.checkState(mMaxSuggestionCount >= mInlinePresentationSpecs.size());
     }
 
+    /**
+     * Removes the remote objects from the bundles within the {@Code mExtras} and the
+     * {@code mInlinePresentationSpecs}.
+     *
+     * @hide
+     */
+    public void filterContentTypes() {
+        InlinePresentationStyleUtils.filterContentTypes(mExtras);
+        for (int i = 0; i < mInlinePresentationSpecs.size(); i++) {
+            mInlinePresentationSpecs.get(i).filterContentTypes();
+        }
+
+        if (mInlineTooltipPresentationSpec != null) {
+            mInlineTooltipPresentationSpec.filterContentTypes();
+        }
+    }
+
     private static int defaultMaxSuggestionCount() {
         return SUGGESTION_COUNT_UNLIMITED;
     }
@@ -149,7 +170,22 @@ public final class InlineSuggestionsRequest implements Parcelable {
         return ActivityThread.currentPackageName();
     }
 
+    private static InlinePresentationSpec defaultInlineTooltipPresentationSpec() {
+        return null;
+    }
+
+    /**
+     * The {@link InlineSuggestionsRequest#getSupportedLocales()} now returns empty locale list when
+     * it's not set, instead of the default system locale.
+     */
+    @ChangeId
+    @EnabledSince(targetSdkVersion = Build.VERSION_CODES.S)
+    private static final long IME_AUTOFILL_DEFAULT_SUPPORTED_LOCALES_IS_EMPTY = 169273070L;
+
     private static LocaleList defaultSupportedLocales() {
+        if (CompatChanges.isChangeEnabled(IME_AUTOFILL_DEFAULT_SUPPORTED_LOCALES_IS_EMPTY)) {
+            return LocaleList.getEmptyLocaleList();
+        }
         return LocaleList.getDefault();
     }
 
@@ -170,17 +206,6 @@ public final class InlineSuggestionsRequest implements Parcelable {
 
     /** @hide */
     abstract static class BaseBuilder {
-        /**
-         * @hide
-         * @removed
-         */
-        @UnsupportedAppUsage
-        @NonNull
-        public Builder addPresentationSpecs(
-                @NonNull android.view.inline.InlinePresentationSpec value) {
-            return ((Builder) this).addInlinePresentationSpecs(value.toWidget());
-        }
-
         abstract Builder setInlinePresentationSpecs(
                 @NonNull List<android.widget.inline.InlinePresentationSpec> specs);
 
@@ -193,13 +218,13 @@ public final class InlineSuggestionsRequest implements Parcelable {
 
 
 
-    // Code below generated by codegen v1.0.15.
+    // Code below generated by codegen v1.0.23.
     //
     // DO NOT MODIFY!
     // CHECKSTYLE:OFF Generated code
     //
     // To regenerate run:
-    // $ codegen $ANDROID_BUILD_TOP/frameworks/base/core/java/android/view/inputmethod/InlineSuggestionsRequest.java
+    // $ codegen $ANDROID_BUILD_TOP/./frameworks/base/core/java/android/view/inputmethod/InlineSuggestionsRequest.java
     //
     // To exclude the generated code from IntelliJ auto-formatting enable (one-time):
     //   Settings > Editor > Code Style > Formatter Control
@@ -214,7 +239,8 @@ public final class InlineSuggestionsRequest implements Parcelable {
             @NonNull LocaleList supportedLocales,
             @NonNull Bundle extras,
             @Nullable IBinder hostInputToken,
-            int hostDisplayId) {
+            int hostDisplayId,
+            @Nullable InlinePresentationSpec inlineTooltipPresentationSpec) {
         this.mMaxSuggestionCount = maxSuggestionCount;
         this.mInlinePresentationSpecs = inlinePresentationSpecs;
         com.android.internal.util.AnnotationValidations.validate(
@@ -230,6 +256,7 @@ public final class InlineSuggestionsRequest implements Parcelable {
                 NonNull.class, null, mExtras);
         this.mHostInputToken = hostInputToken;
         this.mHostDisplayId = hostDisplayId;
+        this.mInlineTooltipPresentationSpec = inlineTooltipPresentationSpec;
 
         onConstructed();
     }
@@ -237,6 +264,9 @@ public final class InlineSuggestionsRequest implements Parcelable {
     /**
      * Max number of suggestions expected from the response. It must be a positive value.
      * Defaults to {@code SUGGESTION_COUNT_UNLIMITED} if not set.
+     *
+     * <p>In practice, it is recommended that the max suggestion count does not exceed <b>5</b>
+     * for performance reasons.</p>
      */
     @DataClass.Generated.Member
     public int getMaxSuggestionCount() {
@@ -265,7 +295,11 @@ public final class InlineSuggestionsRequest implements Parcelable {
 
     /**
      * The IME provided locales for the request. If non-empty, the inline suggestions should
-     * return languages from the supported locales. If not provided, it'll default to system locale.
+     * return languages from the supported locales. If not provided, it'll default to be empty if
+     * target SDK is S or above, and default to system locale otherwise.
+     *
+     * <p>Note for Autofill Providers: It is <b>recommended</b> for the returned inline suggestions
+     * to have one locale to guarantee consistent UI rendering.</p>
      */
     @DataClass.Generated.Member
     public @NonNull LocaleList getSupportedLocales() {
@@ -274,6 +308,9 @@ public final class InlineSuggestionsRequest implements Parcelable {
 
     /**
      * The extras state propagated from the IME to pass extra data.
+     *
+     * <p>Note: There should be no remote objects in the bundle, all included remote objects will
+     * be removed from the bundle before transmission.</p>
      */
     @DataClass.Generated.Member
     public @NonNull Bundle getExtras() {
@@ -302,6 +339,14 @@ public final class InlineSuggestionsRequest implements Parcelable {
         return mHostDisplayId;
     }
 
+    /**
+     * Specifies the UI specification for the inline suggestion tooltip in the response.
+     */
+    @DataClass.Generated.Member
+    public @Nullable InlinePresentationSpec getInlineTooltipPresentationSpec() {
+        return mInlineTooltipPresentationSpec;
+    }
+
     @Override
     @DataClass.Generated.Member
     public String toString() {
@@ -315,7 +360,8 @@ public final class InlineSuggestionsRequest implements Parcelable {
                 "supportedLocales = " + mSupportedLocales + ", " +
                 "extras = " + mExtras + ", " +
                 "hostInputToken = " + mHostInputToken + ", " +
-                "hostDisplayId = " + mHostDisplayId +
+                "hostDisplayId = " + mHostDisplayId + ", " +
+                "inlineTooltipPresentationSpec = " + mInlineTooltipPresentationSpec +
         " }";
     }
 
@@ -338,7 +384,8 @@ public final class InlineSuggestionsRequest implements Parcelable {
                 && java.util.Objects.equals(mSupportedLocales, that.mSupportedLocales)
                 && extrasEquals(that.mExtras)
                 && java.util.Objects.equals(mHostInputToken, that.mHostInputToken)
-                && mHostDisplayId == that.mHostDisplayId;
+                && mHostDisplayId == that.mHostDisplayId
+                && java.util.Objects.equals(mInlineTooltipPresentationSpec, that.mInlineTooltipPresentationSpec);
     }
 
     @Override
@@ -355,6 +402,7 @@ public final class InlineSuggestionsRequest implements Parcelable {
         _hash = 31 * _hash + java.util.Objects.hashCode(mExtras);
         _hash = 31 * _hash + java.util.Objects.hashCode(mHostInputToken);
         _hash = 31 * _hash + mHostDisplayId;
+        _hash = 31 * _hash + java.util.Objects.hashCode(mInlineTooltipPresentationSpec);
         return _hash;
     }
 
@@ -364,9 +412,10 @@ public final class InlineSuggestionsRequest implements Parcelable {
         // You can override field parcelling by defining methods like:
         // void parcelFieldName(Parcel dest, int flags) { ... }
 
-        byte flg = 0;
+        int flg = 0;
         if (mHostInputToken != null) flg |= 0x20;
-        dest.writeByte(flg);
+        if (mInlineTooltipPresentationSpec != null) flg |= 0x80;
+        dest.writeInt(flg);
         dest.writeInt(mMaxSuggestionCount);
         dest.writeParcelableList(mInlinePresentationSpecs, flags);
         dest.writeString(mHostPackageName);
@@ -374,6 +423,7 @@ public final class InlineSuggestionsRequest implements Parcelable {
         dest.writeBundle(mExtras);
         parcelHostInputToken(dest, flags);
         dest.writeInt(mHostDisplayId);
+        if (mInlineTooltipPresentationSpec != null) dest.writeTypedObject(mInlineTooltipPresentationSpec, flags);
     }
 
     @Override
@@ -387,7 +437,7 @@ public final class InlineSuggestionsRequest implements Parcelable {
         // You can override field unparcelling by defining methods like:
         // static FieldType unparcelFieldName(Parcel in) { ... }
 
-        byte flg = in.readByte();
+        int flg = in.readInt();
         int maxSuggestionCount = in.readInt();
         List<InlinePresentationSpec> inlinePresentationSpecs = new ArrayList<>();
         in.readParcelableList(inlinePresentationSpecs, InlinePresentationSpec.class.getClassLoader());
@@ -396,6 +446,7 @@ public final class InlineSuggestionsRequest implements Parcelable {
         Bundle extras = in.readBundle();
         IBinder hostInputToken = unparcelHostInputToken(in);
         int hostDisplayId = in.readInt();
+        InlinePresentationSpec inlineTooltipPresentationSpec = (flg & 0x80) == 0 ? null : (InlinePresentationSpec) in.readTypedObject(InlinePresentationSpec.CREATOR);
 
         this.mMaxSuggestionCount = maxSuggestionCount;
         this.mInlinePresentationSpecs = inlinePresentationSpecs;
@@ -412,6 +463,7 @@ public final class InlineSuggestionsRequest implements Parcelable {
                 NonNull.class, null, mExtras);
         this.mHostInputToken = hostInputToken;
         this.mHostDisplayId = hostDisplayId;
+        this.mInlineTooltipPresentationSpec = inlineTooltipPresentationSpec;
 
         onConstructed();
     }
@@ -444,6 +496,7 @@ public final class InlineSuggestionsRequest implements Parcelable {
         private @NonNull Bundle mExtras;
         private @Nullable IBinder mHostInputToken;
         private int mHostDisplayId;
+        private @Nullable InlinePresentationSpec mInlineTooltipPresentationSpec;
 
         private long mBuilderFieldsSet = 0L;
 
@@ -465,6 +518,9 @@ public final class InlineSuggestionsRequest implements Parcelable {
         /**
          * Max number of suggestions expected from the response. It must be a positive value.
          * Defaults to {@code SUGGESTION_COUNT_UNLIMITED} if not set.
+         *
+         * <p>In practice, it is recommended that the max suggestion count does not exceed <b>5</b>
+         * for performance reasons.</p>
          */
         @DataClass.Generated.Member
         public @NonNull Builder setMaxSuggestionCount(int value) {
@@ -514,7 +570,11 @@ public final class InlineSuggestionsRequest implements Parcelable {
 
         /**
          * The IME provided locales for the request. If non-empty, the inline suggestions should
-         * return languages from the supported locales. If not provided, it'll default to system locale.
+         * return languages from the supported locales. If not provided, it'll default to be empty if
+         * target SDK is S or above, and default to system locale otherwise.
+         *
+         * <p>Note for Autofill Providers: It is <b>recommended</b> for the returned inline suggestions
+         * to have one locale to guarantee consistent UI rendering.</p>
          */
         @DataClass.Generated.Member
         public @NonNull Builder setSupportedLocales(@NonNull LocaleList value) {
@@ -526,6 +586,9 @@ public final class InlineSuggestionsRequest implements Parcelable {
 
         /**
          * The extras state propagated from the IME to pass extra data.
+         *
+         * <p>Note: There should be no remote objects in the bundle, all included remote objects will
+         * be removed from the bundle before transmission.</p>
          */
         @DataClass.Generated.Member
         public @NonNull Builder setExtras(@NonNull Bundle value) {
@@ -565,10 +628,21 @@ public final class InlineSuggestionsRequest implements Parcelable {
             return this;
         }
 
+        /**
+         * Specifies the UI specification for the inline suggestion tooltip in the response.
+         */
+        @DataClass.Generated.Member
+        public @NonNull Builder setInlineTooltipPresentationSpec(@NonNull InlinePresentationSpec value) {
+            checkNotUsed();
+            mBuilderFieldsSet |= 0x80;
+            mInlineTooltipPresentationSpec = value;
+            return this;
+        }
+
         /** Builds the instance. This builder should not be touched after calling this! */
         public @NonNull InlineSuggestionsRequest build() {
             checkNotUsed();
-            mBuilderFieldsSet |= 0x80; // Mark builder used
+            mBuilderFieldsSet |= 0x100; // Mark builder used
 
             if ((mBuilderFieldsSet & 0x1) == 0) {
                 mMaxSuggestionCount = defaultMaxSuggestionCount();
@@ -588,6 +662,9 @@ public final class InlineSuggestionsRequest implements Parcelable {
             if ((mBuilderFieldsSet & 0x40) == 0) {
                 mHostDisplayId = defaultHostDisplayId();
             }
+            if ((mBuilderFieldsSet & 0x80) == 0) {
+                mInlineTooltipPresentationSpec = defaultInlineTooltipPresentationSpec();
+            }
             InlineSuggestionsRequest o = new InlineSuggestionsRequest(
                     mMaxSuggestionCount,
                     mInlinePresentationSpecs,
@@ -595,12 +672,13 @@ public final class InlineSuggestionsRequest implements Parcelable {
                     mSupportedLocales,
                     mExtras,
                     mHostInputToken,
-                    mHostDisplayId);
+                    mHostDisplayId,
+                    mInlineTooltipPresentationSpec);
             return o;
         }
 
         private void checkNotUsed() {
-            if ((mBuilderFieldsSet & 0x80) != 0) {
+            if ((mBuilderFieldsSet & 0x100) != 0) {
                 throw new IllegalStateException(
                         "This Builder should not be reused. Use a new Builder instance instead");
             }
@@ -608,10 +686,10 @@ public final class InlineSuggestionsRequest implements Parcelable {
     }
 
     @DataClass.Generated(
-            time = 1585768018462L,
-            codegenVersion = "1.0.15",
+            time = 1621415989607L,
+            codegenVersion = "1.0.23",
             sourceFile = "frameworks/base/core/java/android/view/inputmethod/InlineSuggestionsRequest.java",
-            inputSignatures = "public static final  int SUGGESTION_COUNT_UNLIMITED\nprivate final  int mMaxSuggestionCount\nprivate final @android.annotation.NonNull java.util.List<android.widget.inline.InlinePresentationSpec> mInlinePresentationSpecs\nprivate @android.annotation.NonNull java.lang.String mHostPackageName\nprivate @android.annotation.NonNull android.os.LocaleList mSupportedLocales\nprivate @android.annotation.NonNull android.os.Bundle mExtras\nprivate @android.annotation.Nullable android.os.IBinder mHostInputToken\nprivate  int mHostDisplayId\npublic @android.compat.annotation.UnsupportedAppUsage @android.annotation.NonNull java.util.List<android.view.inline.InlinePresentationSpec> getPresentationSpecs()\npublic  void setHostInputToken(android.os.IBinder)\nprivate  boolean extrasEquals(android.os.Bundle)\nprivate  void parcelHostInputToken(android.os.Parcel,int)\nprivate @android.annotation.Nullable android.os.IBinder unparcelHostInputToken(android.os.Parcel)\npublic  void setHostDisplayId(int)\nprivate  void onConstructed()\nprivate static  int defaultMaxSuggestionCount()\nprivate static  java.lang.String defaultHostPackageName()\nprivate static  android.os.LocaleList defaultSupportedLocales()\nprivate static @android.annotation.Nullable android.os.IBinder defaultHostInputToken()\nprivate static @android.annotation.Nullable int defaultHostDisplayId()\nprivate static @android.annotation.NonNull android.os.Bundle defaultExtras()\nclass InlineSuggestionsRequest extends java.lang.Object implements [android.os.Parcelable]\n@com.android.internal.util.DataClass(genEqualsHashCode=true, genToString=true, genBuilder=true)\npublic @android.compat.annotation.UnsupportedAppUsage @android.annotation.NonNull android.view.inputmethod.InlineSuggestionsRequest.Builder addPresentationSpecs(android.view.inline.InlinePresentationSpec)\nabstract  android.view.inputmethod.InlineSuggestionsRequest.Builder setInlinePresentationSpecs(java.util.List<android.widget.inline.InlinePresentationSpec>)\nabstract  android.view.inputmethod.InlineSuggestionsRequest.Builder setHostPackageName(java.lang.String)\nabstract  android.view.inputmethod.InlineSuggestionsRequest.Builder setHostInputToken(android.os.IBinder)\nabstract  android.view.inputmethod.InlineSuggestionsRequest.Builder setHostDisplayId(int)\nclass BaseBuilder extends java.lang.Object implements []")
+            inputSignatures = "public static final  int SUGGESTION_COUNT_UNLIMITED\nprivate final  int mMaxSuggestionCount\nprivate final @android.annotation.NonNull java.util.List<android.widget.inline.InlinePresentationSpec> mInlinePresentationSpecs\nprivate @android.annotation.NonNull java.lang.String mHostPackageName\nprivate @android.annotation.NonNull android.os.LocaleList mSupportedLocales\nprivate @android.annotation.NonNull android.os.Bundle mExtras\nprivate @android.annotation.Nullable android.os.IBinder mHostInputToken\nprivate  int mHostDisplayId\nprivate @android.annotation.Nullable android.widget.inline.InlinePresentationSpec mInlineTooltipPresentationSpec\nprivate static final @android.compat.annotation.ChangeId @android.compat.annotation.EnabledSince long IME_AUTOFILL_DEFAULT_SUPPORTED_LOCALES_IS_EMPTY\npublic  void setHostInputToken(android.os.IBinder)\nprivate  boolean extrasEquals(android.os.Bundle)\nprivate  void parcelHostInputToken(android.os.Parcel,int)\nprivate @android.annotation.Nullable android.os.IBinder unparcelHostInputToken(android.os.Parcel)\npublic  void setHostDisplayId(int)\nprivate  void onConstructed()\npublic  void filterContentTypes()\nprivate static  int defaultMaxSuggestionCount()\nprivate static  java.lang.String defaultHostPackageName()\nprivate static  android.widget.inline.InlinePresentationSpec defaultInlineTooltipPresentationSpec()\nprivate static  android.os.LocaleList defaultSupportedLocales()\nprivate static @android.annotation.Nullable android.os.IBinder defaultHostInputToken()\nprivate static @android.annotation.Nullable int defaultHostDisplayId()\nprivate static @android.annotation.NonNull android.os.Bundle defaultExtras()\nclass InlineSuggestionsRequest extends java.lang.Object implements [android.os.Parcelable]\nabstract  android.view.inputmethod.InlineSuggestionsRequest.Builder setInlinePresentationSpecs(java.util.List<android.widget.inline.InlinePresentationSpec>)\nabstract  android.view.inputmethod.InlineSuggestionsRequest.Builder setHostPackageName(java.lang.String)\nabstract  android.view.inputmethod.InlineSuggestionsRequest.Builder setHostInputToken(android.os.IBinder)\nabstract  android.view.inputmethod.InlineSuggestionsRequest.Builder setHostDisplayId(int)\nclass BaseBuilder extends java.lang.Object implements []\n@com.android.internal.util.DataClass(genEqualsHashCode=true, genToString=true, genBuilder=true)\nabstract  android.view.inputmethod.InlineSuggestionsRequest.Builder setInlinePresentationSpecs(java.util.List<android.widget.inline.InlinePresentationSpec>)\nabstract  android.view.inputmethod.InlineSuggestionsRequest.Builder setHostPackageName(java.lang.String)\nabstract  android.view.inputmethod.InlineSuggestionsRequest.Builder setHostInputToken(android.os.IBinder)\nabstract  android.view.inputmethod.InlineSuggestionsRequest.Builder setHostDisplayId(int)\nclass BaseBuilder extends java.lang.Object implements []")
     @Deprecated
     private void __metadata() {}
 

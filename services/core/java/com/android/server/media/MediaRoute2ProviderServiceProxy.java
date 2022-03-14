@@ -16,6 +16,10 @@
 
 package com.android.server.media;
 
+import static android.media.MediaRoute2ProviderService.REQUEST_ID_NONE;
+
+import static com.android.internal.util.function.pooled.PooledLambda.obtainMessage;
+
 import android.annotation.NonNull;
 import android.content.ComponentName;
 import android.content.Context;
@@ -34,17 +38,22 @@ import android.os.IBinder.DeathRecipient;
 import android.os.Looper;
 import android.os.RemoteException;
 import android.os.UserHandle;
+import android.text.TextUtils;
 import android.util.Log;
 import android.util.Slog;
 
+import com.android.internal.annotations.GuardedBy;
+
 import java.io.PrintWriter;
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 
 /**
  * Maintains a connection to a particular {@link MediaRoute2ProviderService}.
  */
-// TODO: Need to revisit the bind/unbind/connect/disconnect logic in this class.
 final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
         implements ServiceConnection {
     private static final String TAG = "MR2ProviderSvcProxy";
@@ -60,7 +69,11 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
     private Connection mActiveConnection;
     private boolean mConnectionReady;
 
-    private RouteDiscoveryPreference mPendingDiscoveryPreference = null;
+    private boolean mIsManagerScanning;
+    private RouteDiscoveryPreference mLastDiscoveryPreference = null;
+
+    @GuardedBy("mLock")
+    final List<RoutingSessionInfo> mReleasingSessions = new ArrayList<>();
 
     MediaRoute2ProviderServiceProxy(@NonNull Context context, @NonNull ComponentName componentName,
             int userId) {
@@ -77,6 +90,13 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
         pw.println(prefix + "  mBound=" + mBound);
         pw.println(prefix + "  mActiveConnection=" + mActiveConnection);
         pw.println(prefix + "  mConnectionReady=" + mConnectionReady);
+    }
+
+    public void setManagerScanning(boolean managerScanning) {
+        if (mIsManagerScanning != managerScanning) {
+            mIsManagerScanning = managerScanning;
+            updateBinding();
+        }
     }
 
     @Override
@@ -98,12 +118,11 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
 
     @Override
     public void updateDiscoveryPreference(RouteDiscoveryPreference discoveryPreference) {
+        mLastDiscoveryPreference = discoveryPreference;
         if (mConnectionReady) {
             mActiveConnection.updateDiscoveryPreference(discoveryPreference);
-            updateBinding();
-        } else {
-            mPendingDiscoveryPreference = discoveryPreference;
         }
+        updateBinding();
     }
 
     @Override
@@ -140,6 +159,19 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
         if (mConnectionReady) {
             mActiveConnection.setSessionVolume(requestId, sessionId, volume);
             updateBinding();
+        }
+    }
+
+    @Override
+    public void prepareReleaseSession(@NonNull String sessionId) {
+        synchronized (mLock) {
+            for (RoutingSessionInfo session : mSessionInfos) {
+                if (TextUtils.equals(session.getId(), sessionId)) {
+                    mSessionInfos.remove(session);
+                    mReleasingSessions.add(session);
+                    break;
+                }
+            }
         }
     }
 
@@ -186,9 +218,12 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
     }
 
     private boolean shouldBind() {
-        //TODO: Binding could be delayed until it's necessary.
         if (mRunning) {
-            return true;
+            // Bind when there is a discovery preference or an active route session.
+            return (mLastDiscoveryPreference != null
+                    && !mLastDiscoveryPreference.getPreferredFeatures().isEmpty())
+                    || !getSessionInfos().isEmpty()
+                    || mIsManagerScanning;
         }
         return false;
     }
@@ -266,8 +301,6 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
         if (DEBUG) {
             Slog.d(TAG, this + ": Service binding died");
         }
-        // TODO: Investigate whether it tries to bind endlessly when the service is
-        //       badly implemented.
         if (shouldBind()) {
             unbind();
             bind();
@@ -277,9 +310,8 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
     private void onConnectionReady(Connection connection) {
         if (mActiveConnection == connection) {
             mConnectionReady = true;
-            if (mPendingDiscoveryPreference != null) {
-                updateDiscoveryPreference(mPendingDiscoveryPreference);
-                mPendingDiscoveryPreference = null;
+            if (mLastDiscoveryPreference != null) {
+                updateDiscoveryPreference(mLastDiscoveryPreference);
             }
         }
     }
@@ -293,104 +325,110 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
         }
     }
 
-    private void onProviderStateUpdated(Connection connection,
-            MediaRoute2ProviderInfo providerInfo) {
+    private void onProviderUpdated(Connection connection, MediaRoute2ProviderInfo providerInfo) {
         if (mActiveConnection != connection) {
             return;
         }
         if (DEBUG) {
-            Slog.d(TAG, this + ": State changed ");
+            Slog.d(TAG, this + ": updated");
         }
         setAndNotifyProviderState(providerInfo);
     }
 
     private void onSessionCreated(Connection connection, long requestId,
-            RoutingSessionInfo sessionInfo) {
+            RoutingSessionInfo newSession) {
         if (mActiveConnection != connection) {
             return;
         }
 
-        if (sessionInfo == null) {
-            Slog.w(TAG, "onSessionCreated: Ignoring null sessionInfo sent from " + mComponentName);
+        if (newSession == null) {
+            Slog.w(TAG, "onSessionCreated: Ignoring null session sent from " + mComponentName);
             return;
         }
 
-        sessionInfo = new RoutingSessionInfo.Builder(sessionInfo)
-                .setProviderId(getUniqueId())
-                .build();
+        newSession = assignProviderIdForSession(newSession);
+        String newSessionId = newSession.getId();
 
-        boolean duplicateSessionAlreadyExists = false;
         synchronized (mLock) {
-            for (int i = 0; i < mSessionInfos.size(); i++) {
-                if (mSessionInfos.get(i).getId().equals(sessionInfo.getId())) {
-                    duplicateSessionAlreadyExists = true;
-                    break;
-                }
+            if (mSessionInfos.stream()
+                    .anyMatch(session -> TextUtils.equals(session.getId(), newSessionId))
+                    || mReleasingSessions.stream()
+                    .anyMatch(session -> TextUtils.equals(session.getId(), newSessionId))) {
+                Slog.w(TAG, "onSessionCreated: Duplicate session already exists. Ignoring.");
+                return;
             }
-            mSessionInfos.add(sessionInfo);
+            mSessionInfos.add(newSession);
         }
 
-        if (duplicateSessionAlreadyExists) {
-            Slog.w(TAG, "onSessionCreated: Duplicate session already exists. Ignoring.");
-            return;
-        }
-
-        mCallback.onSessionCreated(this, requestId, sessionInfo);
+        mCallback.onSessionCreated(this, requestId, newSession);
     }
 
-    private void onSessionUpdated(Connection connection, RoutingSessionInfo sessionInfo) {
+    private int findSessionByIdLocked(RoutingSessionInfo session) {
+        for (int i = 0; i < mSessionInfos.size(); i++) {
+            if (TextUtils.equals(mSessionInfos.get(i).getId(), session.getId())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+
+    private void onSessionsUpdated(Connection connection, List<RoutingSessionInfo> sessions) {
         if (mActiveConnection != connection) {
             return;
         }
-        if (sessionInfo == null) {
-            Slog.w(TAG, "onSessionUpdated: Ignoring null sessionInfo sent from "
-                    + mComponentName);
+
+        int targetIndex = 0;
+        synchronized (mLock) {
+            for (RoutingSessionInfo session : sessions) {
+                if (session == null) continue;
+                session = assignProviderIdForSession(session);
+
+                int sourceIndex = findSessionByIdLocked(session);
+                if (sourceIndex < 0) {
+                    mSessionInfos.add(targetIndex++, session);
+                    dispatchSessionCreated(REQUEST_ID_NONE, session);
+                } else if (sourceIndex < targetIndex) {
+                    Slog.w(TAG, "Ignoring duplicate session ID: " + session.getId());
+                } else {
+                    mSessionInfos.set(sourceIndex, session);
+                    Collections.swap(mSessionInfos, sourceIndex, targetIndex++);
+                    dispatchSessionUpdated(session);
+                }
+            }
+            for (int i = mSessionInfos.size() - 1; i >= targetIndex; i--) {
+                RoutingSessionInfo releasedSession = mSessionInfos.remove(i);
+                dispatchSessionReleased(releasedSession);
+            }
+        }
+    }
+
+    private void onSessionReleased(Connection connection, RoutingSessionInfo releaedSession) {
+        if (mActiveConnection != connection) {
+            return;
+        }
+        if (releaedSession == null) {
+            Slog.w(TAG, "onSessionReleased: Ignoring null session sent from " + mComponentName);
             return;
         }
 
-        sessionInfo = new RoutingSessionInfo.Builder(sessionInfo)
-                .setProviderId(getUniqueId())
-                .build();
+        releaedSession = assignProviderIdForSession(releaedSession);
 
         boolean found = false;
         synchronized (mLock) {
-            for (int i = 0; i < mSessionInfos.size(); i++) {
-                if (mSessionInfos.get(i).getId().equals(sessionInfo.getId())) {
-                    mSessionInfos.set(i, sessionInfo);
+            for (RoutingSessionInfo session : mSessionInfos) {
+                if (TextUtils.equals(session.getId(), releaedSession.getId())) {
+                    mSessionInfos.remove(session);
                     found = true;
                     break;
                 }
             }
-        }
-
-        if (!found) {
-            Slog.w(TAG, "onSessionUpdated: Matching session info not found");
-            return;
-        }
-
-        mCallback.onSessionUpdated(this, sessionInfo);
-    }
-
-    private void onSessionReleased(Connection connection, RoutingSessionInfo sessionInfo) {
-        if (mActiveConnection != connection) {
-            return;
-        }
-        if (sessionInfo == null) {
-            Slog.w(TAG, "onSessionReleased: Ignoring null sessionInfo sent from " + mComponentName);
-            return;
-        }
-
-        sessionInfo = new RoutingSessionInfo.Builder(sessionInfo)
-                .setProviderId(getUniqueId())
-                .build();
-
-        boolean found = false;
-        synchronized (mLock) {
-            for (int i = 0; i < mSessionInfos.size(); i++) {
-                if (mSessionInfos.get(i).getId().equals(sessionInfo.getId())) {
-                    mSessionInfos.remove(i);
-                    found = true;
-                    break;
+            if (!found) {
+                for (RoutingSessionInfo session : mReleasingSessions) {
+                    if (TextUtils.equals(session.getId(), releaedSession.getId())) {
+                        mReleasingSessions.remove(session);
+                        return;
+                    }
                 }
             }
         }
@@ -400,7 +438,29 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
             return;
         }
 
-        mCallback.onSessionReleased(this, sessionInfo);
+        mCallback.onSessionReleased(this, releaedSession);
+    }
+
+    private void dispatchSessionCreated(long requestId, RoutingSessionInfo session) {
+        mHandler.sendMessage(
+                obtainMessage(mCallback::onSessionCreated, this, requestId, session));
+    }
+
+    private void dispatchSessionUpdated(RoutingSessionInfo session) {
+        mHandler.sendMessage(
+                obtainMessage(mCallback::onSessionUpdated, this, session));
+    }
+
+    private void dispatchSessionReleased(RoutingSessionInfo session) {
+        mHandler.sendMessage(
+                obtainMessage(mCallback::onSessionReleased, this, session));
+    }
+
+    private RoutingSessionInfo assignProviderIdForSession(RoutingSessionInfo sessionInfo) {
+        return new RoutingSessionInfo.Builder(sessionInfo)
+                .setOwnerPackageName(mComponentName.getPackageName())
+                .setProviderId(getUniqueId())
+                .build();
     }
 
     private void onRequestFailed(Connection connection, long requestId, int reason) {
@@ -408,7 +468,7 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
             return;
         }
 
-        if (requestId == MediaRoute2ProviderService.REQUEST_ID_NONE) {
+        if (requestId == REQUEST_ID_NONE) {
             Slog.w(TAG, "onRequestFailed: Ignoring requestId REQUEST_ID_NONE");
             return;
         }
@@ -427,6 +487,7 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
                     mCallback.onSessionReleased(this, sessionInfo);
                 }
                 mSessionInfos.clear();
+                mReleasingSessions.clear();
             }
         }
     }
@@ -532,16 +593,16 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
             mHandler.post(() -> onConnectionDied(Connection.this));
         }
 
-        void postProviderStateUpdated(MediaRoute2ProviderInfo providerInfo) {
-            mHandler.post(() -> onProviderStateUpdated(Connection.this, providerInfo));
+        void postProviderUpdated(MediaRoute2ProviderInfo providerInfo) {
+            mHandler.post(() -> onProviderUpdated(Connection.this, providerInfo));
         }
 
         void postSessionCreated(long requestId, RoutingSessionInfo sessionInfo) {
             mHandler.post(() -> onSessionCreated(Connection.this, requestId, sessionInfo));
         }
 
-        void postSessionUpdated(RoutingSessionInfo sessionInfo) {
-            mHandler.post(() -> onSessionUpdated(Connection.this, sessionInfo));
+        void postSessionsUpdated(List<RoutingSessionInfo> sessionInfo) {
+            mHandler.post(() -> onSessionsUpdated(Connection.this, sessionInfo));
         }
 
         void postSessionReleased(RoutingSessionInfo sessionInfo) {
@@ -566,10 +627,10 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
         }
 
         @Override
-        public void updateState(MediaRoute2ProviderInfo providerInfo) {
+        public void notifyProviderUpdated(MediaRoute2ProviderInfo providerInfo) {
             Connection connection = mConnectionRef.get();
             if (connection != null) {
-                connection.postProviderStateUpdated(providerInfo);
+                connection.postProviderUpdated(providerInfo);
             }
         }
 
@@ -582,10 +643,10 @@ final class MediaRoute2ProviderServiceProxy extends MediaRoute2Provider
         }
 
         @Override
-        public void notifySessionUpdated(RoutingSessionInfo sessionInfo) {
+        public void notifySessionsUpdated(List<RoutingSessionInfo> sessionInfo) {
             Connection connection = mConnectionRef.get();
             if (connection != null) {
-                connection.postSessionUpdated(sessionInfo);
+                connection.postSessionsUpdated(sessionInfo);
             }
         }
 

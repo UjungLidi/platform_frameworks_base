@@ -12,6 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+package {
+    // See: http://go/android-license-faq
+    // A large-scale-change added 'default_applicable_licenses' to import
+    // all of the 'license_kinds' from "frameworks_base_license"
+    // to get the below license kinds:
+    //   SPDX-license-identifier-Apache-2.0
+    default_applicable_licenses: ["frameworks_base_license"],
+}
+
 java_library {
     name: "updatable-media",
 
@@ -33,31 +42,43 @@ java_library {
 
     sdk_version: "module_current",
     libs: [
-        "framework_media_annotation",
+        "androidx.annotation_annotation",
+        "framework-annotations-lib",
     ],
-
     static_libs: [
-        "exoplayer2-extractor"
+        "exoplayer2-extractor",
+        "mediatranscoding_aidl_interface-java",
+        "modules-annotation-minsdk",
+        "modules-utils-build",
     ],
     jarjar_rules: "jarjar_rules.txt",
 
     plugins: ["java_api_finder"],
 
     hostdex: true, // for hiddenapi check
-    visibility: ["//frameworks/av/apex:__subpackages__"],
     apex_available: [
         "com.android.media",
         "test_com.android.media",
+    ],
+    min_sdk_version: "29",
+    visibility: [
+        "//frameworks/av/apex:__subpackages__",
+        "//frameworks/base", // For framework-all
+        "//frameworks/base/apex/media/service",
     ],
 }
 
 filegroup {
     name: "updatable-media-srcs",
     srcs: [
+        "java/android/media/MediaFrameworkInitializer.java",
+        ":media-aidl-srcs",
+        ":mediaparceledlistslice-java-srcs",
         ":mediaparser-srcs",
         ":mediasession2-java-srcs",
-        ":mediasession2-aidl-srcs",
+        ":mediatranscoding-srcs",
     ],
+    visibility: ["//frameworks/base"],
 }
 
 filegroup {
@@ -72,6 +93,16 @@ filegroup {
         "java/android/media/Session2CommandGroup.java",
         "java/android/media/Session2Link.java",
         "java/android/media/Session2Token.java",
+        "java/android/media/MediaCommunicationManager.java",
+    ],
+    path: "java",
+}
+
+filegroup {
+    name: "mediaparceledlistslice-java-srcs",
+    srcs: [
+        "java/android/media/MediaParceledListSlice.java",
+        "java/android/media/BaseMediaParceledListSlice.java",
     ],
     path: "java",
 }
@@ -79,74 +110,55 @@ filegroup {
 filegroup {
     name: "mediaparser-srcs",
     srcs: [
-        "java/android/media/MediaParser.java"
+        "java/android/media/MediaParser.java",
     ],
     path: "java",
 }
 
-stubs_defaults {
-    name: "framework-media-stubs-srcs-defaults",
-    srcs: [ ":updatable-media-srcs" ],
-    libs: [ "framework_media_annotation" ],
-    aidl: {
-        // TODO(b/135922046) remove this
-        include_dirs: ["frameworks/base/core/java"],
-    },
-}
-
-droidstubs {
-    name: "framework-media-stubs-srcs-publicapi",
-    defaults: [
-        "framework-media-stubs-srcs-defaults",
-        "framework-module-stubs-defaults-publicapi",
+filegroup {
+    name: "mediatranscoding-srcs",
+    srcs: [
+        "java/android/media/ApplicationMediaCapabilities.java",
+        "java/android/media/MediaFeature.java",
+        "java/android/media/MediaTranscodingManager.java",
     ],
+    path: "java",
 }
 
-droidstubs {
-    name: "framework-media-stubs-srcs-systemapi",
-    defaults: [
-        "framework-media-stubs-srcs-defaults",
-        "framework-module-stubs-defaults-systemapi",
+java_sdk_library {
+    name: "framework-media",
+    defaults: ["framework-module-defaults"],
+
+    // This is only used to define the APIs for updatable-media.
+    api_only: true,
+
+    srcs: [
+        ":updatable-media-srcs",
     ],
+
+    impl_library_visibility: ["//frameworks/av/apex:__subpackages__"],
 }
 
-droidstubs {
-    name: "framework-media-api-module_libs_api",
-    defaults: [
-        "framework-media-stubs-srcs-defaults",
-        "framework-module-api-defaults-module_libs_api",
+cc_library_shared {
+    name: "libmediaparser-jni",
+    srcs: [
+        "jni/android_media_MediaParserJNI.cpp",
     ],
-}
-
-droidstubs {
-    name: "framework-media-stubs-srcs-module_libs_api",
-    defaults: [
-        "framework-media-stubs-srcs-defaults",
-        "framework-module-stubs-defaults-module_libs_api",
+    header_libs: ["jni_headers"],
+    shared_libs: [
+        "libandroid",
+        "liblog",
+        "libmediametrics",
     ],
-}
-
-java_library {
-    name: "framework-media-stubs-publicapi",
-    srcs: [":framework-media-stubs-srcs-publicapi"],
-    defaults: ["framework-module-stubs-lib-defaults-publicapi"],
-}
-
-java_library {
-    name: "framework-media-stubs-systemapi",
-    srcs: [":framework-media-stubs-srcs-systemapi"],
-    defaults: ["framework-module-stubs-lib-defaults-systemapi"],
-}
-
-java_library {
-    name: "framework-media-stubs-module_libs_api",
-    srcs: [":framework-media-stubs-srcs-module_libs_api"],
-    defaults: ["framework-module-stubs-lib-defaults-module_libs_api"],
-}
-
-java_library {
-    name: "framework_media_annotation",
-    srcs: [":framework-media-annotation-srcs"],
-    installable: false,
-    sdk_version: "core_current",
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wno-unused-parameter",
+        "-Wunreachable-code",
+        "-Wunused",
+    ],
+    apex_available: [
+        "com.android.media",
+    ],
+    min_sdk_version: "29",
 }

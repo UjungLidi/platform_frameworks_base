@@ -18,30 +18,45 @@ package com.android.systemui.qs.external;
 import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertTrue;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.UserHandle;
 import android.service.quicksettings.Tile;
+import android.service.quicksettings.TileService;
 import android.test.suitebuilder.annotation.SmallTest;
 import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 import android.testing.TestableLooper.RunWithLooper;
 
+import com.android.internal.logging.UiEventLogger;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.broadcast.BroadcastDispatcher;
 import com.android.systemui.dump.DumpManager;
+import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.qs.QSTileHost;
 import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSFactoryImpl;
+import com.android.systemui.settings.UserTracker;
 import com.android.systemui.shared.plugins.PluginManager;
 import com.android.systemui.statusbar.phone.AutoTileManager;
 import com.android.systemui.statusbar.phone.StatusBar;
 import com.android.systemui.statusbar.phone.StatusBarIconController;
 import com.android.systemui.statusbar.policy.BluetoothController;
 import com.android.systemui.tuner.TunerService;
+import com.android.systemui.util.settings.SecureSettings;
 
 import org.junit.After;
 import org.junit.Before;
@@ -49,7 +64,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
 import java.util.ArrayList;
@@ -81,6 +95,14 @@ public class TileServicesTest extends SysuiTestCase {
     private StatusBar mStatusBar;
     @Mock
     private QSLogger mQSLogger;
+    @Mock
+    private UiEventLogger mUiEventLogger;
+    @Mock
+    private UserTracker mUserTracker;
+    @Mock
+    private SecureSettings  mSecureSettings;
+    @Mock
+    private FeatureFlags mFeatureFlags;
 
     @Before
     public void setUp() throws Exception {
@@ -96,16 +118,40 @@ public class TileServicesTest extends SysuiTestCase {
                 mTunerService,
                 () -> mAutoTileManager,
                 mDumpManager,
-                mBroadcastDispatcher,
+                mock(BroadcastDispatcher.class),
                 Optional.of(mStatusBar),
-                mQSLogger);
-        mTileService = new TestTileServices(host, Looper.getMainLooper(), mBroadcastDispatcher);
+                mQSLogger,
+                mUiEventLogger,
+                mUserTracker,
+                mSecureSettings,
+                mock(CustomTileStatePersister.class),
+                mFeatureFlags);
+        mTileService = new TestTileServices(host, Looper.getMainLooper(), mBroadcastDispatcher,
+                mUserTracker);
     }
 
     @After
     public void tearDown() throws Exception {
         mTileService.getHost().destroy();
         TestableLooper.get(this).processAllMessages();
+    }
+
+    @Test
+    public void testActiveTileListenerRegisteredOnAllUsers() {
+        ArgumentCaptor<IntentFilter> captor = ArgumentCaptor.forClass(IntentFilter.class);
+        verify(mBroadcastDispatcher).registerReceiver(any(), captor.capture(), any(), eq(
+                UserHandle.ALL));
+        assertTrue(captor.getValue().hasAction(TileService.ACTION_REQUEST_LISTENING));
+    }
+
+    @Test
+    public void testBadComponentName_doesntCrash() {
+        ArgumentCaptor<BroadcastReceiver> captor = ArgumentCaptor.forClass(BroadcastReceiver.class);
+        verify(mBroadcastDispatcher).registerReceiver(captor.capture(), any(), any(), eq(
+                UserHandle.ALL));
+        Intent intent = new Intent(TileService.ACTION_REQUEST_LISTENING)
+                .putExtra(Intent.EXTRA_COMPONENT_NAME, "abc");
+        captor.getValue().onReceive(mContext, intent);
     }
 
     @Test
@@ -121,10 +167,9 @@ public class TileServicesTest extends SysuiTestCase {
         }
         mTileService.recalculateBindAllowance();
         for (int i = 0; i < NUM_FAKES; i++) {
-            Mockito.verify(mManagers.get(i), Mockito.times(1)).calculateBindPriority(
-                    Mockito.anyLong());
+            verify(mManagers.get(i), times(1)).calculateBindPriority(anyLong());
             ArgumentCaptor<Boolean> captor = ArgumentCaptor.forClass(Boolean.class);
-            Mockito.verify(mManagers.get(i), Mockito.times(1)).setBindAllowed(captor.capture());
+            verify(mManagers.get(i), times(1)).setBindAllowed(captor.capture());
 
             assertEquals("" + i + "th service", i >= (NUM_FAKES - TileServices.DEFAULT_MAX_BOUND),
                     (boolean) captor.getValue());
@@ -138,7 +183,7 @@ public class TileServicesTest extends SysuiTestCase {
 
         for (int i = 0; i < NUM_FAKES; i++) {
             ArgumentCaptor<Boolean> captor = ArgumentCaptor.forClass(Boolean.class);
-            Mockito.verify(mManagers.get(i), Mockito.times(2)).setBindAllowed(captor.capture());
+            verify(mManagers.get(i), times(2)).setBindAllowed(captor.capture());
 
             assertEquals("" + i + "th service", i >= (NUM_FAKES - TileServices.REDUCED_MAX_BOUND),
                     (boolean) captor.getValue());
@@ -154,12 +199,12 @@ public class TileServicesTest extends SysuiTestCase {
 
         for (int i = 0; i < TileServices.DEFAULT_MAX_BOUND - 1; i++) {
             // Shouldn't get bind prioirities calculated when there are less than the max services.
-            Mockito.verify(mManagers.get(i), Mockito.never()).calculateBindPriority(
-                    Mockito.anyLong());
+            verify(mManagers.get(i), never()).calculateBindPriority(
+                    anyLong());
 
             // All should be bound since there are less than the max services.
             ArgumentCaptor<Boolean> captor = ArgumentCaptor.forClass(Boolean.class);
-            Mockito.verify(mManagers.get(i), Mockito.times(1)).setBindAllowed(captor.capture());
+            verify(mManagers.get(i), times(1)).setBindAllowed(captor.capture());
 
             assertTrue(captor.getValue());
         }
@@ -167,8 +212,8 @@ public class TileServicesTest extends SysuiTestCase {
 
     private class TestTileServices extends TileServices {
         TestTileServices(QSTileHost host, Looper looper,
-                BroadcastDispatcher broadcastDispatcher) {
-            super(host, looper, broadcastDispatcher);
+                BroadcastDispatcher broadcastDispatcher, UserTracker userTracker) {
+            super(host, looper, broadcastDispatcher, userTracker);
         }
 
         @Override

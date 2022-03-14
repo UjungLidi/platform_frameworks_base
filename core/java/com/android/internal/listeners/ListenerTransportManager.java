@@ -16,130 +16,118 @@
 
 package com.android.internal.listeners;
 
-import android.annotation.NonNull;
 import android.os.RemoteException;
 import android.util.ArrayMap;
 
 import com.android.internal.annotations.GuardedBy;
-import com.android.internal.util.Preconditions;
 
-import java.util.Objects;
+import java.lang.ref.WeakReference;
+import java.util.Map;
+import java.util.WeakHashMap;
 
 /**
- * A listener manager which tracks listeners along with their keys. This class enforces proper use
- * of transport objects and ensure unregistration race conditions are handled properly. If listeners
- * should be multiplexed before being sent to the server, see {@link ListenerTransportMultiplexer}
- * instead.
+ * A listener transport manager which handles mappings between the client facing listener and system
+ * server facing transport. Supports transports which may be removed either from the client side or
+ * from the system server side without leaking memory.
  *
- * @param <TTransport> transport type
+ * @param <TTransport>> transport type
  */
 public abstract class ListenerTransportManager<TTransport extends ListenerTransport<?>> {
 
-    @GuardedBy("mTransports")
-    private final ArrayMap<Object, TTransport> mTransports = new ArrayMap<>();
+    @GuardedBy("mRegistrations")
+    private final Map<Object, WeakReference<TTransport>> mRegistrations;
 
-    /**
-     * Should be implemented to register the transport with the server.
-     *
-     * @see #reregisterWithServer(ListenerTransport, ListenerTransport)
-     */
-    protected abstract void registerWithServer(TTransport transport) throws RemoteException;
-
-    /**
-     * Invoked when the server already has a transport registered for a key, and it is being
-     * replaced with a new transport. The default implementation unregisters the old transport, then
-     * registers the new transport, but this may be overridden by subclasses in order to reregister
-     * more efficiently.
-     */
-    protected void reregisterWithServer(TTransport oldTransport, TTransport newTransport)
-            throws RemoteException {
-        unregisterWithServer(oldTransport);
-        registerWithServer(newTransport);
+    protected ListenerTransportManager(boolean allowServerSideTransportRemoval) {
+        // using weakhashmap means that the transport may be GCed if the server drops its reference,
+        // and thus the listener may be GCed as well if the client drops that reference. if the
+        // server will never drop a reference without warning (ie, transport removal may only be
+        // initiated from the client side), then arraymap or similar may be used without fear of
+        // memory leaks.
+        if (allowServerSideTransportRemoval) {
+            mRegistrations = new WeakHashMap<>();
+        } else {
+            mRegistrations = new ArrayMap<>();
+        }
     }
 
     /**
-     * Should be implemented to unregister the transport from the server.
+     * Adds a new transport with the given listener key.
      */
-    protected abstract void unregisterWithServer(TTransport transport) throws RemoteException;
-
-    /**
-     * Adds a new transport with the given key and makes a call to add the transport server side. If
-     * a transport already exists with that key, it will be replaced by the new transport and
-     * {@link #reregisterWithServer(ListenerTransport, ListenerTransport)} will be invoked to
-     * replace the old transport with the new transport server side. If no transport exists with
-     * that key, it will be added server side via {@link #registerWithServer(ListenerTransport)}.
-     */
-    public void registerListener(@NonNull Object key, @NonNull TTransport transport) {
-        Objects.requireNonNull(key);
-        Objects.requireNonNull(transport);
-
-        synchronized (mTransports) {
-            TTransport oldTransport = mTransports.put(key, transport);
-            if (oldTransport != null) {
-                oldTransport.unregister();
-            }
-
-            Preconditions.checkState(transport.isRegistered());
-
-            boolean registered = false;
-            try {
-                if (oldTransport == null) {
-                    registerWithServer(transport);
+    public final void addListener(Object key, TTransport transport) {
+        try {
+            synchronized (mRegistrations) {
+                // ordering of operations is important so that if an error occurs at any point we
+                // are left in a reasonable state
+                TTransport oldTransport;
+                WeakReference<TTransport> oldTransportRef = mRegistrations.get(key);
+                if (oldTransportRef != null) {
+                    oldTransport = oldTransportRef.get();
                 } else {
-                    reregisterWithServer(oldTransport, transport);
+                    oldTransport = null;
                 }
-                registered = true;
-            } catch (RemoteException e) {
-                throw e.rethrowFromSystemServer();
-            } finally {
-                if (!registered) {
-                    transport.unregister();
-                    mTransports.remove(key);
+
+                if (oldTransport == null) {
+                    registerTransport(transport);
+                } else {
+                    registerTransport(transport, oldTransport);
+                    oldTransport.unregister();
                 }
+                mRegistrations.put(key, new WeakReference<>(transport));
             }
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
         }
     }
 
     /**
-     * Removes the transport with the given key, and makes a call to remove the transport server
-     * side via {@link #unregisterWithServer(ListenerTransport)}.
+     * Removes the transport with the given listener key.
      */
-    public void unregisterListener(@NonNull Object key) {
-        Objects.requireNonNull(key);
-
-        synchronized (mTransports) {
-            TTransport transport = mTransports.remove(key);
-            if (transport == null) {
-                return;
+    public final void removeListener(Object key) {
+        try {
+            synchronized (mRegistrations) {
+                // ordering of operations is important so that if an error occurs at any point we
+                // are left in a reasonable state
+                WeakReference<TTransport> transportRef = mRegistrations.remove(key);
+                if (transportRef != null) {
+                    TTransport transport = transportRef.get();
+                    if (transport != null) {
+                        transport.unregister();
+                        unregisterTransport(transport);
+                    }
+                }
             }
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
 
-            transport.unregister();
+    /**
+     * Registers a new transport.
+     */
+    protected abstract void registerTransport(TTransport transport) throws RemoteException;
+
+    /**
+     * Registers a new transport that is replacing the given old transport. Implementations must
+     * ensure that if they throw a remote exception, the call does not have any side effects.
+     */
+    protected void registerTransport(TTransport transport, TTransport oldTransport)
+            throws RemoteException {
+        registerTransport(transport);
+        try {
+            unregisterTransport(oldTransport);
+        } catch (RemoteException e) {
             try {
-                unregisterWithServer(transport);
-            } catch (RemoteException e) {
-                throw e.rethrowFromSystemServer();
+                // best effort to ensure there are no side effects
+                unregisterTransport(transport);
+            } catch (RemoteException suppressed) {
+                e.addSuppressed(suppressed);
             }
+            throw e;
         }
     }
 
     /**
-     * Removes the given transport with the given key if such a mapping exists. This only removes
-     * the client registration, it does not make any calls to remove the transport server side. The
-     * intended use is for when the transport is already removed server side and only client side
-     * cleanup is necessary.
+     * Unregisters an existing transport.
      */
-    public void removeTransport(@NonNull Object key, @NonNull ListenerTransport<?> transport) {
-        Objects.requireNonNull(key);
-        Objects.requireNonNull(transport);
-
-        synchronized (mTransports) {
-            TTransport typedTransport = mTransports.get(key);
-            if (typedTransport != transport) {
-                return;
-            }
-
-            mTransports.remove(key);
-            typedTransport.unregister();
-        }
-    }
+    protected abstract void unregisterTransport(TTransport transport) throws RemoteException;
 }

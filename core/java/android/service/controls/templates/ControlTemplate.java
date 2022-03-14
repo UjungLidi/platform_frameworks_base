@@ -20,6 +20,7 @@ import android.annotation.CallSuper;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.content.Context;
 import android.os.Bundle;
 import android.service.controls.Control;
 import android.service.controls.actions.ControlAction;
@@ -78,6 +79,7 @@ public abstract class ControlTemplate {
             TYPE_NO_TEMPLATE,
             TYPE_TOGGLE,
             TYPE_RANGE,
+            TYPE_THUMBNAIL,
             TYPE_TOGGLE_RANGE,
             TYPE_TEMPERATURE,
             TYPE_STATELESS
@@ -103,6 +105,11 @@ public abstract class ControlTemplate {
      * Type identifier of {@link RangeTemplate}.
      */
     public static final @TemplateType int TYPE_RANGE = 2;
+
+    /**
+     * Type identifier of {@link ThumbnailTemplate}.
+     */
+    public static final @TemplateType int TYPE_THUMBNAIL = 3;
 
     /**
      * Type identifier of {@link ToggleRangeTemplate}.
@@ -169,6 +176,13 @@ public abstract class ControlTemplate {
     }
 
     /**
+     * Call to prepare values for Binder transport.
+     *
+     * @hide
+     */
+    public void prepareTemplateForBinder(@NonNull Context context) {}
+
+    /**
      *
      * @param bundle
      * @return
@@ -187,6 +201,8 @@ public abstract class ControlTemplate {
                     return new ToggleTemplate(bundle);
                 case TYPE_RANGE:
                     return new RangeTemplate(bundle);
+                case TYPE_THUMBNAIL:
+                    return new ThumbnailTemplate(bundle);
                 case TYPE_TOGGLE_RANGE:
                     return new ToggleRangeTemplate(bundle);
                 case TYPE_TEMPERATURE:
@@ -214,10 +230,13 @@ public abstract class ControlTemplate {
     }
 
     /**
-     * Get a singleton {@link ControlTemplate} that has no features.
+     * Get a singleton {@link ControlTemplate}, which supports no direct user input.
      *
-     * This template has no distinctive field, not even an identifier. Used for a {@link Control}
-     * that accepts no type of input, or when there is no known state.
+     * Used by {@link Control.StatelessBuilder} when there is no known state. Can also be used
+     * in {@link Control.StatefulBuilder} for conveying information to a user about the
+     * {@link Control} but direct user interaction is not desired. Since this template has no
+     * corresponding {@link ControlAction}, any user interaction will launch the
+     * {@link Control#getAppIntent()}.
      *
      * @return a singleton {@link ControlTemplate} to indicate no specific template is used by
      *         this {@link Control}

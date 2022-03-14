@@ -19,6 +19,7 @@ import android.app.usage.ConfigurationStats;
 import android.app.usage.UsageEvents;
 import android.app.usage.UsageStats;
 import android.content.res.Configuration;
+import android.util.Pair;
 import android.util.Slog;
 import android.util.SparseArray;
 import android.util.SparseIntArray;
@@ -30,12 +31,16 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.LinkedList;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * UsageStats reader/writer V2 for Protocol Buffer format.
  */
 final class UsageStatsProtoV2 {
     private static final String TAG = "UsageStatsProtoV2";
+
+    private static final long ONE_HOUR_MS = TimeUnit.HOURS.toMillis(1);
 
     // Static-only utility class.
     private UsageStatsProtoV2() {}
@@ -87,11 +92,11 @@ final class UsageStatsProtoV2 {
                     stats.mTotalTimeVisible = proto.readLong(
                             UsageStatsObfuscatedProto.TOTAL_TIME_VISIBLE_MS);
                     break;
+                case (int) UsageStatsObfuscatedProto.LAST_TIME_COMPONENT_USED_MS:
+                    stats.mLastTimeComponentUsed = beginTime + proto.readLong(
+                            UsageStatsObfuscatedProto.LAST_TIME_COMPONENT_USED_MS);
+                    break;
                 case ProtoInputStream.NO_MORE_FIELDS:
-                    // mLastTimeUsed was not read, assume default value of 0 plus beginTime
-                    if (stats.mLastTimeUsed == 0) {
-                        stats.mLastTimeUsed = beginTime;
-                    }
                     return stats;
             }
         }
@@ -219,10 +224,6 @@ final class UsageStatsProtoV2 {
                             IntervalStatsObfuscatedProto.Configuration.ACTIVE);
                     break;
                 case ProtoInputStream.NO_MORE_FIELDS:
-                    // mLastTimeActive was not assigned, assume default value of 0 plus beginTime
-                    if (configStats.mLastTimeActive == 0) {
-                        configStats.mLastTimeActive = stats.beginTime;
-                    }
                     if (configActive) {
                         stats.activeConfiguration = configStats.mConfiguration;
                     }
@@ -282,28 +283,43 @@ final class UsageStatsProtoV2 {
                             EventObfuscatedProto.LOCUS_ID_TOKEN) - 1;
                     break;
                 case ProtoInputStream.NO_MORE_FIELDS:
-                    // timeStamp was not read, assume default value 0 plus beginTime
-                    if (event.mTimeStamp == 0) {
-                        event.mTimeStamp = beginTime;
-                    }
                     return event.mPackageToken == PackagesTokenData.UNASSIGNED_TOKEN ? null : event;
             }
         }
     }
 
+    static void writeOffsetTimestamp(ProtoOutputStream proto, long fieldId,
+            long timestamp, long beginTime) {
+        // timestamps will only be written if they're after the begin time
+        // a grace period of one hour before the begin time is allowed because of rollover logic
+        final long rolloverGracePeriod = beginTime - ONE_HOUR_MS;
+        if (timestamp > rolloverGracePeriod) {
+            // time attributes are stored as an offset of the begin time (given offset)
+            proto.write(fieldId, getOffsetTimestamp(timestamp, beginTime));
+        }
+    }
+
+    static long getOffsetTimestamp(long timestamp, long offset) {
+        final long offsetTimestamp = timestamp - offset;
+        // add one ms to timestamp if 0 to ensure it's written to proto (default values are ignored)
+        return offsetTimestamp == 0 ? offsetTimestamp + 1 : offsetTimestamp;
+    }
+
     private static void writeUsageStats(ProtoOutputStream proto, final long beginTime,
             final UsageStats stats) throws IllegalArgumentException {
-        // Time attributes stored as an offset of the beginTime.
         proto.write(UsageStatsObfuscatedProto.PACKAGE_TOKEN, stats.mPackageToken + 1);
-        proto.write(UsageStatsObfuscatedProto.LAST_TIME_ACTIVE_MS, stats.mLastTimeUsed - beginTime);
+        writeOffsetTimestamp(proto, UsageStatsObfuscatedProto.LAST_TIME_ACTIVE_MS,
+                stats.mLastTimeUsed, beginTime);
         proto.write(UsageStatsObfuscatedProto.TOTAL_TIME_ACTIVE_MS, stats.mTotalTimeInForeground);
-        proto.write(UsageStatsObfuscatedProto.LAST_TIME_SERVICE_USED_MS,
-                stats.mLastTimeForegroundServiceUsed - beginTime);
+        writeOffsetTimestamp(proto, UsageStatsObfuscatedProto.LAST_TIME_SERVICE_USED_MS,
+                stats.mLastTimeForegroundServiceUsed, beginTime);
         proto.write(UsageStatsObfuscatedProto.TOTAL_TIME_SERVICE_USED_MS,
                 stats.mTotalTimeForegroundServiceUsed);
-        proto.write(UsageStatsObfuscatedProto.LAST_TIME_VISIBLE_MS,
-                stats.mLastTimeVisible - beginTime);
+        writeOffsetTimestamp(proto, UsageStatsObfuscatedProto.LAST_TIME_VISIBLE_MS,
+                stats.mLastTimeVisible, beginTime);
         proto.write(UsageStatsObfuscatedProto.TOTAL_TIME_VISIBLE_MS, stats.mTotalTimeVisible);
+        writeOffsetTimestamp(proto, UsageStatsObfuscatedProto.LAST_TIME_COMPONENT_USED_MS,
+                stats.mLastTimeComponentUsed, beginTime);
         proto.write(UsageStatsObfuscatedProto.APP_LAUNCH_COUNT, stats.mAppLaunchCount);
         try {
             writeChooserCounts(proto, stats);
@@ -361,8 +377,8 @@ final class UsageStatsProtoV2 {
             throws IllegalArgumentException {
         configStats.mConfiguration.dumpDebug(proto,
                 IntervalStatsObfuscatedProto.Configuration.CONFIG);
-        proto.write(IntervalStatsObfuscatedProto.Configuration.LAST_TIME_ACTIVE_MS,
-                configStats.mLastTimeActive - statsBeginTime);
+        writeOffsetTimestamp(proto, IntervalStatsObfuscatedProto.Configuration.LAST_TIME_ACTIVE_MS,
+                configStats.mLastTimeActive, statsBeginTime);
         proto.write(IntervalStatsObfuscatedProto.Configuration.TOTAL_TIME_ACTIVE_MS,
                 configStats.mTotalTimeActive);
         proto.write(IntervalStatsObfuscatedProto.Configuration.COUNT, configStats.mActivationCount);
@@ -375,7 +391,7 @@ final class UsageStatsProtoV2 {
         if (event.mClassToken != PackagesTokenData.UNASSIGNED_TOKEN) {
             proto.write(EventObfuscatedProto.CLASS_TOKEN, event.mClassToken + 1);
         }
-        proto.write(EventObfuscatedProto.TIME_MS, event.mTimeStamp - statsBeginTime);
+        writeOffsetTimestamp(proto, EventObfuscatedProto.TIME_MS, event.mTimeStamp, statsBeginTime);
         proto.write(EventObfuscatedProto.FLAGS, event.mFlags);
         proto.write(EventObfuscatedProto.TYPE, event.mEventType);
         proto.write(EventObfuscatedProto.INSTANCE_ID, event.mInstanceId);
@@ -489,10 +505,6 @@ final class UsageStatsProtoV2 {
                     }
                     break;
                 case ProtoInputStream.NO_MORE_FIELDS:
-                    // endTime not assigned, assume default value of 0 plus beginTime
-                    if (stats.endTime == 0) {
-                        stats.endTime = stats.beginTime;
-                    }
                     // update the begin and end time stamps for all usage stats
                     final int usageStatsSize = stats.packageStatsObfuscated.size();
                     for (int i = 0; i < usageStatsSize; i++) {
@@ -514,7 +526,8 @@ final class UsageStatsProtoV2 {
     public static void write(OutputStream out, IntervalStats stats)
             throws IOException, IllegalArgumentException {
         final ProtoOutputStream proto = new ProtoOutputStream(out);
-        proto.write(IntervalStatsObfuscatedProto.END_TIME_MS, stats.endTime - stats.beginTime);
+        proto.write(IntervalStatsObfuscatedProto.END_TIME_MS,
+                getOffsetTimestamp(stats.endTime, stats.beginTime));
         proto.write(IntervalStatsObfuscatedProto.MAJOR_VERSION, stats.majorVersion);
         proto.write(IntervalStatsObfuscatedProto.MINOR_VERSION, stats.minorVersion);
 
@@ -800,5 +813,75 @@ final class UsageStatsProtoV2 {
             }
         }
         proto.flush();
+    }
+
+    private static Pair<String, Long> parseGlobalComponentUsage(ProtoInputStream proto)
+            throws IOException {
+        String packageName = "";
+        long time = 0;
+        while (true) {
+            switch (proto.nextField()) {
+                case (int) IntervalStatsObfuscatedProto.PackageUsage.PACKAGE_NAME:
+                    packageName = proto.readString(
+                            IntervalStatsObfuscatedProto.PackageUsage.PACKAGE_NAME);
+                    break;
+                case (int) IntervalStatsObfuscatedProto.PackageUsage.TIME_MS:
+                    time = proto.readLong(IntervalStatsObfuscatedProto.PackageUsage.TIME_MS);
+                    break;
+                case ProtoInputStream.NO_MORE_FIELDS:
+                    return new Pair<>(packageName, time);
+            }
+        }
+    }
+
+    /**
+     * Populates the map of latest package usage from the input stream given.
+     *
+     * @param in the input stream from which to read the package usage.
+     * @param lastTimeComponentUsedGlobal the map of package's global component usage to populate.
+     */
+    static void readGlobalComponentUsage(InputStream in,
+            Map<String, Long> lastTimeComponentUsedGlobal) throws IOException {
+        final ProtoInputStream proto = new ProtoInputStream(in);
+        while (true) {
+            switch (proto.nextField()) {
+                case (int) IntervalStatsObfuscatedProto.PACKAGE_USAGE:
+                    try {
+                        final long token = proto.start(IntervalStatsObfuscatedProto.PACKAGE_USAGE);
+                        final Pair<String, Long> usage = parseGlobalComponentUsage(proto);
+                        proto.end(token);
+                        if (!usage.first.isEmpty() && usage.second > 0) {
+                            lastTimeComponentUsedGlobal.put(usage.first, usage.second);
+                        }
+                    } catch (IOException e) {
+                        Slog.e(TAG, "Unable to parse some package usage from proto.", e);
+                    }
+                    break;
+                case ProtoInputStream.NO_MORE_FIELDS:
+                    return;
+            }
+        }
+    }
+
+    /**
+     * Writes the user-agnostic last time package usage to a ProtoBuf file.
+     *
+     * @param out the output stream to which to write the package usage
+     * @param lastTimeComponentUsedGlobal the map storing the global component usage of packages
+     */
+    static void writeGlobalComponentUsage(OutputStream out,
+            Map<String, Long> lastTimeComponentUsedGlobal) {
+        final ProtoOutputStream proto = new ProtoOutputStream(out);
+        final Map.Entry<String, Long>[] entries =
+                (Map.Entry<String, Long>[]) lastTimeComponentUsedGlobal.entrySet().toArray();
+        final int size = entries.length;
+        for (int i = 0; i < size; ++i) {
+            if (entries[i].getValue() <= 0) continue;
+            final long token = proto.start(IntervalStatsObfuscatedProto.PACKAGE_USAGE);
+            proto.write(IntervalStatsObfuscatedProto.PackageUsage.PACKAGE_NAME,
+                    entries[i].getKey());
+            proto.write(IntervalStatsObfuscatedProto.PackageUsage.TIME_MS, entries[i].getValue());
+            proto.end(token);
+        }
     }
 }

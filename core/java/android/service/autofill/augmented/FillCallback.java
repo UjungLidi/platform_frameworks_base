@@ -20,7 +20,6 @@ import static android.service.autofill.augmented.AugmentedAutofillService.sDebug
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.os.Bundle;
 import android.service.autofill.Dataset;
 import android.service.autofill.augmented.AugmentedAutofillService.AutofillProxy;
@@ -34,7 +33,6 @@ import java.util.List;
  * @hide
  */
 @SystemApi
-@TestApi
 public final class FillCallback {
 
     private static final String TAG = FillCallback.class.getSimpleName();
@@ -56,22 +54,24 @@ public final class FillCallback {
 
         if (response == null) {
             mProxy.logEvent(AutofillProxy.REPORT_EVENT_NO_RESPONSE);
-            mProxy.reportResult(/* inlineSuggestionsData */ null, /* clientState */ null);
+            mProxy.reportResult(/* inlineSuggestionsData */ null, /* clientState */
+                    null, /* showingFillWindow */ false);
             return;
         }
 
-        List<Dataset> inlineSuggestions = response.getInlineSuggestions();
-        Bundle clientState = response.getClientState();
+        final List<Dataset> inlineSuggestions = response.getInlineSuggestions();
+        final Bundle clientState = response.getClientState();
+        final FillWindow fillWindow = response.getFillWindow();
+        boolean showingFillWindow = false;
         if (inlineSuggestions != null && !inlineSuggestions.isEmpty()) {
             mProxy.logEvent(AutofillProxy.REPORT_EVENT_INLINE_RESPONSE);
-            mProxy.reportResult(inlineSuggestions, clientState);
-            return;
-        }
-
-        final FillWindow fillWindow = response.getFillWindow();
-        if (fillWindow != null) {
+        } else if (fillWindow != null) {
             fillWindow.show();
+            showingFillWindow = true;
         }
+        // We need to report result regardless of whether inline suggestions are returned or not.
+        mProxy.reportResult(inlineSuggestions, clientState, showingFillWindow);
+
         // TODO(b/123099468): must notify the server so it can update the session state to avoid
         // showing conflicting UIs (for example, if a new request is made to the main autofill
         // service and it now wants to show something).

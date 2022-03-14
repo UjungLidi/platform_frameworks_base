@@ -81,6 +81,7 @@ import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * Class for accessing an application's resources.  This sits on top of the
@@ -139,6 +140,9 @@ public class Resources {
     /** Used to inflate drawable objects from XML. */
     @UnsupportedAppUsage
     private DrawableInflater mDrawableInflater;
+
+    /** Used to override the returned adjustments of {@link #getDisplayAdjustments}. */
+    private DisplayAdjustments mOverrideDisplayAdjustments;
 
     /** Lock object used to protect access to {@link #mTmpValue}. */
     private final Object mTmpValueLock = new Object();
@@ -313,7 +317,7 @@ public class Resources {
      *                    class loader
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public Resources(@Nullable ClassLoader classLoader) {
         mClassLoader = classLoader == null ? ClassLoader.getSystemClassLoader() : classLoader;
     }
@@ -337,7 +341,7 @@ public class Resources {
 
     /**
      * Set the underlying implementation (containing all the resources and caches)
-     * and updates all Theme references to new implementations as well.
+     * and updates all Theme implementations as well.
      * @hide
      */
     @UnsupportedAppUsage
@@ -349,14 +353,14 @@ public class Resources {
         mBaseApkAssetsSize = ArrayUtils.size(impl.getAssets().getApkAssets());
         mResourcesImpl = impl;
 
-        // Create new ThemeImpls that are identical to the ones we have.
+        // Rebase the ThemeImpls using the new ResourcesImpl.
         synchronized (mThemeRefs) {
             final int count = mThemeRefs.size();
             for (int i = 0; i < count; i++) {
                 WeakReference<Theme> weakThemeRef = mThemeRefs.get(i);
                 Theme theme = weakThemeRef != null ? weakThemeRef.get() : null;
                 if (theme != null) {
-                    theme.setImpl(mResourcesImpl.newThemeImpl(theme.getKey()));
+                    theme.rebase(mResourcesImpl);
                 }
             }
         }
@@ -390,7 +394,7 @@ public class Resources {
      * @return the inflater used to create drawable objects
      * @hide Pending API finalization.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public final DrawableInflater getDrawableInflater() {
         if (mDrawableInflater == null) {
             mDrawableInflater = new DrawableInflater(this, mClassLoader);
@@ -983,7 +987,7 @@ public class Resources {
     }
 
     @NonNull
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     Drawable loadDrawable(@NonNull TypedValue value, int id, int density, @Nullable Theme theme)
             throws NotFoundException {
         return mResourcesImpl.loadDrawable(this, value, id, density, theme);
@@ -1496,6 +1500,9 @@ public class Resources {
      * retrieve XML attributes with style and theme information applied.
      */
     public final class Theme {
+        private final Object mLock = new Object();
+
+        @GuardedBy("mLock")
         @UnsupportedAppUsage
         private ResourcesImpl.ThemeImpl mThemeImpl;
 
@@ -1503,7 +1510,9 @@ public class Resources {
         }
 
         void setImpl(ResourcesImpl.ThemeImpl impl) {
-            mThemeImpl = impl;
+            synchronized (mLock) {
+                mThemeImpl = impl;
+            }
         }
 
         /**
@@ -1524,7 +1533,9 @@ public class Resources {
          *              if not already defined in the theme.
          */
         public void applyStyle(int resId, boolean force) {
-            mThemeImpl.applyStyle(resId, force);
+            synchronized (mLock) {
+                mThemeImpl.applyStyle(resId, force);
+            }
         }
 
         /**
@@ -1537,7 +1548,11 @@ public class Resources {
          * @param other The existing Theme to copy from.
          */
         public void setTo(Theme other) {
-            mThemeImpl.setTo(other.mThemeImpl);
+            synchronized (mLock) {
+                synchronized (other.mLock) {
+                    mThemeImpl.setTo(other.mThemeImpl);
+                }
+            }
         }
 
         /**
@@ -1562,7 +1577,9 @@ public class Resources {
          */
         @NonNull
         public TypedArray obtainStyledAttributes(@NonNull @StyleableRes int[] attrs) {
-            return mThemeImpl.obtainStyledAttributes(this, null, attrs, 0, 0);
+            synchronized (mLock) {
+                return mThemeImpl.obtainStyledAttributes(this, null, attrs, 0, 0);
+            }
         }
 
         /**
@@ -1590,7 +1607,9 @@ public class Resources {
         public TypedArray obtainStyledAttributes(@StyleRes int resId,
                 @NonNull @StyleableRes int[] attrs)
                 throws NotFoundException {
-            return mThemeImpl.obtainStyledAttributes(this, null, attrs, 0, resId);
+            synchronized (mLock) {
+                return mThemeImpl.obtainStyledAttributes(this, null, attrs, 0, resId);
+            }
         }
 
         /**
@@ -1646,7 +1665,10 @@ public class Resources {
         public TypedArray obtainStyledAttributes(@Nullable AttributeSet set,
                 @NonNull @StyleableRes int[] attrs, @AttrRes int defStyleAttr,
                 @StyleRes int defStyleRes) {
-            return mThemeImpl.obtainStyledAttributes(this, set, attrs, defStyleAttr, defStyleRes);
+            synchronized (mLock) {
+                return mThemeImpl.obtainStyledAttributes(this, set, attrs, defStyleAttr,
+                        defStyleRes);
+            }
         }
 
         /**
@@ -1667,7 +1689,9 @@ public class Resources {
         @NonNull
         @UnsupportedAppUsage
         public TypedArray resolveAttributes(@NonNull int[] values, @NonNull int[] attrs) {
-            return mThemeImpl.resolveAttributes(this, values, attrs);
+            synchronized (mLock) {
+                return mThemeImpl.resolveAttributes(this, values, attrs);
+            }
         }
 
         /**
@@ -1688,7 +1712,9 @@ public class Resources {
          *         <var>outValue</var> is valid, else false.
          */
         public boolean resolveAttribute(int resid, TypedValue outValue, boolean resolveRefs) {
-            return mThemeImpl.resolveAttribute(resid, outValue, resolveRefs);
+            synchronized (mLock) {
+                return mThemeImpl.resolveAttribute(resid, outValue, resolveRefs);
+            }
         }
 
         /**
@@ -1698,7 +1724,9 @@ public class Resources {
          * @hide
          */
         public int[] getAllAttributes() {
-            return mThemeImpl.getAllAttributes();
+            synchronized (mLock) {
+                return mThemeImpl.getAllAttributes();
+            }
         }
 
         /**
@@ -1734,7 +1762,9 @@ public class Resources {
          * @see ActivityInfo
          */
         public @Config int getChangingConfigurations() {
-            return mThemeImpl.getChangingConfigurations();
+            synchronized (mLock) {
+                return mThemeImpl.getChangingConfigurations();
+            }
         }
 
         /**
@@ -1745,23 +1775,31 @@ public class Resources {
          * @param prefix Text to prefix each line printed.
          */
         public void dump(int priority, String tag, String prefix) {
-            mThemeImpl.dump(priority, tag, prefix);
+            synchronized (mLock) {
+                mThemeImpl.dump(priority, tag, prefix);
+            }
         }
 
         // Needed by layoutlib.
         /*package*/ long getNativeTheme() {
-            return mThemeImpl.getNativeTheme();
+            synchronized (mLock) {
+                return mThemeImpl.getNativeTheme();
+            }
         }
 
         /*package*/ int getAppliedStyleResId() {
-            return mThemeImpl.getAppliedStyleResId();
+            synchronized (mLock) {
+                return mThemeImpl.getAppliedStyleResId();
+            }
         }
 
         /**
          * @hide
          */
         public ThemeKey getKey() {
-            return mThemeImpl.getKey();
+            synchronized (mLock) {
+                return mThemeImpl.getKey();
+            }
         }
 
         private String getResourceNameFromHexString(String hexString) {
@@ -1777,7 +1815,9 @@ public class Resources {
          */
         @ViewDebug.ExportedProperty(category = "theme", hasAdjacentMapping = true)
         public String[] getTheme() {
-            return mThemeImpl.getTheme();
+            synchronized (mLock) {
+                return mThemeImpl.getTheme();
+            }
         }
 
         /** @hide */
@@ -1796,7 +1836,15 @@ public class Resources {
          * {@link #applyStyle(int, boolean)}.
          */
         public void rebase() {
-            mThemeImpl.rebase();
+            synchronized (mLock) {
+                mThemeImpl.rebase();
+            }
+        }
+
+        void rebase(ResourcesImpl resImpl) {
+            synchronized (mLock) {
+                mThemeImpl.rebase(resImpl.mAssets);
+            }
         }
 
         /**
@@ -1858,12 +1906,14 @@ public class Resources {
         @NonNull
         public int[] getAttributeResolutionStack(@AttrRes int defStyleAttr,
                 @StyleRes int defStyleRes, @StyleRes int explicitStyleRes) {
-            int[] stack = mThemeImpl.getAttributeResolutionStack(
-                    defStyleAttr, defStyleRes, explicitStyleRes);
-            if (stack == null) {
-                return new int[0];
-            } else {
-                return stack;
+            synchronized (mLock) {
+                int[] stack = mThemeImpl.getAttributeResolutionStack(
+                        defStyleAttr, defStyleRes, explicitStyleRes);
+                if (stack == null) {
+                    return new int[0];
+                } else {
+                    return stack;
+                }
             }
         }
     }
@@ -1909,7 +1959,7 @@ public class Resources {
         }
 
         @Override
-        public boolean equals(Object o) {
+        public boolean equals(@Nullable Object o) {
             if (this == o) {
                 return true;
             }
@@ -2053,9 +2103,40 @@ public class Resources {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(trackingBug = 176190631)
     public DisplayAdjustments getDisplayAdjustments() {
+        final DisplayAdjustments overrideDisplayAdjustments = mOverrideDisplayAdjustments;
+        if (overrideDisplayAdjustments != null) {
+            return overrideDisplayAdjustments;
+        }
         return mResourcesImpl.getDisplayAdjustments();
+    }
+
+    /**
+     * Customize the display adjustments based on the current one in {@link #mResourcesImpl}, in
+     * order to isolate the effect with other instances of {@link Resource} that may share the same
+     * instance of {@link ResourcesImpl}.
+     *
+     * @param override The operation to override the existing display adjustments. If it is null,
+     *                 the override adjustments will be cleared.
+     * @hide
+     */
+    public void overrideDisplayAdjustments(@Nullable Consumer<DisplayAdjustments> override) {
+        if (override != null) {
+            mOverrideDisplayAdjustments = new DisplayAdjustments(
+                    mResourcesImpl.getDisplayAdjustments());
+            override.accept(mOverrideDisplayAdjustments);
+        } else {
+            mOverrideDisplayAdjustments = null;
+        }
+    }
+
+    /**
+     * Return {@code true} if the override display adjustments have been set.
+     * @hide
+     */
+    public boolean hasOverrideDisplayAdjustments() {
+        return mOverrideDisplayAdjustments != null;
     }
 
     /**

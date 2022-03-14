@@ -16,9 +16,15 @@
 
 package com.android.server.soundtrigger_middleware;
 
+import static android.Manifest.permission.SOUNDTRIGGER_DELEGATE_IDENTITY;
+
 import android.annotation.NonNull;
 import android.content.Context;
 import android.hardware.soundtrigger.V2_0.ISoundTriggerHw;
+import android.media.permission.ClearCallingIdentityContext;
+import android.media.permission.Identity;
+import android.media.permission.PermissionUtil;
+import android.media.permission.SafeCloseable;
 import android.media.soundtrigger_middleware.ISoundTriggerCallback;
 import android.media.soundtrigger_middleware.ISoundTriggerMiddlewareService;
 import android.media.soundtrigger_middleware.ISoundTriggerModule;
@@ -27,9 +33,7 @@ import android.media.soundtrigger_middleware.PhraseSoundModel;
 import android.media.soundtrigger_middleware.RecognitionConfig;
 import android.media.soundtrigger_middleware.SoundModel;
 import android.media.soundtrigger_middleware.SoundTriggerModuleDescriptor;
-import android.os.Parcel;
 import android.os.RemoteException;
-import android.os.SystemProperties;
 import android.util.Log;
 
 import com.android.server.SystemService;
@@ -64,15 +68,17 @@ import java.util.Objects;
 public class SoundTriggerMiddlewareService extends ISoundTriggerMiddlewareService.Stub {
     static private final String TAG = "SoundTriggerMiddlewareService";
 
-    @NonNull
-    private final ISoundTriggerMiddlewareInternal mDelegate;
+    private final @NonNull ISoundTriggerMiddlewareInternal mDelegate;
+    private final @NonNull Context mContext;
 
     /**
      * Constructor for internal use only. Could be exposed for testing purposes in the future.
      * Users should access this class via {@link Lifecycle}.
      */
-    private SoundTriggerMiddlewareService(@NonNull ISoundTriggerMiddlewareInternal delegate) {
+    private SoundTriggerMiddlewareService(@NonNull ISoundTriggerMiddlewareInternal delegate,
+            @NonNull Context context) {
         mDelegate = Objects.requireNonNull(delegate);
+        mContext = context;
         new ExternalCaptureStateTracker(active -> {
             try {
                 mDelegate.setCaptureState(active);
@@ -83,44 +89,56 @@ public class SoundTriggerMiddlewareService extends ISoundTriggerMiddlewareServic
     }
 
     @Override
-    public @NonNull
-    SoundTriggerModuleDescriptor[] listModules() throws RemoteException {
-        return mDelegate.listModules();
+    public SoundTriggerModuleDescriptor[] listModulesAsOriginator(Identity identity) {
+        try (SafeCloseable ignored = establishIdentityDirect(identity)) {
+            return mDelegate.listModules();
+        }
     }
 
     @Override
-    public @NonNull
-    ISoundTriggerModule attach(int handle, @NonNull ISoundTriggerCallback callback)
-            throws RemoteException {
-        return new ModuleService(mDelegate.attach(handle, callback));
+    public SoundTriggerModuleDescriptor[] listModulesAsMiddleman(Identity middlemanIdentity,
+            Identity originatorIdentity) {
+        try (SafeCloseable ignored = establishIdentityIndirect(middlemanIdentity,
+                originatorIdentity)) {
+            return mDelegate.listModules();
+        }
     }
 
-    @Override protected void dump(FileDescriptor fd, PrintWriter fout, String[] args) {
+    @Override
+    public ISoundTriggerModule attachAsOriginator(int handle, Identity identity,
+            ISoundTriggerCallback callback) {
+        try (SafeCloseable ignored = establishIdentityDirect(Objects.requireNonNull(identity))) {
+            return new ModuleService(mDelegate.attach(handle, callback));
+        }
+    }
+
+    @Override
+    public ISoundTriggerModule attachAsMiddleman(int handle, Identity middlemanIdentity,
+            Identity originatorIdentity, ISoundTriggerCallback callback) {
+        try (SafeCloseable ignored = establishIdentityIndirect(
+                Objects.requireNonNull(middlemanIdentity),
+                Objects.requireNonNull(originatorIdentity))) {
+            return new ModuleService(mDelegate.attach(handle, callback));
+        }
+    }
+
+    @Override
+    protected void dump(FileDescriptor fd, PrintWriter fout, String[] args) {
         if (mDelegate instanceof Dumpable) {
             ((Dumpable) mDelegate).dump(fout);
         }
     }
 
-    @Override
-    public boolean onTransact(int code, Parcel data, Parcel reply, int flags)
-            throws RemoteException {
-        try {
-            return super.onTransact(code, data, reply, flags);
-        } catch (InternalServerError e) {
-            if (e.getCause() instanceof HalException) {
-                // We recover from any sort of HAL failure by rebooting the HAL process.
-                // This will likely reboot more than just the sound trigger HAL.
-                // The rest of the system should be able to tolerate that.
-                rebootHal();
-            }
-            throw e;
-        }
+    private @NonNull
+    SafeCloseable establishIdentityIndirect(Identity middlemanIdentity,
+            Identity originatorIdentity) {
+        return PermissionUtil.establishIdentityIndirect(mContext, SOUNDTRIGGER_DELEGATE_IDENTITY,
+                middlemanIdentity, originatorIdentity);
     }
 
-    private static void rebootHal() {
-        Log.i(TAG, "Rebooting the sound trigger HAL");
-        // This property needs to be defined in an init.rc script and trigger a HAL reboot.
-        SystemProperties.set("sys.audio.restart.hal", "1");
+    private @NonNull
+    SafeCloseable establishIdentityDirect(Identity originatorIdentity) {
+        return PermissionUtil.establishIdentityDirect(originatorIdentity);
     }
 
     private final static class ModuleService extends ISoundTriggerModule.Stub {
@@ -132,70 +150,74 @@ public class SoundTriggerMiddlewareService extends ISoundTriggerMiddlewareServic
 
         @Override
         public int loadModel(SoundModel model) throws RemoteException {
-            return mDelegate.loadModel(model);
+            try (SafeCloseable ignored = ClearCallingIdentityContext.create()) {
+                return mDelegate.loadModel(model);
+            }
         }
 
         @Override
         public int loadPhraseModel(PhraseSoundModel model) throws RemoteException {
-            return mDelegate.loadPhraseModel(model);
+            try (SafeCloseable ignored = ClearCallingIdentityContext.create()) {
+                return mDelegate.loadPhraseModel(model);
+            }
         }
 
         @Override
         public void unloadModel(int modelHandle) throws RemoteException {
-            mDelegate.unloadModel(modelHandle);
+            try (SafeCloseable ignored = ClearCallingIdentityContext.create()) {
+                mDelegate.unloadModel(modelHandle);
+            }
         }
 
         @Override
         public void startRecognition(int modelHandle, RecognitionConfig config)
                 throws RemoteException {
-            mDelegate.startRecognition(modelHandle, config);
+            try (SafeCloseable ignored = ClearCallingIdentityContext.create()) {
+                mDelegate.startRecognition(modelHandle, config);
+            }
         }
 
         @Override
         public void stopRecognition(int modelHandle) throws RemoteException {
-            mDelegate.stopRecognition(modelHandle);
+            try (SafeCloseable ignored = ClearCallingIdentityContext.create()) {
+                mDelegate.stopRecognition(modelHandle);
+            }
         }
 
         @Override
         public void forceRecognitionEvent(int modelHandle) throws RemoteException {
-            mDelegate.forceRecognitionEvent(modelHandle);
+            try (SafeCloseable ignored = ClearCallingIdentityContext.create()) {
+                mDelegate.forceRecognitionEvent(modelHandle);
+            }
         }
 
         @Override
         public void setModelParameter(int modelHandle, int modelParam, int value)
                 throws RemoteException {
-            mDelegate.setModelParameter(modelHandle, modelParam, value);
+            try (SafeCloseable ignored = ClearCallingIdentityContext.create()) {
+                mDelegate.setModelParameter(modelHandle, modelParam, value);
+            }
         }
 
         @Override
         public int getModelParameter(int modelHandle, int modelParam) throws RemoteException {
-            return mDelegate.getModelParameter(modelHandle, modelParam);
+            try (SafeCloseable ignored = ClearCallingIdentityContext.create()) {
+                return mDelegate.getModelParameter(modelHandle, modelParam);
+            }
         }
 
         @Override
         public ModelParameterRange queryModelParameterSupport(int modelHandle, int modelParam)
                 throws RemoteException {
-            return mDelegate.queryModelParameterSupport(modelHandle, modelParam);
+            try (SafeCloseable ignored = ClearCallingIdentityContext.create()) {
+                return mDelegate.queryModelParameterSupport(modelHandle, modelParam);
+            }
         }
 
         @Override
         public void detach() throws RemoteException {
-            mDelegate.detach();
-        }
-
-        @Override
-        public boolean onTransact(int code, Parcel data, Parcel reply, int flags)
-                throws RemoteException {
-            try {
-                return super.onTransact(code, data, reply, flags);
-            } catch (InternalServerError e) {
-                if (e.getCause() instanceof HalException) {
-                    // We recover from any sort of HAL failure by rebooting the HAL process.
-                    // This will likely reboot more than just the sound trigger HAL.
-                    // The rest of the system should be able to tolerate that.
-                    rebootHal();
-                }
-                throw e;
+            try (SafeCloseable ignored = ClearCallingIdentityContext.create()) {
+                mDelegate.detach();
             }
         }
     }
@@ -222,10 +244,11 @@ public class SoundTriggerMiddlewareService extends ISoundTriggerMiddlewareServic
             publishBinderService(Context.SOUND_TRIGGER_MIDDLEWARE_SERVICE,
                     new SoundTriggerMiddlewareService(
                             new SoundTriggerMiddlewareLogging(
-                                    new SoundTriggerMiddlewareValidation(
-                                            new SoundTriggerMiddlewareImpl(factories,
-                                                    new AudioSessionProviderImpl()),
-                                            getContext()))));
+                                    new SoundTriggerMiddlewarePermission(
+                                            new SoundTriggerMiddlewareValidation(
+                                                    new SoundTriggerMiddlewareImpl(factories,
+                                                            new AudioSessionProviderImpl())),
+                                            getContext())), getContext()));
         }
     }
 }

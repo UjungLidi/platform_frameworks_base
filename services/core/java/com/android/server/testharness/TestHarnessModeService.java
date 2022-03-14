@@ -161,6 +161,13 @@ public class TestHarnessModeService extends SystemService {
     private void configureSettings() {
         ContentResolver cr = getContext().getContentResolver();
 
+        // If adb is already enabled, then we need to restart the daemon to pick up the change in
+        // keys. This is only really useful for userdebug/eng builds.
+        if (Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, 0) == 1) {
+            SystemProperties.set("ctl.restart", "adbd");
+            Slog.d(TAG, "Restarted adbd");
+        }
+
         // Disable the TTL for ADB keys before enabling ADB
         Settings.Global.putLong(cr, Settings.Global.ADB_ALLOWED_CONNECTION_TIME, 0);
         Settings.Global.putInt(cr, Settings.Global.ADB_ENABLED, 1);
@@ -277,6 +284,9 @@ public class TestHarnessModeService extends SystemService {
     private class TestHarnessModeShellCommand extends ShellCommand {
         @Override
         public int onCommand(String cmd) {
+            if (cmd == null) {
+                return handleDefaultCommands(cmd);
+            }
             switch (cmd) {
                 case "enable":
                 case "restore":

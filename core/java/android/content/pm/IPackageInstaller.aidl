@@ -48,8 +48,11 @@ interface IPackageInstaller {
     void registerCallback(IPackageInstallerCallback callback, int userId);
     void unregisterCallback(IPackageInstallerCallback callback);
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void uninstall(in VersionedPackage versionedPackage, String callerPackageName, int flags,
+            in IntentSender statusReceiver, int userId);
+
+    void uninstallExistingPackage(in VersionedPackage versionedPackage, String callerPackageName,
             in IntentSender statusReceiver, int userId);
 
     void installExistingPackage(String packageName, int installFlags, int installReason,
@@ -58,4 +61,9 @@ interface IPackageInstaller {
     void setPermissionsResult(int sessionId, boolean accepted);
 
     void bypassNextStagedInstallerCheck(boolean value);
+
+    void bypassNextAllowedApexUpdateCheck(boolean value);
+
+    void setAllowUnlimitedSilentUpdates(String installerPackageName);
+    void setSilentUpdatesThrottleTime(long throttleTimeInSeconds);
 }

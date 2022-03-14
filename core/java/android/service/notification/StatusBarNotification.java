@@ -16,7 +16,7 @@
 
 package android.service.notification;
 
-import static android.app.NotificationChannel.PLACEHOLDER_CONVERSATION_ID;
+import static android.text.TextUtils.formatSimple;
 
 import android.annotation.NonNull;
 import android.app.Notification;
@@ -31,8 +31,6 @@ import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.UserHandle;
-import android.provider.Settings;
-import android.text.TextUtils;
 
 import com.android.internal.logging.InstanceId;
 import com.android.internal.logging.nano.MetricsProto;
@@ -258,7 +256,7 @@ public class StatusBarNotification implements Parcelable {
 
     @Override
     public String toString() {
-        return String.format(
+        return formatSimple(
                 "StatusBarNotification(pkg=%s user=%s id=%d tag=%s key=%s: %s)",
                 this.pkg, this.user, this.id, this.tag,
                 this.key, this.notification);
@@ -290,6 +288,18 @@ public class StatusBarNotification implements Parcelable {
     @Deprecated
     public int getUserId() {
         return this.user.getIdentifier();
+    }
+
+    /**
+     * Like {@link #getUserId()} but handles special users.
+     * @hide
+     */
+    public int getNormalizedUserId() {
+        int userId = getUserId();
+        if (userId == UserHandle.USER_ALL) {
+            userId = UserHandle.USER_SYSTEM;
+        }
+        return userId;
     }
 
     /** The package that the notification belongs to. */
@@ -420,13 +430,13 @@ public class StatusBarNotification implements Parcelable {
     /**
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public Context getPackageContext(Context context) {
         if (mContext == null) {
             try {
                 ApplicationInfo ai = context.getPackageManager()
                         .getApplicationInfoAsUser(pkg, PackageManager.MATCH_UNINSTALLED_PACKAGES,
-                                getUserId());
+                                getNormalizedUserId());
                 mContext = context.createApplicationContext(ai,
                         Context.CONTEXT_RESTRICTED);
             } catch (PackageManager.NameNotFoundException e) {
@@ -474,15 +484,8 @@ public class StatusBarNotification implements Parcelable {
     /**
      * @hide
      */
-    public String getShortcutId(Context context) {
-        String conversationId = getNotification().getShortcutId();
-        if (TextUtils.isEmpty(conversationId)
-                && (Settings.Global.getInt(context.getContentResolver(),
-                Settings.Global.REQUIRE_SHORTCUTS_FOR_CONVERSATIONS, 0) == 0)
-                && getNotification().getNotificationStyle() == Notification.MessagingStyle.class) {
-            conversationId = getId() + getTag() + PLACEHOLDER_CONVERSATION_ID;
-        }
-        return conversationId;
+    public String getShortcutId() {
+        return getNotification().getShortcutId();
     }
 
     /**

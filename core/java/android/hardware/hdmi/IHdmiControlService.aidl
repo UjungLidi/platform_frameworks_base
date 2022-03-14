@@ -18,6 +18,8 @@ package android.hardware.hdmi;
 
 import android.hardware.hdmi.HdmiDeviceInfo;
 import android.hardware.hdmi.HdmiPortInfo;
+import android.hardware.hdmi.IHdmiCecSettingChangeListener;
+import android.hardware.hdmi.IHdmiCecVolumeControlFeatureListener;
 import android.hardware.hdmi.IHdmiControlCallback;
 import android.hardware.hdmi.IHdmiControlStatusChangeListener;
 import android.hardware.hdmi.IHdmiDeviceEventListener;
@@ -41,9 +43,13 @@ interface IHdmiControlService {
     int[] getSupportedTypes();
     HdmiDeviceInfo getActiveSource();
     void oneTouchPlay(IHdmiControlCallback callback);
+    void toggleAndFollowTvPower();
+    boolean shouldHandleTvPowerKey();
     void queryDisplayStatus(IHdmiControlCallback callback);
     void addHdmiControlStatusChangeListener(IHdmiControlStatusChangeListener listener);
     void removeHdmiControlStatusChangeListener(IHdmiControlStatusChangeListener listener);
+    void addHdmiCecVolumeControlFeatureListener(IHdmiCecVolumeControlFeatureListener listener);
+    void removeHdmiCecVolumeControlFeatureListener(IHdmiCecVolumeControlFeatureListener listener);
     void addHotplugEventListener(IHdmiHotplugEventListener listener);
     void removeHotplugEventListener(IHdmiHotplugEventListener listener);
     void addDeviceEventListener(IHdmiDeviceEventListener listener);
@@ -82,4 +88,13 @@ interface IHdmiControlService {
     void setStandbyMode(boolean isStandbyModeOn);
     void reportAudioStatus(int deviceType, int volume, int maxVolume, boolean isMute);
     void setSystemAudioModeOnForAudioOnlySource();
+    void addCecSettingChangeListener(String name, IHdmiCecSettingChangeListener listener);
+    void removeCecSettingChangeListener(String name, IHdmiCecSettingChangeListener listener);
+    List<String> getUserCecSettings();
+    List<String> getAllowedCecSettingStringValues(String name);
+    int[] getAllowedCecSettingIntValues(String name);
+    String getCecSettingStringValue(String name);
+    void setCecSettingStringValue(String name, String value);
+    int getCecSettingIntValue(String name);
+    void setCecSettingIntValue(String name, int value);
 }

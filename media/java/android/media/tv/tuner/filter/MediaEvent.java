@@ -17,6 +17,7 @@
 package android.media.tv.tuner.filter;
 
 import android.annotation.BytesLong;
+import android.annotation.IntRange;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.media.MediaCodec.LinearBlock;
@@ -28,14 +29,20 @@ import android.media.MediaCodec.LinearBlock;
  */
 @SystemApi
 public class MediaEvent extends FilterEvent {
-    private native int nativeGetAudioHandle();
+    private long mNativeContext;
+    private boolean mReleased = false;
+    private final Object mLock = new Object();
+
+    private native Long nativeGetAudioHandle();
+    private native LinearBlock nativeGetLinearBlock();
+    private native void nativeFinalize();
 
     private final int mStreamId;
     private final boolean mIsPtsPresent;
     private final long mPts;
     private final long mDataLength;
     private final long mOffset;
-    private final LinearBlock mLinearBlock;
+    private LinearBlock mLinearBlock;
     private final boolean mIsSecureMemory;
     private final long mDataId;
     private final int mMpuSequenceNumber;
@@ -103,7 +110,12 @@ public class MediaEvent extends FilterEvent {
      */
     @Nullable
     public LinearBlock getLinearBlock() {
-        return mLinearBlock;
+        synchronized (mLock) {
+            if (mLinearBlock == null) {
+                mLinearBlock = nativeGetLinearBlock();
+            }
+            return mLinearBlock;
+        }
     }
 
     /**
@@ -143,6 +155,7 @@ public class MediaEvent extends FilterEvent {
     /**
      * Gets MPU sequence number of filtered data.
      */
+    @IntRange(from = 0)
     public int getMpuSequenceNumber() {
         return mMpuSequenceNumber;
     }
@@ -162,5 +175,29 @@ public class MediaEvent extends FilterEvent {
     @Nullable
     public AudioDescriptor getExtraMetaData() {
         return mExtraMetaData;
+    }
+
+
+    /**
+     * Finalize the MediaEvent object.
+     * @hide
+     */
+    @Override
+    protected void finalize() {
+        release();
+    }
+
+    /**
+     * Releases the MediaEvent object.
+     */
+    public void release() {
+        synchronized (mLock) {
+            if (mReleased) {
+                return;
+            }
+            nativeFinalize();
+            mNativeContext = 0;
+            mReleased = true;
+        }
     }
 }

@@ -21,6 +21,7 @@ import android.os.RemoteException;
 import android.util.ExceptionUtils;
 
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -196,6 +197,32 @@ public class FunctionalUtils {
     }
 
     /**
+     * A {@link BiFunction} that allows throwing checked exceptions from its single abstract method.
+     *
+     * Can be used together with {@link #uncheckExceptions} to effectively turn a lambda expression
+     * that throws a checked exception into a regular {@link BiFunction}
+     *
+     * @param <T> see {@link BiFunction}
+     * @param <U> see {@link BiFunction}
+     * @param <R> see {@link BiFunction}
+     */
+    @FunctionalInterface
+    @SuppressWarnings("FunctionalInterfaceMethodChanged")
+    public interface ThrowingBiFunction<T, U, R> extends BiFunction<T, U, R> {
+        /** @see ThrowingFunction */
+        R applyOrThrow(T t, U u) throws Exception;
+
+        @Override
+        default R apply(T t, U u) {
+            try {
+                return applyOrThrow(t, u);
+            } catch (Exception ex) {
+                throw ExceptionUtils.propagate(ex);
+            }
+        }
+    }
+
+    /**
      * A {@link BiConsumer} that allows throwing checked exceptions from its single abstract method.
      *
      * Can be used together with {@link #uncheckExceptions} to effectively turn a lambda expression
@@ -218,6 +245,48 @@ public class FunctionalUtils {
                 throw ExceptionUtils.propagate(ex);
             }
         }
+    }
+
+    /**
+     * A {@link Consumer} that allows the caller to specify a custom checked {@link Exception} that
+     * can be thrown by the implementer. This is usually used when proxying/wrapping calls between
+     * different classes.
+     *
+     * @param <Input> Method parameter type
+     * @param <ExceptionType> Checked exception type
+     */
+    @FunctionalInterface
+    public interface ThrowingCheckedConsumer<Input, ExceptionType extends Exception> {
+        void accept(Input input) throws ExceptionType;
+    }
+
+    /**
+     * A {@link Consumer} that allows the caller to specify 2 different custom checked
+     * {@link Exception}s that can be thrown by the implementer. This is usually used when
+     * proxying/wrapping calls between different classes.
+     *
+     * @param <Input> Method parameter type
+     * @param <ExceptionOne> First checked exception type
+     * @param <ExceptionTwo> Second checked exception type
+     */
+    @FunctionalInterface
+    public interface ThrowingChecked2Consumer<Input, ExceptionOne extends Exception,
+            ExceptionTwo extends Exception> {
+        void accept(Input input) throws ExceptionOne, ExceptionTwo;
+    }
+
+    /**
+     * A {@link Function} that allows the caller to specify a custom checked {@link Exception} that
+     * can be thrown by the implementer. This is usually used when proxying/wrapping calls between
+     * different classes.
+     *
+     * @param <Input> Method parameter type
+     * @param <Output> Method return type
+     * @param <ExceptionType> Checked exception type
+     */
+    @FunctionalInterface
+    public interface ThrowingCheckedFunction<Input, Output, ExceptionType extends Exception> {
+        Output apply(Input input) throws ExceptionType;
     }
 
     // TODO: add unit test

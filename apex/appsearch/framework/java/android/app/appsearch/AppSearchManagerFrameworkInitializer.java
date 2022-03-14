@@ -17,6 +17,7 @@ package android.app.appsearch;
 
 import android.annotation.SystemApi;
 import android.app.SystemServiceRegistry;
+import android.app.appsearch.aidl.IAppSearchManager;
 import android.content.Context;
 
 /**
@@ -36,8 +37,9 @@ public class AppSearchManagerFrameworkInitializer {
      *     {@link SystemServiceRegistry}
      */
     public static void initialize() {
-        SystemServiceRegistry.registerStaticService(
+        SystemServiceRegistry.registerContextAwareService(
                 Context.APP_SEARCH_SERVICE, AppSearchManager.class,
-                (service) -> new AppSearchManager(IAppSearchManager.Stub.asInterface(service)));
+                (context, service) ->
+                        new AppSearchManager(context, IAppSearchManager.Stub.asInterface(service)));
     }
 }

@@ -29,11 +29,12 @@ import android.widget.FrameLayout;
 import androidx.annotation.Nullable;
 
 import com.android.systemui.Dumpable;
-import com.android.systemui.Interpolators;
 import com.android.systemui.R;
+import com.android.systemui.animation.Interpolators;
 import com.android.systemui.statusbar.StatusBarIconView;
 import com.android.systemui.statusbar.notification.stack.ExpandableViewState;
 import com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout;
+import com.android.systemui.util.DumpUtilsKt;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -46,7 +47,6 @@ import java.util.List;
 public abstract class ExpandableView extends FrameLayout implements Dumpable {
     private static final String TAG = "ExpandableView";
 
-    public static final float NO_ROUNDNESS = -1;
     protected OnHeightChangedListener mOnHeightChangedListener;
     private int mActualHeight;
     protected int mClipTopAmount;
@@ -67,6 +67,8 @@ public abstract class ExpandableView extends FrameLayout implements Dumpable {
     protected int mContentShift;
     private final ExpandableViewState mViewState;
     private float mContentTranslation;
+    protected boolean mLastInSection;
+    protected boolean mFirstInSection;
 
     public ExpandableView(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -188,14 +190,6 @@ public abstract class ExpandableView extends FrameLayout implements Dumpable {
         if (notifyListeners) {
             notifyHeightChanged(false  /* needsAnimation */);
         }
-    }
-
-    /**
-     * Set the distance to the top roundness, from where we should start clipping a value above
-     * or equal to 0 is the effective distance, and if a value below 0 is received, there should
-     * be no clipping.
-     */
-    public void setDistanceToTopRoundness(float distanceToTopRoundness) {
     }
 
     public void setActualHeight(int actualHeight) {
@@ -486,7 +480,8 @@ public abstract class ExpandableView extends FrameLayout implements Dumpable {
 
     @Override
     public void setLayerType(int layerType, Paint paint) {
-        if (hasOverlappingRendering()) {
+        // Allow resetting the layerType to NONE regardless of overlappingRendering
+        if (layerType == LAYER_TYPE_NONE || hasOverlappingRendering()) {
             super.setLayerType(layerType, paint);
         }
     }
@@ -495,15 +490,6 @@ public abstract class ExpandableView extends FrameLayout implements Dumpable {
     public boolean hasOverlappingRendering() {
         // Otherwise it will be clipped
         return super.hasOverlappingRendering() && getActualHeight() <= getHeight();
-    }
-
-    /**
-     * @return an amount between -1 and 1 of increased padding that this child needs. 1 means it
-     * needs a full increased padding while -1 means it needs no padding at all. For 0.0f the normal
-     * padding is applied.
-     */
-    public float getIncreasedPaddingAmount() {
-        return 0.0f;
     }
 
     public boolean mustStayOnScreen() {
@@ -590,7 +576,7 @@ public abstract class ExpandableView extends FrameLayout implements Dumpable {
         // handling reset for child notifications
         if (this instanceof ExpandableNotificationRow) {
             ExpandableNotificationRow row = (ExpandableNotificationRow) this;
-            List<ExpandableNotificationRow> children = row.getNotificationChildren();
+            List<ExpandableNotificationRow> children = row.getAttachedChildren();
             if (row.isSummaryWithChildren() && children != null) {
                 for (ExpandableNotificationRow childRow : children) {
                     childRow.resetViewState();
@@ -758,6 +744,16 @@ public abstract class ExpandableView extends FrameLayout implements Dumpable {
 
     @Override
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+        pw.println(getClass().getSimpleName());
+        DumpUtilsKt.withIndenting(pw, ipw -> {
+            ExpandableViewState viewState = getViewState();
+            if (viewState == null) {
+                ipw.println("no viewState!!!");
+            } else {
+                viewState.dump(fd, ipw, args);
+                ipw.println();
+            }
+        });
     }
 
     /**
@@ -765,6 +761,44 @@ public abstract class ExpandableView extends FrameLayout implements Dumpable {
      */
     public float getContentTranslation() {
         return mContentTranslation;
+    }
+
+    /** Sets whether this view is the first notification in a section. */
+    public void setFirstInSection(boolean firstInSection) {
+        mFirstInSection = firstInSection;
+    }
+
+    /** Sets whether this view is the last notification in a section. */
+    public void setLastInSection(boolean lastInSection) {
+        mLastInSection = lastInSection;
+    }
+
+    public boolean isLastInSection() {
+        return mLastInSection;
+    }
+
+    public boolean isFirstInSection() {
+        return mFirstInSection;
+    }
+
+    /**
+     * Set the topRoundness of this view.
+     * @return Whether the roundness was changed.
+     */
+    public boolean setTopRoundness(float topRoundness, boolean animate) {
+        return false;
+    }
+
+    /**
+     * Set the bottom roundness of this view.
+     * @return Whether the roundness was changed.
+     */
+    public boolean setBottomRoundness(float bottomRoundness, boolean animate) {
+        return false;
+    }
+
+    public int getHeadsUpHeightWithoutHeader() {
+        return getHeight();
     }
 
     /**

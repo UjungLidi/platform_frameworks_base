@@ -87,7 +87,15 @@ class ServiceManagerProxy implements IServiceManager {
     }
 
     public boolean isDeclared(String name) throws RemoteException {
-        throw new RemoteException();
+        return mServiceManager.isDeclared(name);
+    }
+
+    public String[] getDeclaredInstances(String iface) throws RemoteException {
+        return mServiceManager.getDeclaredInstances(iface);
+    }
+
+    public String updatableViaApex(String name) throws RemoteException {
+        return mServiceManager.updatableViaApex(name);
     }
 
     public void registerClientCallback(String name, IBinder service, IClientCallback cb)
@@ -97,6 +105,10 @@ class ServiceManagerProxy implements IServiceManager {
 
     public void tryUnregisterService(String name, IBinder service) throws RemoteException {
         throw new RemoteException();
+    }
+
+    public ServiceDebugInfo[] getServiceDebugInfo() throws RemoteException {
+        return mServiceManager.getServiceDebugInfo();
     }
 
     /**

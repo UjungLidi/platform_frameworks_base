@@ -12,12 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+package {
+    // See: http://go/android-license-faq
+    // A large-scale-change added 'default_applicable_licenses' to import
+    // all of the 'license_kinds' from "frameworks_base_license"
+    // to get the below license kinds:
+    //   SPDX-license-identifier-Apache-2.0
+    default_applicable_licenses: ["frameworks_base_license"],
+}
+
 java_test_host {
     name: "OverlayRemountedTest",
     srcs: ["src/**/*.java"],
     libs: [
         "tradefed",
         "junit",
+    ],
+    static_libs: [
+        "frameworks-base-hostutils",
     ],
     test_suites: ["general-tests"],
     java_resources: [
@@ -28,5 +40,6 @@ java_test_host {
         ":OverlayRemountedTest_Target",
         ":OverlayRemountedTest_TargetUpgrade",
         ":OverlayRemountedTest_Overlay",
+        ":OverlayRemountedTest_Overlay_SameCert",
     ],
 }

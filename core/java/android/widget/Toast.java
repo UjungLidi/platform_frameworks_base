@@ -71,6 +71,9 @@ import java.util.List;
  * Note that
  * <a href="{@docRoot}reference/com/google/android/material/snackbar/Snackbar">Snackbars</a> are
  * preferred for brief messages while the app is in the foreground.
+ * <p>
+ * Note that toasts being sent from the background are rate limited, so avoid sending such toasts
+ * in quick succession.
  *
  * <div class="special reference">
  * <h3>Developer Guides</h3>
@@ -714,9 +717,7 @@ public class Toast {
     /**
      * Callback object to be called when the toast is shown or hidden.
      *
-     * <p>Callback methods will be called on the looper thread used for the {@link Toast} object.
-     *
-     * @see #makeText(Context, Looper, CharSequence, int)
+     * @see #makeText(Context, CharSequence, int)
      * @see #addCallback(Callback)
      */
     public abstract static class Callback {

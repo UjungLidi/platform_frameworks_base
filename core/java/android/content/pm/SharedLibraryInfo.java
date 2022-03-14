@@ -20,14 +20,17 @@ import android.annotation.IntDef;
 import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.TestApi;
 import android.os.Parcel;
 import android.os.Parcelable;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * This class provides information for a shared library. There are
@@ -78,6 +81,7 @@ public final class SharedLibraryInfo implements Parcelable {
 
     private final long mVersion;
     private final @Type int mType;
+    private final boolean mIsNative;
     private final VersionedPackage mDeclaringPackage;
     private final List<VersionedPackage> mDependentPackages;
     private List<SharedLibraryInfo> mDependencies;
@@ -92,13 +96,14 @@ public final class SharedLibraryInfo implements Parcelable {
      * @param type The lib type.
      * @param declaringPackage The package that declares the library.
      * @param dependentPackages The packages that depend on the library.
+     * @param isNative indicate if this shared lib is a native lib or not (i.e. java)
      *
      * @hide
      */
     public SharedLibraryInfo(String path, String packageName, List<String> codePaths,
             String name, long version, int type,
             VersionedPackage declaringPackage, List<VersionedPackage> dependentPackages,
-            List<SharedLibraryInfo> dependencies) {
+            List<SharedLibraryInfo> dependencies, boolean isNative) {
         mPath = path;
         mPackageName = packageName;
         mCodePaths = codePaths;
@@ -108,13 +113,24 @@ public final class SharedLibraryInfo implements Parcelable {
         mDeclaringPackage = declaringPackage;
         mDependentPackages = dependentPackages;
         mDependencies = dependencies;
+        mIsNative = isNative;
     }
 
     private SharedLibraryInfo(Parcel parcel) {
-        this(parcel.readString(), parcel.readString(), parcel.readArrayList(null),
-                parcel.readString(), parcel.readLong(),
-                parcel.readInt(), parcel.readParcelable(null), parcel.readArrayList(null),
-                parcel.createTypedArrayList(SharedLibraryInfo.CREATOR));
+        mPath = parcel.readString8();
+        mPackageName = parcel.readString8();
+        if (parcel.readInt() != 0) {
+            mCodePaths = Arrays.asList(parcel.createString8Array());
+        } else {
+            mCodePaths = null;
+        }
+        mName = parcel.readString8();
+        mVersion = parcel.readLong();
+        mType = parcel.readInt();
+        mDeclaringPackage = parcel.readParcelable(null);
+        mDependentPackages = parcel.readArrayList(null);
+        mDependencies = parcel.createTypedArrayList(SharedLibraryInfo.CREATOR);
+        mIsNative = parcel.readBoolean();
     }
 
     /**
@@ -124,6 +140,16 @@ public final class SharedLibraryInfo implements Parcelable {
      */
     public @Type int getType() {
         return mType;
+    }
+
+    /**
+     * Tells whether this library is a native shared library or not.
+     *
+     * @hide
+     */
+    @TestApi
+    public boolean isNative() {
+        return mIsNative;
     }
 
     /**
@@ -167,7 +193,8 @@ public final class SharedLibraryInfo implements Parcelable {
      *
      * @hide
      */
-    public List<String> getAllCodePaths() {
+    @TestApi
+    public @NonNull List<String> getAllCodePaths() {
         if (getPath() != null) {
             // Builtin library.
             ArrayList<String> list = new ArrayList<>();
@@ -175,7 +202,7 @@ public final class SharedLibraryInfo implements Parcelable {
             return list;
         } else {
             // Static or dynamic library.
-            return mCodePaths;
+            return Objects.requireNonNull(mCodePaths);
         }
     }
 
@@ -296,15 +323,21 @@ public final class SharedLibraryInfo implements Parcelable {
 
     @Override
     public void writeToParcel(Parcel parcel, int flags) {
-        parcel.writeString(mPath);
-        parcel.writeString(mPackageName);
-        parcel.writeList(mCodePaths);
-        parcel.writeString(mName);
+        parcel.writeString8(mPath);
+        parcel.writeString8(mPackageName);
+        if (mCodePaths != null) {
+            parcel.writeInt(1);
+            parcel.writeString8Array(mCodePaths.toArray(new String[mCodePaths.size()]));
+        } else {
+            parcel.writeInt(0);
+        }
+        parcel.writeString8(mName);
         parcel.writeLong(mVersion);
         parcel.writeInt(mType);
         parcel.writeParcelable(mDeclaringPackage, flags);
         parcel.writeList(mDependentPackages);
         parcel.writeTypedList(mDependencies);
+        parcel.writeBoolean(mIsNative);
     }
 
     private static String typeToString(int type) {

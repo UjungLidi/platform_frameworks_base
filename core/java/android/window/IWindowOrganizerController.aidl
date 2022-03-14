@@ -16,9 +16,17 @@
 
 package android.window;
 
+import android.view.SurfaceControl;
+
+import android.os.IBinder;
+import android.view.RemoteAnimationAdapter;
 import android.window.IDisplayAreaOrganizerController;
+import android.window.ITaskFragmentOrganizerController;
 import android.window.ITaskOrganizerController;
+import android.window.ITransitionMetricsReporter;
+import android.window.ITransitionPlayer;
 import android.window.IWindowContainerTransactionCallback;
+import android.window.WindowContainerToken;
 import android.window.WindowContainerTransaction;
 
 /** @hide */
@@ -42,9 +50,56 @@ interface IWindowOrganizerController {
     int applySyncTransaction(in WindowContainerTransaction t,
             in IWindowContainerTransactionCallback callback);
 
+    /**
+     * Starts a transition.
+     * @param type The transition type.
+     * @param transitionToken A token associated with the transition to start. If null, a new
+     *                        transition will be created of the provided type.
+     * @param t Operations that are part of the transition.
+     * @return a token representing the transition. This will just be transitionToken if it was
+     *         non-null.
+     */
+    IBinder startTransition(int type, in @nullable IBinder transitionToken,
+            in @nullable WindowContainerTransaction t);
+
+    /**
+     * Starts a legacy transition.
+     * @param type The transition type.
+     * @param adapter The animation to use.
+     * @param syncCallback A sync callback for the contents of `t`
+     * @param t Operations that are part of the transition.
+     * @return sync-id or -1 if this no-op'd because a transition is already running.
+     */
+    int startLegacyTransition(int type, in RemoteAnimationAdapter adapter,
+            in IWindowContainerTransactionCallback syncCallback, in WindowContainerTransaction t);
+
+    /**
+     * Finishes a transition. This must be called for all created transitions.
+     * @param transitionToken Which transition to finish
+     * @param t Changes to make before finishing but in the same SF Transaction. Can be null.
+     * @param callback Called when t is finished applying.
+     * @return An ID for the sync operation (see {@link #applySyncTransaction}. This will be
+     *         negative if no sync transaction was attached (null t or callback)
+     */
+    int finishTransition(in IBinder transitionToken,
+            in @nullable WindowContainerTransaction t,
+            in IWindowContainerTransactionCallback callback);
+
     /** @return An interface enabling the management of task organizers. */
     ITaskOrganizerController getTaskOrganizerController();
 
     /** @return An interface enabling the management of display area organizers. */
     IDisplayAreaOrganizerController getDisplayAreaOrganizerController();
+
+    /** @return An interface enabling the management of task fragment organizers. */
+    ITaskFragmentOrganizerController getTaskFragmentOrganizerController();
+
+    /**
+     * Registers a transition player with Core. There is only one of these at a time and calling
+     * this will replace the existing one if set.
+     */
+    void registerTransitionPlayer(in ITransitionPlayer player);
+
+    /** @return An interface enabling the transition players to report its metrics. */
+    ITransitionMetricsReporter getTransitionMetricsReporter();
 }

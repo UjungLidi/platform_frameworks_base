@@ -23,6 +23,7 @@ import java.security.InvalidKeyException;
 import java.security.KeyPair;
 import java.security.PublicKey;
 import java.security.cert.X509Certificate;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Map;
 
@@ -41,19 +42,18 @@ public abstract class IdentityCredential {
     /**
      * Create an ephemeral key pair to use to establish a secure channel with a reader.
      *
-     * <p>Most applications will use only the public key, and only to send it to the reader,
-     * allowing the private key to be used internally for {@link #encryptMessageToReader(byte[])}
-     * and {@link #decryptMessageFromReader(byte[])}. The private key is also provided for
-     * applications that wish to use a cipher suite that is not supported by
-     * {@link IdentityCredentialStore}.
+     * <p>Applications should use this key-pair for the communications channel with the reader
+     * using a protocol / cipher-suite appropriate for the application. One example of such a
+     * protocol is the one used for Mobile Driving Licenses, see ISO 18013-5 section 9.2.1 "Session
+     * encryption".
      *
      * @return ephemeral key pair to use to establish a secure channel with a reader.
      */
     public @NonNull abstract KeyPair createEphemeralKeyPair();
 
     /**
-     * Set the ephemeral public key provided by the reader. This must be called before
-     * {@link #encryptMessageToReader} or {@link #decryptMessageFromReader} can be called.
+     * Set the ephemeral public key provided by the reader. If called, this must be called before
+     * {@link #getEntries(byte[], Map, byte[], byte[])} is called.
      *
      * @param readerEphemeralPublicKey The ephemeral public key provided by the reader to
      *                                 establish a secure session.
@@ -65,6 +65,11 @@ public abstract class IdentityCredential {
     /**
      * Encrypt a message for transmission to the reader.
      *
+     * <p>Do not use. In this version of the API, this method produces an incorrect
+     * result. Instead, applications should implement message encryption/decryption themselves as
+     * detailed in the {@link #createEphemeralKeyPair()} method. In a future API-level, this
+     * method will be deprecated.
+     *
      * @param messagePlaintext unencrypted message to encrypt.
      * @return encrypted message.
      */
@@ -72,6 +77,11 @@ public abstract class IdentityCredential {
 
     /**
      * Decrypt a message received from the reader.
+     *
+     * <p>Do not use. In this version of the API, this method produces an incorrect
+     * result. Instead, applications should implement message encryption/decryption themselves as
+     * detailed in the {@link #createEphemeralKeyPair()} method. In a future API-level, this
+     * method will be deprecated.
      *
      * @param messageCiphertext encrypted message to decrypt.
      * @return decrypted message.
@@ -95,9 +105,7 @@ public abstract class IdentityCredential {
     /**
      * Sets whether to allow using an authentication key which use count has been exceeded if no
      * other key is available. This must be called prior to calling
-     * {@link #getEntries(byte[], Map, byte[], byte[])} or using a
-     * {@link android.hardware.biometrics.BiometricPrompt.CryptoObject} which references this
-     * object.
+     * {@link #getEntries(byte[], Map, byte[], byte[])}.
      *
      * By default this is set to true.
      *
@@ -105,6 +113,25 @@ public abstract class IdentityCredential {
      *                                has been exceeded if no other key is available.
      */
     public abstract void setAllowUsingExhaustedKeys(boolean allowUsingExhaustedKeys);
+
+    /**
+     * Sets whether to allow using an authentication key which has been expired if no
+     * other key is available. This must be called prior to calling
+     * {@link #getEntries(byte[], Map, byte[], byte[])}.
+     *
+     * <p>By default this is set to false.
+     *
+     * <p>This is only implemented in feature version 202101 or later. If not implemented, the call
+     * fails with {@link UnsupportedOperationException}. See
+     * {@link android.content.pm.PackageManager#FEATURE_IDENTITY_CREDENTIAL_HARDWARE} for known
+     * feature versions.
+     *
+     * @param allowUsingExpiredKeys whether to allow using an authentication key which use count
+     *                              has been exceeded if no other key is available.
+     */
+    public void setAllowUsingExpiredKeys(boolean allowUsingExpiredKeys) {
+        throw new UnsupportedOperationException();
+    }
 
     /**
      * Called by android.hardware.biometrics.CryptoObject#getOpId() to get an
@@ -123,13 +150,14 @@ public abstract class IdentityCredential {
      * entries.
      *
      * <p>It is the responsibility of the calling application to know if authentication is needed
-     * and use e.g. {@link android.hardware.biometrics.BiometricPrompt}) to make the user
+     * and use e.g. {@link android.hardware.biometrics.BiometricPrompt} to make the user
      * authenticate using a {@link android.hardware.biometrics.BiometricPrompt.CryptoObject} which
      * references this object. If needed, this must be done before calling
      * {@link #getEntries(byte[], Map, byte[], byte[])}.
      *
-     * <p>If this method returns successfully (i.e. without throwing an exception), it must not be
-     * called again on this instance.
+     * <p>It is permissible to call this method multiple times using the same instance but if this
+     * is done, the {@code sessionTranscript} parameter must be identical for each call. If this is
+     * not the case, the {@link SessionTranscriptMismatchException} exception is thrown.
      *
      * <p>If not {@code null} the {@code requestMessage} parameter must contain data for the request
      * from the verifier. The content can be defined in the way appropriate for the credential, byt
@@ -141,6 +169,9 @@ public abstract class IdentityCredential {
      *     the example below.</li>
      * </ul>
      *
+     * <p>If these requirements are not met the {@link InvalidRequestMessageException} exception
+     * is thrown.
+     *
      * <p>Here's an example of CBOR which conforms to this requirement:
      * <pre>
      *   ItemsRequest = {
@@ -148,6 +179,8 @@ public abstract class IdentityCredential {
      *     "nameSpaces" : NameSpaces,
      *     ? "RequestInfo" : {* tstr => any} ; Additional info the reader wants to provide
      *   }
+     *
+     *   DocType = tstr
      *
      *   NameSpaces = {
      *     + NameSpace => DataElements    ; Requested data elements for each NameSpace
@@ -163,27 +196,18 @@ public abstract class IdentityCredential {
      *   IntentToRetain = bool
      * </pre>
      *
-     * <p>If the {@code sessionTranscript} parameter is not {@code null}, it must contain CBOR
-     * data conforming to the following CDDL schema:
+     * <p>If the {@code sessionTranscript} parameter is not {@code null}, the X and Y coordinates
+     * of the public part of the key-pair previously generated by {@link #createEphemeralKeyPair()}
+     * must appear somewhere in the bytes of the CBOR. Each of these coordinates must appear
+     * encoded with the most significant bits first and use the exact amount of bits indicated by
+     * the key size of the ephemeral keys. For example, if the ephemeral key is using the P-256
+     * curve then the 32 bytes for the X coordinate encoded with the most significant bits first
+     * must appear somewhere in {@code sessionTranscript} and ditto for the 32 bytes for the Y
+     * coordinate.
      *
-     * <pre>
-     *   SessionTranscript = [
-     *     DeviceEngagementBytes,
-     *     EReaderKeyBytes
-     *   ]
-     *
-     *   DeviceEngagementBytes = #6.24(bstr .cbor DeviceEngagement)
-     *   EReaderKeyBytes = #6.24(bstr .cbor EReaderKey.Pub)
-     * </pre>
-     *
-     * <p>If the SessionTranscript is not empty, a COSE_Key structure for the public part
-     * of the key-pair previously generated by {@link #createEphemeralKeyPair()} must appear
-     * somewhere in {@code DeviceEngagement} and the X and Y coordinates must both be present
-     * in uncompressed form.
-     *
-     * <p>If {@code readerAuth} is not {@code null} it must be the bytes of a COSE_Sign1
+     * <p>If {@code readerAuth} is not {@code null} it must be the bytes of a {@code COSE_Sign1}
      * structure as defined in RFC 8152. For the payload nil shall be used and the
-     * detached payload is the ReaderAuthentication CBOR described below.
+     * detached payload is the ReaderAuthenticationBytes CBOR described below.
      * <pre>
      *     ReaderAuthentication = [
      *       "ReaderAuthentication",
@@ -191,23 +215,28 @@ public abstract class IdentityCredential {
      *       ItemsRequestBytes
      *     ]
      *
-     *     ItemsRequestBytes = #6.24(bstr .cbor ItemsRequest)   ; Bytes of ItemsRequest
+     *     ItemsRequestBytes = #6.24(bstr .cbor ItemsRequest)
+     *
+     *     ReaderAuthenticationBytes = #6.24(bstr .cbor ReaderAuthentication)
      * </pre>
      *
-     * <p>The public key corresponding to the key used to made signature, can be
-     * found in the {@code x5chain} unprotected header element of the COSE_Sign1
-     * structure (as as described in 'draft-ietf-cose-x509-04'). There will be at
-     * least one certificate in said element and there may be more (and if so,
+     * <p>where {@code ItemsRequestBytes} are the bytes in the {@code requestMessage} parameter.
+     *
+     * <p>The public key corresponding to the key used to make the signature, can be found in the
+     * {@code x5chain} unprotected header element of the {@code COSE_Sign1} structure (as as
+     * described in
+     * <a href="https://tools.ietf.org/html/draft-ietf-cose-x509-04">draft-ietf-cose-x509-04</a>).
+     * There will be at least one certificate in said element and there may be more (and if so,
      * each certificate must be signed by its successor).
      *
-     * <p>Data elements protected by reader authentication is returned if, and only if, they are
+     * <p>Data elements protected by reader authentication are returned if, and only if, they are
      * mentioned in {@code requestMessage}, {@code requestMessage} is signed by the top-most
-     * certificate in {@code readerCertificateChain}, and the data element is configured
-     * with an {@link AccessControlProfile} with a {@link X509Certificate} in
-     * {@code readerCertificateChain}.
+     * certificate in the reader's certificate chain, and the data element is configured
+     * with an {@link AccessControlProfile} configured with an X.509 certificate which appears
+     * in the certificate chain.
      *
      * <p>Note that only items referenced in {@code entriesToRequest} are returned - the
-     * {@code requestMessage} parameter is only used to for enforcing reader authentication.
+     * {@code requestMessage} parameter is used only for enforcing reader authentication.
      *
      * <p>The reason for having {@code requestMessage} and {@code entriesToRequest} as separate
      * parameters is that the former represents a request from the remote verifier device
@@ -219,13 +248,12 @@ public abstract class IdentityCredential {
      * @param entriesToRequest       The entries to request, organized as a map of namespace
      *                               names with each value being a collection of data elements
      *                               in the given namespace.
-     * @param readerSignature        COSE_Sign1 structure as described above or {@code null}
-     *                               if reader authentication is not being used.
+     * @param readerSignature        A {@code COSE_Sign1} structure as described above or
+     *                               {@code null} if reader authentication is not being used.
      * @return A {@link ResultData} object containing entry data organized by namespace and a
      *         cryptographically authenticated representation of the same data.
      * @throws SessionTranscriptMismatchException     Thrown when trying use multiple different
-     *                                                session transcripts in the same presentation
-     *                                                session.
+     *                                                session transcripts.
      * @throws NoAuthenticationKeyAvailableException  if authentication keys were never
      *                                                provisioned, the method
      *                                             {@link #setAvailableAuthenticationKeys(int, int)}
@@ -255,8 +283,8 @@ public abstract class IdentityCredential {
      * Sets the number of dynamic authentication keys the {@code IdentityCredential} will maintain,
      * and the number of times each should be used.
      *
-     * <p>{@code IdentityCredential}s will select the least-used dynamic authentication key each
-     * time {@link #getEntries(byte[], Map, byte[], byte[])} is called. {@code IdentityCredential}s
+     * <p>The Identity Credential system will select the least-used dynamic authentication key each
+     * time {@link #getEntries(byte[], Map, byte[], byte[])} is called. Identity Credentials
      * for which this method has not been called behave as though it had been called wit
      * {@code keyCount} 0 and {@code maxUsesPerKey} 1.
      *
@@ -274,12 +302,28 @@ public abstract class IdentityCredential {
      * <p>When there aren't enough certified dynamic authentication keys, either because the key
      * count has been increased or because one or more keys have reached their usage count, this
      * method will generate replacement keys and certificates and return them for issuer
-     * certification. The issuer certificates and associated static authentication data must then
-     * be provided back to the {@code IdentityCredential} using
-     * {@link #storeStaticAuthenticationData(X509Certificate, byte[])}.
+     * certification.  The issuer certificates and associated static authentication data must then
+     * be provided back to the Identity Credential using
+     * {@link #storeStaticAuthenticationData(X509Certificate, byte[])}.  The private part of
+     * each authentication key never leaves secure hardware.
      *
      * <p>Each X.509 certificate is signed by CredentialKey. The certificate chain for CredentialKey
      * can be obtained using the {@link #getCredentialKeyCertificateChain()} method.
+
+     * <p>If the implementation is feature version 202101 or later,
+     * each X.509 certificate contains an X.509 extension at OID 1.3.6.1.4.1.11129.2.1.26 which
+     * contains a DER encoded OCTET STRING with the bytes of the CBOR with the following CDDL:
+     * <pre>
+     *   ProofOfBinding = [
+     *     "ProofOfBinding",
+     *     bstr,              // Contains SHA-256(ProofOfProvisioning)
+     *   ]
+     * </pre>
+     * <p>This CBOR enables an issuer to determine the exact state of the credential it
+     * returns issuer-signed data for.
+     *
+     * <p> See {@link android.content.pm.PackageManager#FEATURE_IDENTITY_CREDENTIAL_HARDWARE} for
+     * known feature versions.
      *
      * @return A collection of X.509 certificates for dynamic authentication keys that need issuer
      * certification.
@@ -299,11 +343,42 @@ public abstract class IdentityCredential {
      *                          the authenticity
      *                          and integrity of the credential data fields.
      * @throws UnknownAuthenticationKeyException If the given authentication key is not recognized.
+     * @deprecated Use {@link #storeStaticAuthenticationData(X509Certificate, Instant, byte[])}
+     *     instead.
      */
+    @Deprecated
     public abstract void storeStaticAuthenticationData(
             @NonNull X509Certificate authenticationKey,
             @NonNull byte[] staticAuthData)
             throws UnknownAuthenticationKeyException;
+
+    /**
+     * Store authentication data associated with a dynamic authentication key.
+     *
+     * This should only be called for an authenticated key returned by
+     * {@link #getAuthKeysNeedingCertification()}.
+     *
+     * <p>This is only implemented in feature version 202101 or later. If not implemented, the call
+     * fails with {@link UnsupportedOperationException}. See
+     * {@link android.content.pm.PackageManager#FEATURE_IDENTITY_CREDENTIAL_HARDWARE} for known
+     * feature versions.
+     *
+     * @param authenticationKey The dynamic authentication key for which certification and
+     *                          associated static
+     *                          authentication data is being provided.
+     * @param expirationDate    The expiration date of the static authentication data.
+     * @param staticAuthData    Static authentication data provided by the issuer that validates
+     *                          the authenticity
+     *                          and integrity of the credential data fields.
+     * @throws UnknownAuthenticationKeyException If the given authentication key is not recognized.
+     */
+    public void storeStaticAuthenticationData(
+            @NonNull X509Certificate authenticationKey,
+            @NonNull Instant expirationDate,
+            @NonNull byte[] staticAuthData)
+            throws UnknownAuthenticationKeyException {
+        throw new UnsupportedOperationException();
+    }
 
     /**
      * Get the number of times the dynamic authentication keys have been used.
@@ -311,4 +386,93 @@ public abstract class IdentityCredential {
      * @return int array of dynamic authentication key usage counts.
      */
     public @NonNull abstract int[] getAuthenticationDataUsageCount();
+
+    /**
+     * Proves ownership of a credential.
+     *
+     * <p>This method returns a COSE_Sign1 data structure signed by the CredentialKey
+     * with payload set to {@code ProofOfDeletion} as defined below.</p>
+     *
+     * <p>The returned CBOR is the following:</p>
+     * <pre>
+     *     ProofOfOwnership = [
+     *          "ProofOfOwnership",           ; tstr
+     *          tstr,                         ; DocType
+     *          bstr,                         ; Challenge
+     *          bool                          ; true if this is a test credential, should
+     *                                        ; always be false.
+     *      ]
+     * </pre>
+     *
+     * <p>This is only implemented in feature version 202101 or later. If not implemented, the call
+     * fails with {@link UnsupportedOperationException}. See
+     * {@link android.content.pm.PackageManager#FEATURE_IDENTITY_CREDENTIAL_HARDWARE} for known
+     * feature versions.
+     *
+     * @param challenge is a non-empty byte array whose contents should be unique, fresh and
+     *                  provided by the issuing authority. The value provided is embedded in the
+     *                  generated CBOR and enables the issuing authority to verify that the
+     *                  returned proof is fresh.
+     * @return the COSE_Sign1 data structure above
+     */
+    public @NonNull byte[] proveOwnership(@NonNull byte[] challenge)  {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Deletes a credential.
+     *
+     * <p>This method returns a COSE_Sign1 data structure signed by the CredentialKey
+     * with payload set to {@code ProofOfDeletion} as defined below.</p>
+     *
+     * <pre>
+     *     ProofOfDeletion = [
+     *          "ProofOfDeletion",            ; tstr
+     *          tstr,                         ; DocType
+     *          bstr,                         ; Challenge
+     *          bool                          ; true if this is a test credential, should
+     *                                        ; always be false.
+     *      ]
+     * </pre>
+     *
+     * <p>This is only implemented in feature version 202101 or later. If not implemented, the call
+     * fails with {@link UnsupportedOperationException}. See
+     * {@link android.content.pm.PackageManager#FEATURE_IDENTITY_CREDENTIAL_HARDWARE} for known
+     * feature versions.
+     *
+     * @param challenge is a non-empty byte array whose contents should be unique, fresh and
+     *                  provided by the issuing authority. The value provided is embedded in the
+     *                  generated CBOR and enables the issuing authority to verify that the
+     *                  returned proof is fresh.
+     * @return the COSE_Sign1 data structure above
+     */
+    public @NonNull byte[] delete(@NonNull byte[] challenge)  {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Updates the credential with new access control profiles and data items.
+     *
+     * <p>This method is similar to
+     * {@link WritableIdentityCredential#personalize(PersonalizationData)} except that it operates
+     * on an existing credential, see the documentation for that method for the format of the
+     * returned data.
+     *
+     * <p>If this call succeeds an side-effect is that all dynamic authentication keys for the
+     * credential are deleted. The application will need to use
+     * {@link #getAuthKeysNeedingCertification()} to generate replacement keys and return
+     * them for issuer certification.
+     *
+     * <p>This is only implemented in feature version 202101 or later. If not implemented, the call
+     * fails with {@link UnsupportedOperationException}. See
+     * {@link android.content.pm.PackageManager#FEATURE_IDENTITY_CREDENTIAL_HARDWARE} for known
+     * feature versions.
+     *
+     * @param personalizationData   The data to update, including access control profiles
+     *                              and data elements and their values, grouped into namespaces.
+     * @return A COSE_Sign1 data structure, see above.
+     */
+    public @NonNull byte[] update(@NonNull PersonalizationData personalizationData) {
+        throw new UnsupportedOperationException();
+    }
 }

@@ -46,7 +46,7 @@ import java.lang.annotation.RetentionPolicy;
  * access control profile IDs.  Names are strings and values are typed and can be any
  * value supported by <a href="http://cbor.io/">CBOR</a>.</li>
  *
- * <li>A set of access control profiles, each with a profile ID and a specification
+ * <li>A set of access control profiles (up to 32), each with a profile ID and a specification
  * of the conditions which satisfy the profile's requirements.</li>
  *
  * <li>An asymmetric key pair which is used to authenticate the credential to the Issuing
@@ -72,22 +72,37 @@ import java.lang.annotation.RetentionPolicy;
  * <p>Credentials provisioned to the direct access store should <strong>always</strong> use reader
  * authentication to protect data elements. The reason for this is user authentication or user
  * approval of data release is not possible when the device is off.
+ *
+ * <p>The Identity Credential API is designed to be able to evolve and change over time
+ * but still provide 100% backwards compatibility. This is complicated by the fact that
+ * there may be a version skew between the API used by the application and the version
+ * implemented in secure hardware. To solve this problem, the API provides for a way
+ * for the application to query which feature version the hardware implements (if any
+ * at all) using
+ * {@link android.content.pm#FEATURE_IDENTITY_CREDENTIAL_HARDWARE} and
+ * {@link android.content.pm#FEATURE_IDENTITY_CREDENTIAL_HARDWARE_DIRECT_ACCESS}.
+ * Methods which only work on certain feature versions are clearly documented as
+ * such.
  */
 public abstract class IdentityCredentialStore {
     IdentityCredentialStore() {}
 
     /**
      * Specifies that the cipher suite that will be used to secure communications between the reader
-     * is:
+     * and the prover is using the following primitives
      *
      * <ul>
-     * <li>ECDHE with HKDF-SHA-256 for key agreement.</li>
-     * <li>AES-256 with GCM block mode for authenticated encryption (nonces are incremented by one
-     * for every message).</li>
-     * <li>ECDSA with SHA-256 for signing (used for signing session transcripts to defeat
-     * man-in-the-middle attacks), signing keys are not ephemeral. See {@link IdentityCredential}
-     * for details on reader and prover signing keys.</li>
+     * <li>ECKA-DH (Elliptic Curve Key Agreement Algorithm - Diffie-Hellman, see BSI TR-03111).</li>
+     *
+     * <li>HKDF-SHA-256 (see RFC 5869).</li>
+     *
+     * <li>AES-256-GCM (see NIST SP 800-38D).</li>
+     *
+     * <li>HMAC-SHA-256 (see RFC 2104).</li>
      * </ul>
+     *
+     * <p>The exact way these primitives are combined to derive the session key is specified in
+     * section 9.2.1.4 of ISO/IEC 18013-5 (see description of cipher suite '1').<p>
      *
      * <p>
      * At present this is the only supported cipher suite.
@@ -135,9 +150,20 @@ public abstract class IdentityCredentialStore {
     /**
      * Creates a new credential.
      *
+     * <p>When a credential is created, a cryptographic key-pair - CredentialKey - is created which
+     * is used to authenticate the store to the Issuing Authority.  The private part of this
+     * key-pair never leaves secure hardware and the public part can be obtained using
+     * {@link WritableIdentityCredential#getCredentialKeyCertificateChain(byte[])} on the
+     * returned object.
+     *
+     * <p>In addition, all of the Credential data content is imported and a certificate for the
+     * CredentialKey and a signature produced with the CredentialKey are created.  These latter
+     * values may be checked by an issuing authority to verify that the data was imported into
+     * secure hardware and that it was imported unmodified.
+     *
      * @param credentialName The name used to identify the credential.
      * @param docType        The document type for the credential.
-     * @return A @{link WritableIdentityCredential} that can be used to create a new credential.
+     * @return A {@link WritableIdentityCredential} that can be used to create a new credential.
      * @throws AlreadyPersonalizedException if a credential with the given name already exists.
      * @throws DocTypeNotSupportedException if the given document type isn't supported by the store.
      */
@@ -147,6 +173,10 @@ public abstract class IdentityCredentialStore {
 
     /**
      * Retrieve a named credential.
+     *
+     * <p>The cipher suite used to communicate with the remote verifier must also be specified.
+     * Currently only a single cipher-suite is supported. Support for other cipher suites may be
+     * added in a future version of this API.
      *
      * @param credentialName the name of the credential to retrieve.
      * @param cipherSuite    the cipher suite to use for communicating with the verifier.
@@ -174,7 +204,9 @@ public abstract class IdentityCredentialStore {
      * @param credentialName the name of the credential to delete.
      * @return {@code null} if the credential was not found, the COSE_Sign1 data structure above
      *     if the credential was found and deleted.
+     * @deprecated Use {@link IdentityCredential#delete(byte[])} instead.
      */
+    @Deprecated
     public abstract @Nullable byte[] deleteCredentialByName(@NonNull String credentialName);
 
     /** @hide */
@@ -182,5 +214,4 @@ public abstract class IdentityCredentialStore {
     @Retention(RetentionPolicy.SOURCE)
     public @interface Ciphersuite {
     }
-
 }

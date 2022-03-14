@@ -16,7 +16,6 @@
 
 package com.android.systemui.controls.controller
 
-import android.app.ActivityManager
 import android.content.ComponentName
 import android.content.Context
 import android.os.IBinder
@@ -28,27 +27,37 @@ import android.service.controls.IControlsSubscription
 import android.service.controls.actions.ControlAction
 import android.util.Log
 import com.android.internal.annotations.VisibleForTesting
+import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Background
+import com.android.systemui.settings.UserTracker
 import com.android.systemui.util.concurrency.DelayableExecutor
 import dagger.Lazy
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
-import javax.inject.Singleton
 
-@Singleton
+@SysUISingleton
 @VisibleForTesting
 open class ControlsBindingControllerImpl @Inject constructor(
     private val context: Context,
     @Background private val backgroundExecutor: DelayableExecutor,
-    private val lazyController: Lazy<ControlsController>
+    private val lazyController: Lazy<ControlsController>,
+    userTracker: UserTracker
 ) : ControlsBindingController {
 
     companion object {
         private const val TAG = "ControlsBindingControllerImpl"
         private const val MAX_CONTROLS_REQUEST = 100000L
-        private const val SUGGESTED_CONTROLS_REQUEST = 6L
+        private const val SUGGESTED_STRUCTURES = 6L
+        private const val SUGGESTED_CONTROLS_REQUEST =
+            ControlsControllerImpl.SUGGESTED_CONTROLS_PER_STRUCTURE * SUGGESTED_STRUCTURES
+
+        private val emptyCallback = object : ControlsBindingController.LoadCallback {
+            override fun accept(controls: List<Control>) {}
+            override fun error(message: String) {}
+        }
     }
 
-    private var currentUser = UserHandle.of(ActivityManager.getCurrentUser())
+    private var currentUser = userTracker.userHandle
 
     override val currentUserId: Int
         get() = currentUser.identifier
@@ -280,17 +289,23 @@ open class ControlsBindingControllerImpl @Inject constructor(
     }
 
     private inner class LoadSubscriber(
-        val callback: ControlsBindingController.LoadCallback,
+        var callback: ControlsBindingController.LoadCallback,
         val requestLimit: Long
     ) : IControlsSubscriber.Stub() {
         val loadedControls = ArrayList<Control>()
-        private var isTerminated = false
+        private var isTerminated = AtomicBoolean(false)
         private var _loadCancelInternal: (() -> Unit)? = null
         private lateinit var subscription: IControlsSubscription
 
+        /**
+         * Potentially cancel a subscriber. The subscriber may also have terminated, in which case
+         * the request is ignored.
+         */
         fun loadCancel() = Runnable {
-            Log.d(TAG, "Cancel load requested")
-            _loadCancelInternal?.invoke()
+            _loadCancelInternal?.let {
+                Log.d(TAG, "Canceling loadSubscribtion")
+                it.invoke()
+            }
         }
 
         override fun onSubscribe(token: IBinder, subs: IControlsSubscription) {
@@ -301,7 +316,7 @@ open class ControlsBindingControllerImpl @Inject constructor(
 
         override fun onNext(token: IBinder, c: Control) {
             backgroundExecutor.execute {
-                if (isTerminated) return@execute
+                if (isTerminated.get()) return@execute
 
                 loadedControls.add(c)
 
@@ -325,13 +340,19 @@ open class ControlsBindingControllerImpl @Inject constructor(
         }
 
         private fun maybeTerminateAndRun(postTerminateFn: Runnable) {
-            if (isTerminated) return
+            if (isTerminated.get()) return
 
-            isTerminated = true
             _loadCancelInternal = {}
+
+            // Reassign the callback to clear references to other areas of code. Binders such as
+            // this may not be GC'd right away, so do not hold onto these references.
+            callback = emptyCallback
             currentProvider?.cancelLoadTimeout()
 
-            backgroundExecutor.execute(postTerminateFn)
+            backgroundExecutor.execute {
+                isTerminated.compareAndSet(false, true)
+                postTerminateFn.run()
+            }
         }
     }
 }

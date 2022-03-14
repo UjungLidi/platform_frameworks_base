@@ -19,23 +19,23 @@ package com.android.systemui.statusbar.notification.row;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.content.Context;
-import android.content.res.TypedArray;
 import android.graphics.Canvas;
 import android.graphics.drawable.Drawable;
+import android.os.Bundle;
 import android.os.Handler;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewAnimationUtils;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.FrameLayout;
 
 import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.systemui.Dependency;
-import com.android.systemui.Interpolators;
 import com.android.systemui.R;
+import com.android.systemui.animation.Interpolators;
 import com.android.systemui.statusbar.notification.stack.StackStateAnimator;
 
 /**
@@ -58,6 +58,31 @@ public class NotificationGuts extends FrameLayout {
     private OnHeightChangedListener mHeightListener;
 
     private GutsContent mGutsContent;
+
+    private View.AccessibilityDelegate mGutsContentAccessibilityDelegate =
+            new View.AccessibilityDelegate() {
+                @Override
+                public void onInitializeAccessibilityNodeInfo(
+                        View host, AccessibilityNodeInfo info) {
+                    super.onInitializeAccessibilityNodeInfo(host, info);
+                    info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_LONG_CLICK);
+                }
+
+                @Override
+                public boolean performAccessibilityAction(View host, int action, Bundle args) {
+                    if (super.performAccessibilityAction(host, action, args)) {
+                        return true;
+                    }
+
+                    switch (action) {
+                        case AccessibilityNodeInfo.ACTION_LONG_CLICK:
+                            closeControls(host, false);
+                            return true;
+                    }
+
+                    return false;
+                }
+            };
 
     public interface GutsContent {
 
@@ -104,6 +129,17 @@ public class NotificationGuts extends FrameLayout {
          * Called when the guts view has finished its close animation.
          */
         default void onFinishedClosing() {}
+
+        /**
+         * Returns whether falsing protection is needed before showing the contents of this
+         * view on the lockscreen
+         */
+        boolean needsFalsingProtection();
+
+        /**
+         * Equivalent to {@link View#setAccessibilityDelegate(AccessibilityDelegate)}
+         */
+        void setAccessibilityDelegate(AccessibilityDelegate gutsContentAccessibilityDelegate);
     }
 
     public interface OnGutsClosedListener {
@@ -130,9 +166,6 @@ public class NotificationGuts extends FrameLayout {
                 }
             }
         };
-        final TypedArray ta = context.obtainStyledAttributes(attrs,
-                com.android.internal.R.styleable.Theme, 0, 0);
-        ta.recycle();
     }
 
     public NotificationGuts(Context context) {
@@ -140,6 +173,8 @@ public class NotificationGuts extends FrameLayout {
     }
 
     public void setGutsContent(GutsContent content) {
+        content.setGutsParent(this);
+        content.setAccessibilityDelegate(mGutsContentAccessibilityDelegate);
         mGutsContent = content;
         removeAllViews();
         addView(mGutsContent.getContentView());
@@ -231,18 +266,30 @@ public class NotificationGuts extends FrameLayout {
 
     /**
      * Closes any exposed guts/views.
+     */
+    public void closeControls(View eventSource, boolean save) {
+        int[] parentLoc = new int[2];
+        int[] targetLoc = new int[2];
+        getLocationOnScreen(parentLoc);
+        eventSource.getLocationOnScreen(targetLoc);
+        final int centerX = eventSource.getWidth() / 2;
+        final int centerY = eventSource.getHeight() / 2;
+        final int x = targetLoc[0] - parentLoc[0] + centerX;
+        final int y = targetLoc[1] - parentLoc[1] + centerY;
+
+        closeControls(x, y, save, false);
+    }
+
+    /**
+     * Closes any exposed guts/views.
      *
      * @param x x coordinate to animate the close circular reveal with
      * @param y y coordinate to animate the close circular reveal with
      * @param save whether the state should be saved
      * @param force whether the guts should be force-closed regardless of state.
      */
-    public void closeControls(int x, int y, boolean save, boolean force) {
+    private void closeControls(int x, int y, boolean save, boolean force) {
         // First try to dismiss any blocking helper.
-        boolean wasBlockingHelperDismissed =
-                Dependency.get(NotificationBlockingHelperManager.class)
-                        .dismissCurrentBlockingHelper();
-
         if (getWindowToken() == null) {
             if (mClosedListener != null) {
                 mClosedListener.onGutsClosed(this);
@@ -251,10 +298,9 @@ public class NotificationGuts extends FrameLayout {
         }
 
         if (mGutsContent == null
-                || !mGutsContent.handleCloseControls(save, force)
-                || wasBlockingHelperDismissed) {
+                || !mGutsContent.handleCloseControls(save, force)) {
             // We only want to do a circular reveal if we're not showing the blocking helper.
-            animateClose(x, y, !wasBlockingHelperDismissed /* shouldDoCircularReveal */);
+            animateClose(x, y, true /* shouldDoCircularReveal */);
 
             setExposed(false, mNeedsFalsingProtection);
             if (mClosedListener != null) {

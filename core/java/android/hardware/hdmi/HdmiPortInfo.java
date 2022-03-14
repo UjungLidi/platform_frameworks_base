@@ -153,7 +153,9 @@ public final class HdmiPortInfo implements Parcelable {
      * @param dest The Parcel in which the object should be written.
      * @param flags Additional flags about how the object should be written.
      *        May be 0 or {@link Parcelable#PARCELABLE_WRITE_RETURN_VALUE}.
+     * @hide
      */
+    @SystemApi
     @Override
     public void writeToParcel(Parcel dest, int flags) {
         dest.writeInt(mId);
@@ -167,7 +169,7 @@ public final class HdmiPortInfo implements Parcelable {
     @NonNull
     @Override
     public String toString() {
-        StringBuffer s = new StringBuffer();
+        StringBuilder s = new StringBuilder();
         s.append("port_id: ").append(mId).append(", ");
         s.append("type: ").append((mType == PORT_INPUT) ? "HDMI_IN" : "HDMI_OUT").append(", ");
         s.append("address: ").append(String.format("0x%04x", mAddress)).append(", ");
@@ -186,5 +188,11 @@ public final class HdmiPortInfo implements Parcelable {
         return mId == other.mId && mType == other.mType && mAddress == other.mAddress
                 && mCecSupported == other.mCecSupported && mArcSupported == other.mArcSupported
                 && mMhlSupported == other.mMhlSupported;
+    }
+
+    @Override
+    public int hashCode() {
+        return java.util.Objects.hash(
+                mId, mType, mAddress, mCecSupported, mArcSupported, mMhlSupported);
     }
 }

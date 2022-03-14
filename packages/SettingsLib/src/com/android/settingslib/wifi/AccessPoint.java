@@ -83,7 +83,16 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>An AccessPoint, which would be more fittingly named "WifiNetwork", is an aggregation of
  * {@link ScanResult ScanResults} along with pertinent metadata (e.g. current connection info,
  * network scores) required to successfully render the network to the user.
+ *
+ * @deprecated WifiTracker/AccessPoint is no longer supported, and will be removed in a future
+ * release. Clients that need a dynamic list of available wifi networks should migrate to one of the
+ * newer tracker classes,
+ * {@link com.android.wifitrackerlib.WifiPickerTracker},
+ * {@link com.android.wifitrackerlib.SavedNetworkTracker},
+ * {@link com.android.wifitrackerlib.NetworkDetailsTracker},
+ * in conjunction with {@link com.android.wifitrackerlib.WifiEntry} to represent each wifi network.
  */
+@Deprecated
 public class AccessPoint implements Comparable<AccessPoint> {
     static final String TAG = "SettingsLib.AccessPoint";
 
@@ -106,6 +115,16 @@ public class AccessPoint implements Comparable<AccessPoint> {
      * Upper bound on the 5.0 GHz (802.11a/h/j/n/ac) WLAN channels
      */
     public static final int HIGHER_FREQ_5GHZ = 5900;
+
+    /**
+     * Lower bound on the 60 GHz (802.11ad) WIGIG channels
+     */
+    public static final int LOWER_FREQ_60GHZ = 58320;
+
+    /**
+     * Upper bound on the 60 GHz (802.11ad) WIGIG channels
+     */
+    public static final int HIGHER_FREQ_60GHZ = 70200;
 
     /** The key which identifies this AccessPoint grouping. */
     private String mKey;
@@ -204,7 +223,8 @@ public class AccessPoint implements Comparable<AccessPoint> {
     public static final int SECURITY_OWE = 4;
     public static final int SECURITY_SAE = 5;
     public static final int SECURITY_EAP_SUITE_B = 6;
-    public static final int SECURITY_MAX_VAL = 7; // Has to be the last
+    public static final int SECURITY_EAP_WPA3_ENTERPRISE = 7;
+    public static final int SECURITY_MAX_VAL = 8; // Has to be the last
 
     private static final int PSK_UNKNOWN = 0;
     private static final int PSK_WPA = 1;
@@ -1108,14 +1128,16 @@ public class AccessPoint implements Comparable<AccessPoint> {
      * Returns the display title for the AccessPoint, such as for an AccessPointPreference's title.
      */
     public String getTitle() {
-        if (isPasspoint()) {
+        if (isPasspoint() && !TextUtils.isEmpty(mConfig.providerFriendlyName)) {
             return mConfig.providerFriendlyName;
-        } else if (isPasspointConfig()) {
+        } else if (isPasspointConfig() && !TextUtils.isEmpty(mProviderFriendlyName)) {
             return mProviderFriendlyName;
-        } else if (isOsuProvider()) {
+        } else if (isOsuProvider() && !TextUtils.isEmpty(mOsuProvider.getFriendlyName())) {
             return mOsuProvider.getFriendlyName();
-        } else {
+        } else if (!TextUtils.isEmpty(getSsidStr())) {
             return getSsidStr();
+        } else {
+            return "";
         }
     }
 

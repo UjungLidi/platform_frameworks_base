@@ -30,11 +30,13 @@ import android.os.Parcelable;
 import android.os.RemoteException;
 import android.util.SparseArray;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.telephony.ITelephony;
 import com.android.telephony.Rlog;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 
 /**
@@ -55,6 +57,8 @@ public final class TelephonyScanManager {
     public static final int CALLBACK_SCAN_COMPLETE = 3;
     /** @hide */
     public static final int CALLBACK_RESTRICTED_SCAN_RESULTS = 4;
+    /** @hide */
+    public static final int CALLBACK_TELEPHONY_DIED = 5;
 
     /** @hide */
     public static final int INVALID_SCAN_ID = -1;
@@ -103,17 +107,44 @@ public final class TelephonyScanManager {
     }
 
     private final Looper mLooper;
+    private final Handler mHandler;
     private final Messenger mMessenger;
     private final SparseArray<NetworkScanInfo> mScanInfo = new SparseArray<NetworkScanInfo>();
+    private final Binder.DeathRecipient mDeathRecipient;
 
     public TelephonyScanManager() {
         HandlerThread thread = new HandlerThread(TAG);
         thread.start();
         mLooper = thread.getLooper();
-        mMessenger = new Messenger(new Handler(mLooper) {
+        mHandler = new Handler(mLooper) {
             @Override
             public void handleMessage(Message message) {
                 checkNotNull(message, "message cannot be null");
+                if (message.what == CALLBACK_TELEPHONY_DIED) {
+                    // If there are no objects in mScanInfo then binder death will simply return.
+                    synchronized (mScanInfo) {
+                        for (int i = 0; i < mScanInfo.size(); i++) {
+                            NetworkScanInfo nsi = mScanInfo.valueAt(i);
+                            // At this point we go into panic mode and ignore errors that would
+                            // normally stop the show in order to try and clean up as gracefully
+                            // as possible.
+                            if (nsi == null) continue; // shouldn't be possible
+                            Executor e = nsi.mExecutor;
+                            NetworkScanCallback cb = nsi.mCallback;
+                            if (e == null || cb == null) continue;
+                            try {
+                                e.execute(
+                                        () -> cb.onError(NetworkScan.ERROR_MODEM_UNAVAILABLE));
+                            } catch (java.util.concurrent.RejectedExecutionException ignore) {
+                                // ignore so that we can continue
+                            }
+                        }
+
+                        mScanInfo.clear();
+                    }
+                    return;
+                }
+
                 NetworkScanInfo nsi;
                 synchronized (mScanInfo) {
                     nsi = mScanInfo.get(message.arg2);
@@ -122,16 +153,9 @@ public final class TelephonyScanManager {
                     throw new RuntimeException(
                         "Failed to find NetworkScanInfo with id " + message.arg2);
                 }
-                NetworkScanCallback callback = nsi.mCallback;
-                Executor executor = nsi.mExecutor;
-                if (callback == null) {
-                    throw new RuntimeException(
-                        "Failed to find NetworkScanCallback with id " + message.arg2);
-                }
-                if (executor == null) {
-                    throw new RuntimeException(
-                        "Failed to find Executor with id " + message.arg2);
-                }
+
+                final NetworkScanCallback callback = nsi.mCallback;
+                final Executor executor = nsi.mExecutor;
 
                 switch (message.what) {
                     case CALLBACK_RESTRICTED_SCAN_RESULTS:
@@ -158,6 +182,9 @@ public final class TelephonyScanManager {
                                 Rlog.d(TAG, "onError: " + errorCode);
                                 callback.onError(errorCode);
                             });
+                            synchronized (mScanInfo) {
+                                mScanInfo.remove(message.arg2);
+                            }
                         } catch (Exception e) {
                             Rlog.e(TAG, "Exception in networkscan callback onError", e);
                         }
@@ -168,7 +195,9 @@ public final class TelephonyScanManager {
                                 Rlog.d(TAG, "onComplete");
                                 callback.onComplete();
                             });
-                            mScanInfo.remove(message.arg2);
+                            synchronized (mScanInfo) {
+                                mScanInfo.remove(message.arg2);
+                            }
                         } catch (Exception e) {
                             Rlog.e(TAG, "Exception in networkscan callback onComplete", e);
                         }
@@ -178,7 +207,14 @@ public final class TelephonyScanManager {
                         break;
                 }
             }
-        });
+        };
+        mMessenger = new Messenger(mHandler);
+        mDeathRecipient = new Binder.DeathRecipient() {
+            @Override
+            public void binderDied() {
+                mHandler.obtainMessage(CALLBACK_TELEPHONY_DIED).sendToTarget();
+            }
+        };
     }
 
     /**
@@ -189,7 +225,7 @@ public final class TelephonyScanManager {
      *
      * <p>
      * Requires Permission:
-     * {@link android.Manifest.permission#ACCESS_COARSE_LOCATION} and
+     * {@link android.Manifest.permission#ACCESS_FINE_LOCATION} and
      *   {@link android.Manifest.permission#MODIFY_PHONE_STATE MODIFY_PHONE_STATE}
      * Or the calling app has carrier privileges. @see #hasCarrierPrivileges
      *
@@ -204,19 +240,33 @@ public final class TelephonyScanManager {
             NetworkScanRequest request, Executor executor, NetworkScanCallback callback,
             String callingPackage, @Nullable String callingFeatureId) {
         try {
-            ITelephony telephony = getITelephony();
-            if (telephony != null) {
-                synchronized (mScanInfo) {
-                    int scanId = telephony.requestNetworkScan(
-                            subId, request, mMessenger, new Binder(), callingPackage,
-                            callingFeatureId);
-                    if (scanId == INVALID_SCAN_ID) {
-                        Rlog.e(TAG, "Failed to initiate network scan");
-                        return null;
-                    }
-                    saveScanInfo(scanId, request, executor, callback);
-                    return new NetworkScan(scanId, subId);
+            Objects.requireNonNull(request, "Request was null");
+            Objects.requireNonNull(callback, "Callback was null");
+            Objects.requireNonNull(executor, "Executor was null");
+            final ITelephony telephony = getITelephony();
+            if (telephony == null) return null;
+
+            // The lock must be taken before calling requestNetworkScan because the resulting
+            // scanId can be invoked asynchronously on another thread at any time after
+            // requestNetworkScan invoked, leaving a critical section between that call and adding
+            // the record to the ScanInfo cache.
+            synchronized (mScanInfo) {
+                int scanId = telephony.requestNetworkScan(
+                        subId, request, mMessenger, new Binder(), callingPackage,
+                        callingFeatureId);
+                if (scanId == INVALID_SCAN_ID) {
+                    Rlog.e(TAG, "Failed to initiate network scan");
+                    return null;
                 }
+                // We link to death whenever a scan is started to ensure that we are linked
+                // at the point that phone process death might matter.
+                // We never unlink because:
+                // - Duplicate links to death with the same callback do not result in
+                //   extraneous callbacks (the tracking de-dupes).
+                // - Receiving binderDeath() when no scans are active is a no-op.
+                telephony.asBinder().linkToDeath(mDeathRecipient, 0);
+                saveScanInfo(scanId, request, executor, callback);
+                return new NetworkScan(scanId, subId);
             }
         } catch (RemoteException ex) {
             Rlog.e(TAG, "requestNetworkScan RemoteException", ex);
@@ -226,6 +276,7 @@ public final class TelephonyScanManager {
         return null;
     }
 
+    @GuardedBy("mScanInfo")
     private void saveScanInfo(
             int id, NetworkScanRequest request, Executor executor, NetworkScanCallback callback) {
         mScanInfo.put(id, new NetworkScanInfo(request, executor, callback));

@@ -21,63 +21,93 @@ import android.location.util.identity.CallerIdentity;
 import android.os.Binder;
 import android.os.IBinder;
 import android.os.RemoteException;
-
-import com.android.internal.util.Preconditions;
+import android.util.Log;
 
 /**
  * A registration that works with IBinder keys, and registers a DeathListener to automatically
- * remove the registration if the binder dies.
+ * remove the registration if the binder dies. The key for this registration must either be an
+ * {@link IBinder} or a {@link BinderKey}.
  *
  * @param <TRequest>  request type
  * @param <TListener> listener type
  */
 public abstract class BinderListenerRegistration<TRequest, TListener> extends
-        RemovableListenerRegistration<TRequest, TListener> implements Binder.DeathRecipient {
+        RemoteListenerRegistration<TRequest, TListener> implements Binder.DeathRecipient {
+
+    /**
+     * Interface to allow binder retrieval when keys are not themselves IBinders.
+     */
+    public interface BinderKey {
+        /**
+         * Returns the binder associated with this key.
+         */
+        IBinder getBinder();
+    }
 
     protected BinderListenerRegistration(@Nullable TRequest request, CallerIdentity callerIdentity,
             TListener listener) {
         super(request, callerIdentity, listener);
     }
 
-    /**
-     * May be overridden in place of {@link #onRegister(Object)}. Should return true if registration
-     * is successful, and false otherwise.
-     */
-    protected boolean onBinderRegister(IBinder key) {
-        return true;
+    @Override
+    protected final void onRemovableListenerRegister() {
+        IBinder binder = getBinderFromKey(getKey());
+        try {
+            binder.linkToDeath(this, 0);
+        } catch (RemoteException e) {
+            remove();
+        }
+
+        onBinderListenerRegister();
+    }
+
+    @Override
+    protected final void onRemovableListenerUnregister() {
+        onBinderListenerUnregister();
+        getBinderFromKey(getKey()).unlinkToDeath(this, 0);
     }
 
     /**
-     * May be overridden in place of {@link #onUnregister()}.
+     * May be overridden in place of {@link #onRemovableListenerRegister()}.
      */
-    protected void onBinderUnregister(IBinder key) {}
+    protected void onBinderListenerRegister() {}
+
+    /**
+     * May be overridden in place of {@link #onRemovableListenerUnregister()}.
+     */
+    protected void onBinderListenerUnregister() {}
 
     @Override
-    protected final boolean onRemovableRegister(Object key) {
-        Preconditions.checkArgument(key instanceof IBinder);
-        IBinder binderKey = (IBinder) key;
-
-        try {
-            binderKey.linkToDeath(this, 0);
-            if (!onBinderRegister(binderKey)) {
-                binderKey.unlinkToDeath(this, 0);
-                return false;
-            }
-            return true;
-        } catch (RemoteException e) {
-            return false;
+    public void onOperationFailure(ListenerOperation<TListener> operation, Exception e) {
+        if (e instanceof RemoteException) {
+            Log.w(getOwner().getTag(), "registration " + this + " removed", e);
+            remove();
+        } else {
+            super.onOperationFailure(operation, e);
         }
     }
 
     @Override
-    protected final void onRemovableUnregister(Object key) {
-        IBinder binderKey = (IBinder) key;
-        onBinderUnregister(binderKey);
-        binderKey.unlinkToDeath(this, 0);
+    public void binderDied() {
+        try {
+            if (Log.isLoggable(getOwner().getTag(), Log.DEBUG)) {
+                Log.d(getOwner().getTag(), "binder registration " + getIdentity() + " died");
+            }
+            remove();
+        } catch (RuntimeException e) {
+            // the caller may swallow runtime exceptions, so we rethrow as assertion errors to
+            // ensure the crash is seen
+            throw new AssertionError(e);
+        }
     }
 
-    @Override
-    public void binderDied() {
-        remove();
+    private static IBinder getBinderFromKey(Object key) {
+        if (key instanceof IBinder) {
+            return (IBinder) key;
+        } else if (key instanceof BinderKey) {
+            return ((BinderKey) key).getBinder();
+        } else {
+            throw new IllegalArgumentException("key must be IBinder or BinderKey");
+        }
     }
 }

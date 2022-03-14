@@ -97,8 +97,11 @@ public class MetricsFeatureProvider {
 
     /**
      * Logs a simple action without page id or attribution
+     *
+     * @param category the target page
+     * @param taggedData the data for {@link EventLogWriter}
      */
-    public void action(Context context, int category,  Pair<Integer, Object>... taggedData) {
+    public void action(Context context, int category, Pair<Integer, Object>... taggedData) {
         for (LogWriter writer : mLoggerWriters) {
             writer.action(context, category, taggedData);
         }
@@ -185,7 +188,12 @@ public class MetricsFeatureProvider {
                 sourceMetricsCategory);
     }
 
-    private boolean logSettingsTileClick(String logKey, int sourceMetricsCategory) {
+    /**
+     * Logs an event when the setting key is clicked.
+     *
+     * @return true if the key is loggable, otherwise false
+     */
+    public boolean logSettingsTileClick(String logKey, int sourceMetricsCategory) {
         if (TextUtils.isEmpty(logKey)) {
             // Not loggable
             return false;

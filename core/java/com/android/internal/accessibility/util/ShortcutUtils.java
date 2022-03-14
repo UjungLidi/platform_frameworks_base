@@ -25,8 +25,10 @@ import android.annotation.NonNull;
 import android.content.Context;
 import android.provider.Settings;
 import android.text.TextUtils;
+import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.AccessibilityManager.ShortcutType;
 
+import java.util.List;
 import java.util.StringJoiner;
 
 /**
@@ -97,29 +99,6 @@ public final class ShortcutUtils {
     }
 
     /**
-     * Returns if component id existed in one of {@link UserShortcutType} string from Settings.
-     *
-     * @param context The current context.
-     * @param shortcutTypes A combination of {@link UserShortcutType}.
-     * @param componentId The component id that need to be checked existed in Settings.
-     * @return {@code true} if component id existed in Settings.
-     */
-    public static boolean hasValuesInSettings(Context context, @UserShortcutType int shortcutTypes,
-            @NonNull String componentId) {
-        boolean exist = false;
-        if ((shortcutTypes & UserShortcutType.SOFTWARE) == UserShortcutType.SOFTWARE) {
-            exist = isComponentIdExistingInSettings(context, UserShortcutType.SOFTWARE,
-                    componentId);
-        }
-        if (((shortcutTypes & UserShortcutType.HARDWARE) == UserShortcutType.HARDWARE)) {
-            exist |= isComponentIdExistingInSettings(context, UserShortcutType.HARDWARE,
-                    componentId);
-        }
-        return exist;
-    }
-
-
-    /**
      * Returns if component id existed in Settings.
      *
      * @param context The current context.
@@ -149,6 +128,22 @@ public final class ShortcutUtils {
     }
 
     /**
+     * Returns if a {@code shortcutType} shortcut contains {@code componentId}.
+     *
+     * @param context The current context.
+     * @param shortcutType The preferred shortcut type user selected.
+     * @param componentId The component id that need to be checked.
+     * @return {@code true} if a component id is contained.
+     */
+    public static boolean isShortcutContained(Context context, @ShortcutType int shortcutType,
+            @NonNull String componentId) {
+        final AccessibilityManager am = (AccessibilityManager) context.getSystemService(
+                Context.ACCESSIBILITY_SERVICE);
+        final List<String> requiredTargets = am.getAccessibilityShortcutTargets(shortcutType);
+        return requiredTargets.contains(componentId);
+    }
+
+    /**
      * Converts {@link UserShortcutType} to {@link Settings.Secure} key.
      *
      * @param type The shortcut type.
@@ -157,7 +152,7 @@ public final class ShortcutUtils {
     public static String convertToKey(@UserShortcutType int type) {
         switch (type) {
             case UserShortcutType.SOFTWARE:
-                return Settings.Secure.ACCESSIBILITY_BUTTON_TARGET_COMPONENT;
+                return Settings.Secure.ACCESSIBILITY_BUTTON_TARGETS;
             case UserShortcutType.HARDWARE:
                 return Settings.Secure.ACCESSIBILITY_SHORTCUT_TARGET_SERVICE;
             case UserShortcutType.TRIPLETAP:

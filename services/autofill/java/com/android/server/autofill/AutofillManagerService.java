@@ -25,6 +25,8 @@ import static com.android.server.autofill.Helper.sDebug;
 import static com.android.server.autofill.Helper.sFullScreenMode;
 import static com.android.server.autofill.Helper.sVerbose;
 
+import static java.util.Objects.requireNonNull;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.UserIdInt;
@@ -169,7 +171,7 @@ public final class AutofillManagerService
                 // beneath it is brought back to top. Ideally, we should just hide the UI and
                 // bring it back when the activity resumes.
                 synchronized (mLock) {
-                    visitServicesLocked((s) -> s.destroyFinishedSessionsLocked());
+                    visitServicesLocked((s) -> s.forceRemoveFinishedSessionsLocked());
                 }
                 mUi.hideAll(null);
             }
@@ -192,7 +194,7 @@ public final class AutofillManagerService
     public AutofillManagerService(Context context) {
         super(context,
                 new SecureSettingsServiceNameResolver(context, Settings.Secure.AUTOFILL_SERVICE),
-                UserManager.DISALLOW_AUTOFILL);
+                UserManager.DISALLOW_AUTOFILL, PACKAGE_UPDATE_POLICY_REFRESH_EAGER);
         mUi = new AutoFillUI(ActivityThread.currentActivityThread().getSystemUiContext());
         mAm = LocalServices.getService(ActivityManagerInternal.class);
 
@@ -249,6 +251,9 @@ public final class AutofillManagerService
         resolver.registerContentObserver(Settings.Global.getUriFor(
                 Settings.Global.AUTOFILL_MAX_VISIBLE_DATASETS), false, observer,
                 UserHandle.USER_ALL);
+        resolver.registerContentObserver(Settings.Secure.getUriFor(
+                Settings.Secure.SELECTED_INPUT_METHOD_SUBTYPE), false, observer,
+                UserHandle.USER_ALL);
     }
 
     @Override // from AbstractMasterSystemService
@@ -263,6 +268,9 @@ public final class AutofillManagerService
             case Settings.Global.AUTOFILL_MAX_VISIBLE_DATASETS:
                 setMaxVisibleDatasetsFromSettings();
                 break;
+            case Settings.Secure.SELECTED_INPUT_METHOD_SUBTYPE:
+                handleInputMethodSwitch(userId);
+                break;
             default:
                 Slog.w(TAG, "Unexpected property (" + property + "); updating cache instead");
                 // fall through
@@ -270,6 +278,23 @@ public final class AutofillManagerService
                 synchronized (mLock) {
                     updateCachedServiceLocked(userId);
                 }
+        }
+    }
+
+    private void handleInputMethodSwitch(@UserIdInt int userId) {
+        // TODO(b/156903336): Used the SettingsObserver with a background thread maybe slow to
+        // respond to the IME switch in certain situations.
+        // See: services/core/java/com/android/server/FgThread.java
+        // In particular, the shared background thread could be doing relatively long-running
+        // operations like saving state to disk (in addition to simply being a background priority),
+        // which can cause operations scheduled on it to be delayed for a user-noticeable amount
+        // of time.
+
+        synchronized (mLock) {
+            final AutofillManagerServiceImpl service = peekServiceForUserLocked(userId);
+            if (service != null) {
+                service.onSwitchInputMethod();
+            }
         }
     }
 
@@ -336,11 +361,11 @@ public final class AutofillManagerService
 
     @Override // from SystemService
     public boolean isUserSupported(TargetUser user) {
-        return user.getUserInfo().isFull() || user.getUserInfo().isManagedProfile();
+        return user.isFull() || user.isManagedProfile();
     }
 
     @Override // from SystemService
-    public void onSwitchUser(int userHandle) {
+    public void onUserSwitching(@Nullable TargetUser from, @NonNull TargetUser to) {
         if (sDebug) Slog.d(TAG, "Hiding UI when user switched");
         mUi.hideAll(null);
     }
@@ -362,18 +387,18 @@ public final class AutofillManagerService
     }
 
     // Called by Shell command.
-    void destroySessions(@UserIdInt int userId, IResultReceiver receiver) {
-        Slog.i(TAG, "destroySessions() for userId " + userId);
+    void removeAllSessions(@UserIdInt int userId, IResultReceiver receiver) {
+        Slog.i(TAG, "removeAllSessions() for userId " + userId);
         enforceCallingPermissionForManagement();
 
         synchronized (mLock) {
             if (userId != UserHandle.USER_ALL) {
                 AutofillManagerServiceImpl service = peekServiceForUserLocked(userId);
                 if (service != null) {
-                    service.destroySessionsLocked();
+                    service.forceRemoveAllSessionsLocked();
                 }
             } else {
-                visitServicesLocked((s) -> s.destroySessionsLocked());
+                visitServicesLocked((s) -> s.forceRemoveAllSessionsLocked());
             }
         }
 
@@ -632,6 +657,26 @@ public final class AutofillManagerService
                         Slog.d(TAG, "setDefaultAugmentedServiceEnabled(): already " + enabled);
                     }
                 }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Requests a count of saved passwords from the current service.
+     *
+     * @return {@code true} if the request succeeded
+     */
+    // Called by Shell command
+    boolean requestSavedPasswordCount(@UserIdInt int userId, @NonNull IResultReceiver receiver) {
+        enforceCallingPermissionForManagement();
+        synchronized (mLock) {
+            final AutofillManagerServiceImpl service = peekServiceForUserLocked(userId);
+            if (service != null) {
+                service.requestSavedPasswordCount(receiver);
+                return true;
+            } else if (sVerbose) {
+                Slog.v(TAG, "requestSavedPasswordCount(): no service for " + userId);
             }
         }
         return false;
@@ -1347,15 +1392,16 @@ public final class AutofillManagerService
         }
 
         @Override
-        public void startSession(IBinder activityToken, IBinder appCallback, AutofillId autofillId,
-                Rect bounds, AutofillValue value, int userId, boolean hasCallback, int flags,
-                ComponentName componentName, boolean compatMode, IResultReceiver receiver) {
+        public void startSession(IBinder activityToken, IBinder clientCallback,
+                AutofillId autofillId, Rect bounds, AutofillValue value, int userId,
+                boolean hasCallback, int flags, ComponentName clientActivity,
+                boolean compatMode, IResultReceiver receiver) {
 
-            activityToken = Preconditions.checkNotNull(activityToken, "activityToken");
-            appCallback = Preconditions.checkNotNull(appCallback, "appCallback");
-            autofillId = Preconditions.checkNotNull(autofillId, "autoFillId");
-            componentName = Preconditions.checkNotNull(componentName, "componentName");
-            final String packageName = Preconditions.checkNotNull(componentName.getPackageName());
+            requireNonNull(activityToken, "activityToken");
+            requireNonNull(clientCallback, "clientCallback");
+            requireNonNull(autofillId, "autofillId");
+            requireNonNull(clientActivity, "clientActivity");
+            final String packageName = requireNonNull(clientActivity.getPackageName());
 
             Preconditions.checkArgument(userId == UserHandle.getUserId(getCallingUid()), "userId");
 
@@ -1372,7 +1418,7 @@ public final class AutofillManagerService
             synchronized (mLock) {
                 final AutofillManagerServiceImpl service = getServiceForUserLocked(userId);
                 result = service.startSessionLocked(activityToken, taskId, getCallingUid(),
-                        appCallback, autofillId, bounds, value, hasCallback, componentName,
+                        clientCallback, autofillId, bounds, value, hasCallback, clientActivity,
                         compatMode, mAllowInstantService, flags);
             }
             final int sessionId = (int) result;
@@ -1639,12 +1685,8 @@ public final class AutofillManagerService
                 @NonNull IResultReceiver receiver) {
             boolean enabled = false;
             synchronized (mLock) {
-                final AutofillManagerServiceImpl service = peekServiceForUserLocked(userId);
-                if (service != null) {
-                    enabled = Objects.equals(packageName, service.getServicePackageName());
-                } else if (sVerbose) {
-                    Slog.v(TAG, "isServiceEnabled(): no service for " + userId);
-                }
+                final AutofillManagerServiceImpl service = getServiceForUserLocked(userId);
+                enabled = Objects.equals(packageName, service.getServicePackageName());
             }
             send(receiver, enabled);
         }

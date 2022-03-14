@@ -16,6 +16,8 @@
 
 package android.os.incremental;
 
+import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.os.ParcelFileDescriptor;
 
 import java.io.ByteArrayInputStream;
@@ -29,7 +31,7 @@ import java.nio.ByteOrder;
 
 /**
  * V4 signature fields.
- * Keep in sync with APKSig master copy.
+ * Keep in sync with APKSig authoritative copy.
  * @hide
  */
 public class V4Signature {
@@ -39,14 +41,16 @@ public class V4Signature {
     public static final int HASHING_ALGORITHM_SHA256 = 1;
     public static final byte LOG2_BLOCK_SIZE_4096_BYTES = 12;
 
+    public static final int INCFS_MAX_SIGNATURE_SIZE = 8096;  // incrementalfs.h
+
     /**
      * IncFS hashing data.
      */
     public static class HashingInfo {
         public final int hashAlgorithm; // only 1 == SHA256 supported
         public final byte log2BlockSize; // only 12 (block size 4096) supported now
-        public final byte[] salt; // used exactly as in fs-verity, 32 bytes max
-        public final byte[] rawRootHash; // salted digest of the first Merkle tree page
+        @Nullable public final byte[] salt; // used exactly as in fs-verity, 32 bytes max
+        @Nullable public final byte[] rawRootHash; // salted digest of the first Merkle tree page
 
         HashingInfo(int hashAlgorithm, byte log2BlockSize, byte[] salt, byte[] rawRootHash) {
             this.hashAlgorithm = hashAlgorithm;
@@ -58,7 +62,8 @@ public class V4Signature {
         /**
          * Constructs HashingInfo from byte array.
          */
-        public static HashingInfo fromByteArray(byte[] bytes) throws IOException {
+        @NonNull
+        public static HashingInfo fromByteArray(@NonNull byte[] bytes) throws IOException {
             ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
             final int hashAlgorithm = buffer.getInt();
             final byte log2BlockSize = buffer.get();
@@ -106,8 +111,18 @@ public class V4Signature {
     }
 
     public final int version; // Always 2 for now.
-    public final byte[] hashingInfo;
-    public final byte[] signingInfo; // Passed as-is to the kernel. Can be retrieved later.
+    /**
+     * Raw byte array containing the IncFS hashing data.
+     * @see HashingInfo#fromByteArray(byte[])
+     */
+    @Nullable public final byte[] hashingInfo;
+
+    /**
+     * Raw byte array containing the V4 signature data.
+     * <p>Passed as-is to the kernel. Can be retrieved later.
+     * @see SigningInfo#fromByteArray(byte[])
+     */
+    @Nullable public final byte[] signingInfo;
 
     /**
      * Construct a V4Signature from .idsig file.
@@ -121,7 +136,8 @@ public class V4Signature {
     /**
      * Construct a V4Signature from a byte array.
      */
-    public static V4Signature readFrom(byte[] bytes) throws IOException {
+    @NonNull
+    public static V4Signature readFrom(@NonNull byte[] bytes) throws IOException {
         try (InputStream stream = new ByteArrayInputStream(bytes)) {
             return readFrom(stream);
         }
@@ -145,7 +161,7 @@ public class V4Signature {
      *
      * @param fileSize - size of the signed file (APK)
      */
-    public static byte[] getSigningData(long fileSize, HashingInfo hashingInfo,
+    public static byte[] getSignedData(long fileSize, HashingInfo hashingInfo,
             SigningInfo signingInfo) {
         final int size =
                 4/*size*/ + 8/*fileSize*/ + 4/*hash_algorithm*/ + 1/*log2_blocksize*/ + bytesSize(
@@ -169,7 +185,7 @@ public class V4Signature {
         return this.version == SUPPORTED_VERSION;
     }
 
-    private V4Signature(int version, byte[] hashingInfo, byte[] signingInfo) {
+    private V4Signature(int version, @Nullable byte[] hashingInfo, @Nullable byte[] signingInfo) {
         this.version = version;
         this.hashingInfo = hashingInfo;
         this.signingInfo = signingInfo;
@@ -177,8 +193,12 @@ public class V4Signature {
 
     private static V4Signature readFrom(InputStream stream) throws IOException {
         final int version = readIntLE(stream);
-        final byte[] hashingInfo = readBytes(stream);
-        final byte[] signingInfo = readBytes(stream);
+        int maxSize = INCFS_MAX_SIGNATURE_SIZE;
+        final byte[] hashingInfo = readBytes(stream, maxSize);
+        if (hashingInfo != null) {
+            maxSize -= hashingInfo.length;
+        }
+        final byte[] signingInfo = readBytes(stream, maxSize);
         return new V4Signature(version, hashingInfo, signingInfo);
     }
 
@@ -217,9 +237,13 @@ public class V4Signature {
         stream.write(buffer);
     }
 
-    private static byte[] readBytes(InputStream stream) throws IOException {
+    private static byte[] readBytes(InputStream stream, int maxSize) throws IOException {
         try {
             final int size = readIntLE(stream);
+            if (size > maxSize) {
+                throw new IOException(
+                        "Signature is too long. Max allowed is " + INCFS_MAX_SIGNATURE_SIZE);
+            }
             final byte[] bytes = new byte[size];
             readFully(stream, bytes);
             return bytes;

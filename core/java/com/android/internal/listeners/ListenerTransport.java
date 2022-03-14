@@ -16,87 +16,48 @@
 
 package com.android.internal.listeners;
 
-
-import android.annotation.NonNull;
 import android.annotation.Nullable;
-
-import com.android.internal.util.Preconditions;
 
 import java.util.Objects;
 import java.util.concurrent.Executor;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
 
 /**
- * A listener registration object which holds data associated with a listener, such the executor
- * the listener should run on.
+ * A listener transport object which can run listener operations on an executor.
  *
  * @param <TListener> listener type
  */
-public class ListenerTransport<TListener> {
-
-    private final Executor mExecutor;
-
-    private volatile @Nullable TListener mListener;
-
-    protected ListenerTransport(@NonNull Executor executor, @NonNull TListener listener) {
-        Preconditions.checkArgument(executor != null, "invalid null executor");
-        Preconditions.checkArgument(listener != null, "invalid null listener/callback");
-        mExecutor = executor;
-        mListener = listener;
-    }
-
-    final boolean isRegistered() {
-        return mListener != null;
-    }
+public interface ListenerTransport<TListener> {
 
     /**
-     * Prevents any listener invocations that happen-after this call.
+     * Should return a valid listener until {@link #unregister()} is invoked, and must return
+     * null after that. Recommended (but not required) that this is implemented via a volatile
+     * variable.
      */
-    public final void unregister() {
-        mListener = null;
-    }
+    @Nullable TListener getListener();
 
     /**
-     * Executes the given operation for the listener. {@link #onOperationFinished(Consumer)} will
-     * always be invoked at some time after this method, regardless of if the listener invocation
-     * happens or if the operation fails in some way.
+     * Must be implemented so that {@link #getListener()} returns null after this is invoked.
      */
-    public final void execute(@NonNull Consumer<TListener> operation) {
+    void unregister();
+
+    /**
+     * Executes the given operation for the listener.
+     */
+    default void execute(Executor executor, Consumer<TListener> operation) {
         Objects.requireNonNull(operation);
-        try {
-            mExecutor.execute(() -> {
-                try {
-                    TListener listener = mListener;
-                    if (listener == null) {
-                        return;
-                    }
 
-                    operation.accept(listener);
-                } finally {
-                    onOperationFinished(operation);
-                }
-            });
-        } catch (RejectedExecutionException e) {
-            onOperationFinished(operation);
+        if (getListener() == null) {
+            return;
         }
-    }
 
-    /**
-     * Invoked when an operation is finished. This method will always be called once for every call
-     * to {@link #execute(Consumer)}, regardless of whether the operation encountered any
-     * error or failed to execute in any way. May run on any thread.
-     */
-    protected void onOperationFinished(@NonNull Consumer<TListener> operation) {}
+        executor.execute(() -> {
+            TListener listener = getListener();
+            if (listener == null) {
+                return;
+            }
 
-    @Override
-    public final boolean equals(Object obj) {
-        // intentionally bound to reference equality so removal works as expected
-        return this == obj;
-    }
-
-    @Override
-    public final int hashCode() {
-        return super.hashCode();
+            operation.accept(listener);
+        });
     }
 }

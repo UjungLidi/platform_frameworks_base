@@ -17,8 +17,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
      package="com.android.server.wm.flicker.testapp">
 
-    <uses-sdk android:minSdkVersion="17"
-         android:targetSdkVersion="27"/>
+    <uses-sdk android:minSdkVersion="29"
+         android:targetSdkVersion="29"/>
     <application android:allowBackup="false"
          android:supportsRtl="true">
         <activity android:name=".SimpleActivity"
@@ -49,23 +49,42 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <activity android:name=".PipActivity"
-             android:resizeableActivity="true"
-             android:supportsPictureInPicture="true"
-             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
-             android:taskAffinity="com.android.server.wm.flicker.testapp.PipActivity"
-             android:label="PipApp"
+        <activity android:name=".SeamlessRotationActivity"
+             android:taskAffinity="com.android.server.wm.flicker.testapp.SeamlessRotationActivity"
+             android:configChanges="orientation|screenSize"
+             android:label="SeamlessApp"
              android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <activity android:name=".SeamlessRotationActivity"
-             android:taskAffinity="com.android.server.wm.flicker.testapp.SeamlessRotationActivity"
-             android:configChanges="orientation|screenSize"
-             android:label="SeamlessApp"
-             android:exported="true">
+        <activity android:name=".NonResizeableActivity"
+            android:resizeableActivity="false"
+            android:taskAffinity="com.android.server.wm.flicker.testapp.NonResizeableActivity"
+            android:label="NonResizeableApp"
+            android:exported="true"
+            android:showOnLockScreen="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <activity android:name=".ButtonActivity"
+            android:taskAffinity="com.android.server.wm.flicker.testapp.ButtonActivity"
+            android:configChanges="orientation|screenSize"
+            android:label="ButtonActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <activity android:name=".LaunchNewTaskActivity"
+                  android:taskAffinity="com.android.server.wm.flicker.testapp.LaunchNewTaskActivity"
+                  android:configChanges="orientation|screenSize"
+                  android:label="LaunchNewTaskActivity"
+                  android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>

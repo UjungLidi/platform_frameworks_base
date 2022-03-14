@@ -19,12 +19,10 @@ package com.android.server.pm.parsing
 import android.annotation.RawRes
 import android.content.Context
 import android.content.pm.parsing.ParsingPackage
-import android.content.pm.parsing.ParsingPackageImpl
 import android.content.pm.parsing.ParsingPackageUtils
 import android.content.pm.parsing.result.ParseInput
 import android.content.pm.parsing.result.ParseInput.DeferredError
 import android.content.pm.parsing.result.ParseResult
-import android.content.res.TypedArray
 import android.os.Build
 import androidx.test.InstrumentationRegistry
 import com.android.frameworks.servicestests.R
@@ -61,20 +59,6 @@ class PackageParsingDeferErrorTest {
             DeferredError.MISSING_APP_TAG -> targetSdk > Build.VERSION_CODES.Q
             DeferredError.EMPTY_INTENT_ACTION_CATEGORY -> targetSdk > Build.VERSION_CODES.Q
             else -> throw IllegalStateException("changeId $changeId is not mocked for test")
-        }
-    }
-
-    private val parsingCallback = object : ParsingPackageUtils.Callback {
-        override fun hasFeature(feature: String?) = true
-
-        override fun startParsingPackage(
-            packageName: String,
-            baseCodePath: String,
-            codePath: String,
-            manifestArray: TypedArray,
-            isCoreApp: Boolean
-        ): ParsingPackage {
-            return ParsingPackageImpl(packageName, baseCodePath, codePath, manifestArray)
         }
     }
 
@@ -144,6 +128,7 @@ class PackageParsingDeferErrorTest {
                 input.copyTo(output)
             }
         }
-        return ParsingPackageUtils.parseDefaultOneTime(file, 0, inputCallback, parsingCallback)
+        return ParsingPackageUtils.parseDefaultOneTime(file, 0 /*flags*/, emptyList(),
+                false /*collectCertificates*/)
     }
 }

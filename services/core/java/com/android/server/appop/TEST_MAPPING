@@ -40,7 +40,20 @@
             ]
         },
         {
-            "name": "CtsAppTestCases:ActivityManagerApi29Test"
-        }
+            "name": "CtsAppTestCases",
+            "options": [
+                {
+                    "include-filter": "android.app.cts.ActivityManagerApi29Test"
+                }
+            ]
+        },
+        {
+            "name": "CtsStatsdAtomHostTestCases",
+            "options": [
+                {
+                    "include-filter": "android.cts.statsdatom.appops.AppOpsTests#testAppOps"
+                }
+            ]
+        }        
     ]
 }

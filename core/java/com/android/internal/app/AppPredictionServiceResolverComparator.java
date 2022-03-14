@@ -48,11 +48,11 @@ import java.util.stream.Collectors;
 class AppPredictionServiceResolverComparator extends AbstractResolverComparator {
 
     private static final String TAG = "APSResolverComparator";
-    private static final boolean DEBUG = false;
 
     private final AppPredictor mAppPredictor;
     private final Context mContext;
     private final Map<ComponentName, Integer> mTargetRanks = new HashMap<>();
+    private final Map<ComponentName, Integer> mTargetScores = new HashMap<>();
     private final UserHandle mUser;
     private final Intent mIntent;
     private final String mReferrerPackage;
@@ -61,17 +61,19 @@ class AppPredictionServiceResolverComparator extends AbstractResolverComparator 
     private ResolverRankerServiceResolverComparator mResolverRankerService;
 
     AppPredictionServiceResolverComparator(
-                Context context,
-                Intent intent,
-                String referrerPackage,
-                AppPredictor appPredictor,
-                UserHandle user) {
+            Context context,
+            Intent intent,
+            String referrerPackage,
+            AppPredictor appPredictor,
+            UserHandle user,
+            ChooserActivityLogger chooserActivityLogger) {
         super(context, intent);
         mContext = context;
         mIntent = intent;
         mAppPredictor = appPredictor;
         mUser = user;
         mReferrerPackage = referrerPackage;
+        setChooserActivityLogger(chooserActivityLogger);
     }
 
     @Override
@@ -112,22 +114,18 @@ class AppPredictionServiceResolverComparator extends AbstractResolverComparator 
         mAppPredictor.sortTargets(appTargets, Executors.newSingleThreadExecutor(),
                 sortedAppTargets -> {
                     if (sortedAppTargets.isEmpty()) {
-                        if (DEBUG) {
-                            Log.d(TAG, "AppPredictionService disabled. Using resolver.");
-                        }
+                        Log.i(TAG, "AppPredictionService disabled. Using resolver.");
                         // APS for chooser is disabled. Fallback to resolver.
                         mResolverRankerService =
                                 new ResolverRankerServiceResolverComparator(
-                                    mContext, mIntent, mReferrerPackage,
-                                        () -> mHandler.sendEmptyMessage(RANKER_SERVICE_RESULT));
+                                        mContext, mIntent, mReferrerPackage,
+                                        () -> mHandler.sendEmptyMessage(RANKER_SERVICE_RESULT),
+                                        getChooserActivityLogger());
                         mResolverRankerService.compute(targets);
                     } else {
-                        if (DEBUG) {
-                            Log.d(TAG, "AppPredictionService response received");
-                        }
-                        Message msg =
-                            Message.obtain(mHandler, RANKER_SERVICE_RESULT, sortedAppTargets);
-                        msg.sendToTarget();
+                        Log.i(TAG, "AppPredictionService response received");
+                        // Skip sending to Handler which takes extra time to dispatch messages.
+                        handleResult(sortedAppTargets);
                     }
                 }
         );
@@ -138,13 +136,42 @@ class AppPredictionServiceResolverComparator extends AbstractResolverComparator 
         // Null value is okay if we have defaulted to the ResolverRankerService.
         if (msg.what == RANKER_SERVICE_RESULT && msg.obj != null) {
             final List<AppTarget> sortedAppTargets = (List<AppTarget>) msg.obj;
-            for (int i = 0; i < sortedAppTargets.size(); i++) {
-                mTargetRanks.put(new ComponentName(sortedAppTargets.get(i).getPackageName(),
-                        sortedAppTargets.get(i).getClassName()), i);
-            }
+            handleSortedAppTargets(sortedAppTargets);
         } else if (msg.obj == null && mResolverRankerService == null) {
             Log.e(TAG, "Unexpected null result");
         }
+    }
+
+    private void handleResult(List<AppTarget> sortedAppTargets) {
+        if (mHandler.hasMessages(RANKER_RESULT_TIMEOUT)) {
+            handleSortedAppTargets(sortedAppTargets);
+            mHandler.removeMessages(RANKER_RESULT_TIMEOUT);
+            afterCompute();
+        }
+    }
+
+    private void handleSortedAppTargets(List<AppTarget> sortedAppTargets) {
+        if (checkAppTargetRankValid(sortedAppTargets)) {
+            sortedAppTargets.forEach(target -> mTargetScores.put(
+                    new ComponentName(target.getPackageName(), target.getClassName()),
+                    target.getRank()));
+        }
+        for (int i = 0; i < sortedAppTargets.size(); i++) {
+            ComponentName componentName = new ComponentName(
+                    sortedAppTargets.get(i).getPackageName(),
+                    sortedAppTargets.get(i).getClassName());
+            mTargetRanks.put(componentName, i);
+            Log.i(TAG, "handleSortedAppTargets, sortedAppTargets #" + i + ": " + componentName);
+        }
+    }
+
+    private boolean checkAppTargetRankValid(List<AppTarget> sortedAppTargets) {
+        for (AppTarget target : sortedAppTargets) {
+            if (target.getRank() != 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -154,7 +181,7 @@ class AppPredictionServiceResolverComparator extends AbstractResolverComparator 
         }
         Integer rank = mTargetRanks.get(name);
         if (rank == null) {
-            Log.w(TAG, "Score requested for unknown component.");
+            Log.w(TAG, "Score requested for unknown component. Did you call compute yet?");
             return 0f;
         }
         int consecutiveSumOfRanks = (mTargetRanks.size() - 1) * (mTargetRanks.size()) / 2;
@@ -163,6 +190,9 @@ class AppPredictionServiceResolverComparator extends AbstractResolverComparator 
 
     @Override
     List<ComponentName> getTopComponentNames(int topK) {
+        if (mResolverRankerService != null) {
+            return mResolverRankerService.getTopComponentNames(topK);
+        }
         return mTargetRanks.entrySet().stream()
                 .sorted(Entry.comparingByValue())
                 .limit(topK)

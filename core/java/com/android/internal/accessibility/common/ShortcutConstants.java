@@ -27,6 +27,11 @@ import java.lang.annotation.RetentionPolicy;
 public final class ShortcutConstants {
     private ShortcutConstants() {}
 
+    /**
+     * Package name of the accessibility chooser and used for {@link android.content.Intent}.
+     */
+    public static final String CHOOSER_PACKAGE_NAME = "android";
+
     public static final char SERVICES_SEPARATOR = ':';
 
     /**
@@ -79,21 +84,6 @@ public final class ShortcutConstants {
     }
 
     /**
-     * Annotation for different shortcut target.
-     */
-    @Retention(RetentionPolicy.SOURCE)
-    @IntDef({
-            TargetType.ACCESSIBILITY_SERVICE,
-            TargetType.ACCESSIBILITY_ACTIVITY,
-            TargetType.WHITE_LISTING,
-    })
-    public @interface TargetType {
-        int ACCESSIBILITY_SERVICE = 0;
-        int ACCESSIBILITY_ACTIVITY = 1;
-        int WHITE_LISTING = 2;
-    }
-
-    /**
      * Annotation for different shortcut menu mode.
      *
      * {@code LAUNCH} for clicking list item to trigger the service callback.
@@ -107,31 +97,5 @@ public final class ShortcutConstants {
     public @interface ShortcutMenuMode {
         int LAUNCH = 0;
         int EDIT = 1;
-    }
-
-    /**
-     * Annotation for align the element index of white listing feature
-     * {@code WHITE_LISTING_FEATURES}.
-     *
-     * {@code COMPONENT_ID} is to get the service component name.
-     * {@code LABEL_ID} is to get the service label text.
-     * {@code ICON_ID} is to get the service icon.
-     * {@code FRAGMENT_TYPE} is to get the service fragment type.
-     * {@code SETTINGS_KEY} is to get the service settings key.
-     */
-    @Retention(RetentionPolicy.SOURCE)
-    @IntDef({
-            WhiteListingFeatureElementIndex.COMPONENT_ID,
-            WhiteListingFeatureElementIndex.LABEL_ID,
-            WhiteListingFeatureElementIndex.ICON_ID,
-            WhiteListingFeatureElementIndex.FRAGMENT_TYPE,
-            WhiteListingFeatureElementIndex.SETTINGS_KEY,
-    })
-    public @interface WhiteListingFeatureElementIndex {
-        int COMPONENT_ID = 0;
-        int LABEL_ID = 1;
-        int ICON_ID = 2;
-        int FRAGMENT_TYPE = 3;
-        int SETTINGS_KEY = 4;
     }
 }

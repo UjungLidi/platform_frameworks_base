@@ -16,14 +16,9 @@
 
 package com.android.systemui.media
 
-import android.content.res.ColorStateList
 import android.text.format.DateUtils
-import android.view.View
-import android.widget.SeekBar
-import android.widget.TextView
 import androidx.annotation.UiThread
 import androidx.lifecycle.Observer
-
 import com.android.systemui.R
 
 /**
@@ -31,54 +26,66 @@ import com.android.systemui.R
  *
  * <p>Updates the seek bar views in response to changes to the model.
  */
-class SeekBarObserver(view: View) : Observer<SeekBarViewModel.Progress> {
+class SeekBarObserver(private val holder: PlayerViewHolder) : Observer<SeekBarViewModel.Progress> {
 
-    private val seekBarView: SeekBar
-    private val elapsedTimeView: TextView
-    private val totalTimeView: TextView
-
-    init {
-        seekBarView = view.findViewById(R.id.media_progress_bar)
-        elapsedTimeView = view.findViewById(R.id.media_elapsed_time)
-        totalTimeView = view.findViewById(R.id.media_total_time)
-    }
+    val seekBarEnabledMaxHeight = holder.seekBar.context.resources
+        .getDimensionPixelSize(R.dimen.qs_media_enabled_seekbar_height)
+    val seekBarDisabledHeight = holder.seekBar.context.resources
+        .getDimensionPixelSize(R.dimen.qs_media_disabled_seekbar_height)
+    val seekBarEnabledVerticalPadding = holder.seekBar.context.resources
+            .getDimensionPixelSize(R.dimen.qs_media_enabled_seekbar_vertical_padding)
+    val seekBarDisabledVerticalPadding = holder.seekBar.context.resources
+            .getDimensionPixelSize(R.dimen.qs_media_disabled_seekbar_vertical_padding)
 
     /** Updates seek bar views when the data model changes. */
     @UiThread
     override fun onChanged(data: SeekBarViewModel.Progress) {
-
-        data.color?.let {
-            var tintList = ColorStateList.valueOf(it)
-            seekBarView.setThumbTintList(tintList)
-            tintList = tintList.withAlpha(192) // 75%
-            seekBarView.setProgressTintList(tintList)
-            tintList = tintList.withAlpha(128) // 50%
-            seekBarView.setProgressBackgroundTintList(tintList)
-            elapsedTimeView.setTextColor(it)
-            totalTimeView.setTextColor(it)
-        }
-
         if (!data.enabled) {
-            seekBarView.setEnabled(false)
-            seekBarView.getThumb().setAlpha(0)
-            elapsedTimeView.setText("")
-            totalTimeView.setText("")
+            if (holder.seekBar.maxHeight != seekBarDisabledHeight) {
+                holder.seekBar.maxHeight = seekBarDisabledHeight
+                setVerticalPadding(seekBarDisabledVerticalPadding)
+            }
+            holder.seekBar.setEnabled(false)
+            holder.seekBar.getThumb().setAlpha(0)
+            holder.seekBar.setProgress(0)
+            holder.elapsedTimeView.setText("")
+            holder.totalTimeView.setText("")
+            holder.seekBar.contentDescription = ""
             return
         }
 
-        seekBarView.getThumb().setAlpha(if (data.seekAvailable) 255 else 0)
-        seekBarView.setEnabled(data.seekAvailable)
+        holder.seekBar.getThumb().setAlpha(if (data.seekAvailable) 255 else 0)
+        holder.seekBar.setEnabled(data.seekAvailable)
+
+        if (holder.seekBar.maxHeight != seekBarEnabledMaxHeight) {
+            holder.seekBar.maxHeight = seekBarEnabledMaxHeight
+            setVerticalPadding(seekBarEnabledVerticalPadding)
+        }
+
+        holder.seekBar.setMax(data.duration)
+        val totalTimeString = DateUtils.formatElapsedTime(
+            data.duration / DateUtils.SECOND_IN_MILLIS)
+        holder.totalTimeView.setText(totalTimeString)
 
         data.elapsedTime?.let {
-            seekBarView.setProgress(it)
-            elapsedTimeView.setText(DateUtils.formatElapsedTime(
-                    it / DateUtils.SECOND_IN_MILLIS))
-        }
+            holder.seekBar.setProgress(it)
+            val elapsedTimeString = DateUtils.formatElapsedTime(
+                it / DateUtils.SECOND_IN_MILLIS)
+            holder.elapsedTimeView.setText(elapsedTimeString)
 
-        data.duration?.let {
-            seekBarView.setMax(it)
-            totalTimeView.setText(DateUtils.formatElapsedTime(
-                    it / DateUtils.SECOND_IN_MILLIS))
+            holder.seekBar.contentDescription = holder.seekBar.context.getString(
+                R.string.controls_media_seekbar_description,
+                elapsedTimeString,
+                totalTimeString
+            )
         }
+    }
+
+    @UiThread
+    fun setVerticalPadding(padding: Int) {
+        val leftPadding = holder.seekBar.paddingLeft
+        val rightPadding = holder.seekBar.paddingRight
+        val bottomPadding = holder.seekBar.paddingBottom
+        holder.seekBar.setPadding(leftPadding, padding, rightPadding, bottomPadding)
     }
 }

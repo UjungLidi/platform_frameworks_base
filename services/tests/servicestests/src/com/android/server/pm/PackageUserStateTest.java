@@ -20,17 +20,23 @@ import static android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
 import static android.content.pm.PackageManager.INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_ASK;
 
 import static org.hamcrest.CoreMatchers.is;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 
 import android.content.pm.PackageManager;
 import android.content.pm.PackageUserState;
 import android.content.pm.SuspendDialogInfo;
+import android.content.pm.overlay.OverlayPaths;
 import android.os.PersistableBundle;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
+
+import com.android.server.pm.pkg.PackageStateUnserialized;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -50,15 +56,7 @@ public class PackageUserStateTest {
         assertThat(testUserState.equals(oldUserState), is(true));
 
         oldUserState = new PackageUserState();
-        oldUserState.appLinkGeneration = 6;
-        assertThat(testUserState.equals(oldUserState), is(false));
-
-        oldUserState = new PackageUserState();
         oldUserState.ceDataInode = 4000L;
-        assertThat(testUserState.equals(oldUserState), is(false));
-
-        oldUserState = new PackageUserState();
-        oldUserState.domainVerificationStatus = INTENT_FILTER_DOMAIN_VERIFICATION_STATUS_ASK;
         assertThat(testUserState.equals(oldUserState), is(false));
 
         oldUserState = new PackageUserState();
@@ -300,4 +298,91 @@ public class PackageUserStateTest {
         // Everything is different
         assertThat(params1.equals(params2), is(false));
     }
+
+    /**
+     * Test fix for b/149772100.
+     */
+    private static void assertLastPackageUsageUnset(
+            PackageStateUnserialized state) throws Exception {
+        for (int i = state.getLastPackageUsageTimeInMills().length - 1; i >= 0; --i) {
+            assertEquals(0L, state.getLastPackageUsageTimeInMills()[i]);
+        }
+    }
+    private static void assertLastPackageUsageSet(
+            PackageStateUnserialized state, int reason, long value) throws Exception {
+        for (int i = state.getLastPackageUsageTimeInMills().length - 1; i >= 0; --i) {
+            if (i == reason) {
+                assertEquals(value, state.getLastPackageUsageTimeInMills()[i]);
+            } else {
+                assertEquals(0L, state.getLastPackageUsageTimeInMills()[i]);
+            }
+        }
+    }
+    @Test
+    public void testPackageUseReasons() throws Exception {
+        final PackageStateUnserialized testState1 = new PackageStateUnserialized();
+        testState1.setLastPackageUsageTimeInMills(-1, 10L);
+        assertLastPackageUsageUnset(testState1);
+
+        final PackageStateUnserialized testState2 = new PackageStateUnserialized();
+        testState2.setLastPackageUsageTimeInMills(
+                PackageManager.NOTIFY_PACKAGE_USE_REASONS_COUNT, 20L);
+        assertLastPackageUsageUnset(testState2);
+
+        final PackageStateUnserialized testState3 = new PackageStateUnserialized();
+        testState3.setLastPackageUsageTimeInMills(Integer.MAX_VALUE, 30L);
+        assertLastPackageUsageUnset(testState3);
+
+        final PackageStateUnserialized testState4 = new PackageStateUnserialized();
+        testState4.setLastPackageUsageTimeInMills(0, 40L);
+        assertLastPackageUsageSet(testState4, 0, 40L);
+
+        final PackageStateUnserialized testState5 = new PackageStateUnserialized();
+        testState5.setLastPackageUsageTimeInMills(
+                PackageManager.NOTIFY_PACKAGE_USE_CONTENT_PROVIDER, 50L);
+        assertLastPackageUsageSet(
+                testState5, PackageManager.NOTIFY_PACKAGE_USE_CONTENT_PROVIDER, 50L);
+
+        final PackageStateUnserialized testState6 = new PackageStateUnserialized();
+        testState6.setLastPackageUsageTimeInMills(
+                PackageManager.NOTIFY_PACKAGE_USE_REASONS_COUNT - 1, 60L);
+        assertLastPackageUsageSet(
+                testState6, PackageManager.NOTIFY_PACKAGE_USE_REASONS_COUNT - 1, 60L);
+    }
+
+    @Test
+    public void testOverlayPaths() {
+        final PackageUserState testState = new PackageUserState();
+        assertFalse(testState.setOverlayPaths(null));
+        assertFalse(testState.setOverlayPaths(new OverlayPaths.Builder().build()));
+
+        assertTrue(testState.setOverlayPaths(new OverlayPaths.Builder()
+                .addApkPath("/path/to/some.apk").build()));
+        assertFalse(testState.setOverlayPaths(new OverlayPaths.Builder()
+                .addApkPath("/path/to/some.apk").build()));
+
+        assertTrue(testState.setOverlayPaths(new OverlayPaths.Builder().build()));
+        assertFalse(testState.setOverlayPaths(null));
+    }
+    @Test
+    public void testSharedLibOverlayPaths() {
+        final PackageUserState testState = new PackageUserState();
+        final String LIB_ONE = "lib1";
+        final String LIB_TW0 = "lib2";
+        assertFalse(testState.setSharedLibraryOverlayPaths(LIB_ONE, null));
+        assertFalse(testState.setSharedLibraryOverlayPaths(LIB_ONE,
+                new OverlayPaths.Builder().build()));
+
+        assertTrue(testState.setSharedLibraryOverlayPaths(LIB_ONE, new OverlayPaths.Builder()
+                .addApkPath("/path/to/some.apk").build()));
+        assertFalse(testState.setSharedLibraryOverlayPaths(LIB_ONE, new OverlayPaths.Builder()
+                .addApkPath("/path/to/some.apk").build()));
+        assertTrue(testState.setSharedLibraryOverlayPaths(LIB_TW0, new OverlayPaths.Builder()
+                .addApkPath("/path/to/some.apk").build()));
+
+        assertTrue(testState.setSharedLibraryOverlayPaths(LIB_ONE,
+                new OverlayPaths.Builder().build()));
+        assertFalse(testState.setSharedLibraryOverlayPaths(LIB_ONE, null));
+    }
+
 }

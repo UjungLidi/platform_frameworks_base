@@ -24,15 +24,19 @@ import android.os.UserHandle
 import android.util.ArraySet
 import android.util.Log
 import com.android.systemui.SysuiTestableContext
+import com.android.systemui.broadcast.logging.BroadcastDispatcherLogger
 import com.android.systemui.dump.DumpManager
+import com.android.systemui.settings.UserTracker
 import java.util.concurrent.Executor
 
 class FakeBroadcastDispatcher(
     context: SysuiTestableContext,
-    handler: Handler,
     looper: Looper,
-    dumpManager: DumpManager
-) : BroadcastDispatcher(context, handler, looper, dumpManager) {
+    executor: Executor,
+    dumpManager: DumpManager,
+    logger: BroadcastDispatcherLogger,
+    userTracker: UserTracker
+) : BroadcastDispatcher(context, looper, executor, dumpManager, logger, userTracker) {
 
     private val registeredReceivers = ArraySet<BroadcastReceiver>()
 
@@ -49,7 +53,7 @@ class FakeBroadcastDispatcher(
         receiver: BroadcastReceiver,
         filter: IntentFilter,
         executor: Executor?,
-        user: UserHandle
+        user: UserHandle?
     ) {
         registeredReceivers.add(receiver)
     }

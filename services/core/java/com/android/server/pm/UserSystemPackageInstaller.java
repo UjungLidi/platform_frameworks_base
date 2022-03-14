@@ -22,12 +22,13 @@ import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManagerInternal;
-import android.content.pm.PackageParser;
 import android.content.res.Resources;
 import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.util.ArrayMap;
 import android.util.ArraySet;
+import android.util.DebugUtils;
+import android.util.IndentingPrintWriter;
 import android.util.Slog;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -35,51 +36,53 @@ import com.android.server.LocalServices;
 import com.android.server.SystemConfig;
 import com.android.server.pm.parsing.pkg.AndroidPackage;
 
-import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 /**
  * Responsible for un/installing system packages based on user type.
  *
- * <p>Uses the SystemConfig's install-in-user-type whitelist;
+ * <p>Uses the SystemConfig's install-in-user-type allowlist;
  * see {@link SystemConfig#getAndClearPackageToUserTypeWhitelist} and
  * {@link SystemConfig#getAndClearPackageToUserTypeBlacklist}.
  *
  * <p>If {@link #isEnforceMode()} is false, then all system packages are always installed for all
  * users. The following applies when it is true.
  *
- * <p>Any package can be in one of three states in the {@code SystemConfig} whitelist
+ * <p>Any package can be in one of three states in the {@code SystemConfig} allowlist
  * <ol>
- *     <li>Explicitly blacklisted for a particular user type</li>
- *     <li>Explicitly whitelisted for a particular user type</li>
- *     <li>Not mentioned at all, for any user type (neither whitelisted nor blacklisted)</li>
+ *     <li>Explicitly denylisted for a particular user type</li>
+ *     <li>Explicitly allowlisted for a particular user type</li>
+ *     <li>Not mentioned at all, for any user type (neither allowlisted nor denylisted)</li>
  * </ol>
  *
- * <p>Blacklisting always takes precedence - if a package is blacklisted for a particular user,
- * it won't be installed on that type of user (even if it is also whitelisted for that user).
- * Next comes whitelisting - if it is whitelisted for a particular user, it will be installed on
- * that type of user (as long as it isn't blacklisted).
- * Finally, if the package is not mentioned at all (i.e. neither whitelisted nor blacklisted for
+ * <p>Denylisting always takes precedence - if a package is denylisted for a particular user,
+ * it won't be installed on that type of user (even if it is also allowlisted for that user).
+ * Next comes allowlisting - if it is allowlisted for a particular user, it will be installed on
+ * that type of user (as long as it isn't denylisted).
+ * Finally, if the package is not mentioned at all (i.e. neither allowlisted nor denylisted for
  * any user types) in the SystemConfig 'install-in-user-type' lists
  * then:
  * <ul>
- *     <li>If {@link #isImplicitWhitelistMode()}, the package is implicitly treated as whitelisted
+ *     <li>If {@link #isImplicitWhitelistMode()}, the package is implicitly treated as allowlisted
  *          for <b>all</b> users</li>
  *     <li>Otherwise, if {@link #isImplicitWhitelistSystemMode()}, the package is implicitly treated
- *          as whitelisted for the <b>{@link UserHandle#USER_SYSTEM}</b> user (not other users),
+ *          as allowlisted for the <b>{@link UserHandle#USER_SYSTEM}</b> user (not other users),
  *          which is useful for local development purposes</li>
- *     <li>Otherwise, the package is implicitly treated as blacklisted for all users</li>
+ *     <li>Otherwise, the package is implicitly treated as denylisted for all users</li>
  * </ul>
  *
  * <p>Packages are only installed/uninstalled by this mechanism when a new user is created or during
  * an update. In the case of updates:<ul>
- *     <li>new packages are (un)installed per the whitelist/blacklist</li>
- *     <li>pre-existing installed blacklisted packages are never uninstalled</li>
- *     <li>pre-existing not-installed whitelisted packages are only installed if the reason why they
+ *     <li>new packages are (un)installed per the allowlist/denylist</li>
+ *     <li>pre-existing installed denylisted packages are never uninstalled</li>
+ *     <li>pre-existing not-installed allowlisted packages are only installed if the reason why they
  *     had been previously uninstalled was due to UserSystemPackageInstaller</li>
  * </ul>
  *
@@ -92,15 +95,17 @@ import java.util.Set;
 class UserSystemPackageInstaller {
     private static final String TAG = "UserManagerService";
 
+    private static final boolean DEBUG = false;
+
     /**
-     * System Property whether to only install system packages on a user if they're whitelisted for
+     * System Property whether to only install system packages on a user if they're allowlisted for
      * that user type. These are flags and can be freely combined.
      * <ul>
-     * <li> 0  - disable whitelist (install all system packages; no logging)</li>
-     * <li> 1  - enforce (only install system packages if they are whitelisted)</li>
-     * <li> 2  - log (log non-whitelisted packages)</li>
-     * <li> 4  - for all users: implicitly whitelist any package not mentioned in the whitelist</li>
-     * <li> 8  - for SYSTEM: implicitly whitelist any package not mentioned in the whitelist</li>
+     * <li> 0  - disable allowlist (install all system packages; no logging)</li>
+     * <li> 1  - enforce (only install system packages if they are allowlisted)</li>
+     * <li> 2  - log (log non-allowlisted packages)</li>
+     * <li> 4  - for all users: implicitly allowlist any package not mentioned in the allowlist</li>
+     * <li> 8  - for SYSTEM: implicitly allowlist any package not mentioned in the allowlist</li>
      * <li> 16 - ignore OTAs (don't install system packages during OTAs)</li>
      * <li>-1  - use device default (as defined in res/res/values/config.xml)</li>
      * </ul>
@@ -108,13 +113,19 @@ class UserSystemPackageInstaller {
      * frameworks/base/core/res/res/values/config.xml
      */
     static final String PACKAGE_WHITELIST_MODE_PROP = "persist.debug.user.package_whitelist_mode";
-    static final int USER_TYPE_PACKAGE_WHITELIST_MODE_DISABLE = 0x00;
-    static final int USER_TYPE_PACKAGE_WHITELIST_MODE_ENFORCE = 0x01;
-    static final int USER_TYPE_PACKAGE_WHITELIST_MODE_LOG = 0x02;
-    static final int USER_TYPE_PACKAGE_WHITELIST_MODE_IMPLICIT_WHITELIST = 0x04;
-    static final int USER_TYPE_PACKAGE_WHITELIST_MODE_IMPLICIT_WHITELIST_SYSTEM = 0x08;
-    static final int USER_TYPE_PACKAGE_WHITELIST_MODE_IGNORE_OTA = 0x10;
+
+    // NOTE: flags below are public so they can used by DebugUtils.flagsToString. And this class
+    // itself is package-protected, so it doesn't matter...
+    public static final int USER_TYPE_PACKAGE_WHITELIST_MODE_DISABLE = 0x00;
+    public static final int USER_TYPE_PACKAGE_WHITELIST_MODE_ENFORCE = 0x01;
+    public static final int USER_TYPE_PACKAGE_WHITELIST_MODE_LOG = 0x02;
+    public static final int USER_TYPE_PACKAGE_WHITELIST_MODE_IMPLICIT_WHITELIST = 0x04;
+    public static final int USER_TYPE_PACKAGE_WHITELIST_MODE_IMPLICIT_WHITELIST_SYSTEM = 0x08;
+    public static final int USER_TYPE_PACKAGE_WHITELIST_MODE_IGNORE_OTA = 0x10;
     static final int USER_TYPE_PACKAGE_WHITELIST_MODE_DEVICE_DEFAULT = -1;
+
+    // Used by Shell command only
+    static final int USER_TYPE_PACKAGE_WHITELIST_MODE_NONE = -1000;
 
     @IntDef(flag = true, prefix = "USER_TYPE_PACKAGE_WHITELIST_MODE_", value = {
             USER_TYPE_PACKAGE_WHITELIST_MODE_DISABLE,
@@ -135,7 +146,7 @@ class UserSystemPackageInstaller {
      * then mWhitelistedPackagesForUserTypes.get("pkg1") will be a Long whose
      * bit in position 3 will equal 1.
      * <p>
-     * Packages that are whitelisted, but then blacklisted so that they aren't to be installed on
+     * Packages that are allowlisted, but then denylisted so that they aren't to be installed on
      * any user, are purposefully still present in this list.
      */
     private final ArrayMap<String, Long> mWhitelistedPackagesForUserTypes;
@@ -175,10 +186,10 @@ class UserSystemPackageInstaller {
 
     /**
      * During OTAs and first boot, install/uninstall all system packages for all users based on the
-     * user's user type and the SystemConfig whitelist.
+     * user's user type and the SystemConfig allowlist.
      * We do NOT uninstall packages during an OTA though.
      *
-     * This is responsible for enforcing the whitelist for pre-existing users (i.e. USER_SYSTEM);
+     * This is responsible for enforcing the allowlist for pre-existing users (i.e. USER_SYSTEM);
      * enforcement for new users is done when they are created in UserManagerService.createUser().
      *
      * @param preExistingPackages list of packages on the device prior to the upgrade. Cannot be
@@ -256,7 +267,7 @@ class UserSystemPackageInstaller {
     }
 
     /**
-     * Checks whether the system packages and the mWhitelistedPackagesForUserTypes whitelist are
+     * Checks whether the system packages and the mWhitelistedPackagesForUserTypes allowlist are
      * in 1-to-1 correspondence.
      */
     private void checkWhitelistedSystemPackages(@PackageWhitelistMode int mode) {
@@ -264,39 +275,103 @@ class UserSystemPackageInstaller {
             return;
         }
         Slog.v(TAG,  "Checking that all system packages are whitelisted.");
-        final Set<String> allWhitelistedPackages = getWhitelistedSystemPackages();
-        PackageManagerInternal pmInt = LocalServices.getService(PackageManagerInternal.class);
 
-        // Check whether all whitelisted packages are indeed on the system.
-        for (String pkgName : allWhitelistedPackages) {
-            AndroidPackage pkg = pmInt.getPackage(pkgName);
-            if (pkg == null) {
-                Slog.w(TAG, pkgName + " is whitelisted but not present.");
-            } else if (!pkg.isSystem()) {
-                Slog.w(TAG, pkgName + " is whitelisted and present but not a system package.");
+        // Check whether all allowlisted packages are indeed on the system.
+        final List<String> warnings = getPackagesWhitelistWarnings();
+        final int numberWarnings = warnings.size();
+        if (numberWarnings == 0) {
+            Slog.v(TAG, "checkWhitelistedSystemPackages(mode=" + modeToString(mode)
+                    + ") has no warnings");
+        } else {
+            Slog.w(TAG, "checkWhitelistedSystemPackages(mode=" + modeToString(mode)
+                    + ") has " + numberWarnings + " warnings:");
+            for (int i = 0; i < numberWarnings; i++) {
+                Slog.w(TAG, warnings.get(i));
             }
         }
 
-        // Check whether all system packages are indeed whitelisted.
+        // Check whether all system packages are indeed allowlisted.
         if (isImplicitWhitelistMode(mode) && !isLogMode(mode)) {
             return;
         }
-        final boolean doWtf = isEnforceMode(mode);
-        pmInt.forEachPackage(pkg -> {
-            if (pkg.isSystem() && !allWhitelistedPackages.contains(pkg.getManifestPackageName())) {
-                final String msg = "System package " + pkg.getManifestPackageName()
-                        + " is not whitelisted using 'install-in-user-type' in SystemConfig "
-                        + "for any user types!";
-                if (doWtf) {
-                    Slog.wtf(TAG, msg);
-                } else {
-                    Slog.e(TAG, msg);
-                }
+
+        final List<String> errors = getPackagesWhitelistErrors(mode);
+        final int numberErrors = errors.size();
+
+        if (numberErrors == 0) {
+            Slog.v(TAG, "checkWhitelistedSystemPackages(mode=" + modeToString(mode)
+                    + ") has no errors");
+            return;
+        }
+        Slog.e(TAG, "checkWhitelistedSystemPackages(mode=" + modeToString(mode) + ") has "
+                + numberErrors + " errors:");
+
+        boolean doWtf = !isImplicitWhitelistMode(mode);
+        for (int i = 0; i < numberErrors; i++) {
+            final String msg = errors.get(i);
+            if (doWtf) {
+                Slog.wtf(TAG, msg);
+            } else {
+                Slog.e(TAG, msg);
             }
-        });
+        }
     }
 
-    /** Whether to only install system packages in new users for which they are whitelisted. */
+    /**
+     * Gets packages that are listed in the allowlist XML but are not present on the system image.
+     */
+    @NonNull
+    private List<String> getPackagesWhitelistWarnings() {
+        final Set<String> allWhitelistedPackages = getWhitelistedSystemPackages();
+        final List<String> warnings = new ArrayList<>();
+        final PackageManagerInternal pmInt = LocalServices.getService(PackageManagerInternal.class);
+
+        // Check whether all allowlisted packages are indeed on the system.
+        final String notPresentFmt = "%s is allowlisted but not present.";
+        final String notSystemFmt = "%s is allowlisted and present but not a system package.";
+        final String overlayFmt = "%s is allowlisted unnecessarily since it's a static overlay.";
+        for (String pkgName : allWhitelistedPackages) {
+            final AndroidPackage pkg = pmInt.getPackage(pkgName);
+            if (pkg == null) {
+                warnings.add(String.format(notPresentFmt, pkgName));
+            } else if (!pkg.isSystem()) {
+                warnings.add(String.format(notSystemFmt, pkgName));
+            } else if (shouldUseOverlayTargetName(pkg)) {
+                warnings.add(String.format(overlayFmt, pkgName));
+            }
+        }
+        return warnings;
+    }
+
+    /**
+     * Gets packages that are not listed in the allowlist XMLs when they should be.
+     */
+    @NonNull
+    private List<String> getPackagesWhitelistErrors(@PackageWhitelistMode int mode) {
+        if ((!isEnforceMode(mode) || isImplicitWhitelistMode(mode)) && !isLogMode(mode)) {
+            return Collections.emptyList();
+        }
+
+        final List<String> errors = new ArrayList<>();
+        final Set<String> allWhitelistedPackages = getWhitelistedSystemPackages();
+        final PackageManagerInternal pmInt = LocalServices.getService(PackageManagerInternal.class);
+
+        // Check whether all system packages are indeed allowlisted.
+        final String logMessageFmt = "System package %s is not whitelisted using "
+                + "'install-in-user-type' in SystemConfig for any user types!";
+        pmInt.forEachPackage(pkg -> {
+            if (!pkg.isSystem()) return;
+            final String pkgName = pkg.getManifestPackageName();
+            if (!allWhitelistedPackages.contains(pkgName)
+                    && !shouldUseOverlayTargetName(pmInt.getPackage(pkgName))) {
+                errors.add(String.format(logMessageFmt, pkgName));
+            }
+        });
+
+        return errors;
+    }
+
+    /** Whether to only install system packages in new users for which they are allowlisted. */
     boolean isEnforceMode() {
         return isEnforceMode(getWhitelistMode());
     }
@@ -307,7 +382,7 @@ class UserSystemPackageInstaller {
      * If in this mode, old system packages will not be installed on pre-existing users during OTAs.
      * Any system packages that had not been installed at the time of the user's creation,
      * due to {@link UserSystemPackageInstaller}'s previous actions, will therefore continue to
-     * remain uninstalled, even if the whitelist (or enforcement mode) now declares that they should
+     * remain uninstalled, even if the allowlist (or enforcement mode) now declares that they should
      * be.
      */
     boolean isIgnoreOtaMode() {
@@ -315,26 +390,36 @@ class UserSystemPackageInstaller {
     }
 
     /**
-     * Whether to log a warning concerning potential problems with the user-type package whitelist.
+     * Whether to log a warning concerning potential problems with the user-type package allowlist.
      */
     boolean isLogMode() {
         return isLogMode(getWhitelistMode());
     }
 
     /**
-     * Whether to treat all packages that are not mentioned at all in the whitelist to be implicitly
-     * whitelisted for all users.
+     * Whether to treat all packages that are not mentioned at all in the allowlist to be implicitly
+     * allowlisted for all users.
      */
     boolean isImplicitWhitelistMode() {
         return isImplicitWhitelistMode(getWhitelistMode());
     }
 
     /**
-     * Whether to treat all packages that are not mentioned at all in the whitelist to be implicitly
-     * whitelisted for the SYSTEM user.
+     * Whether to treat all packages that are not mentioned at all in the allowlist to be implicitly
+     * allowlisted for the SYSTEM user.
      */
     boolean isImplicitWhitelistSystemMode() {
         return isImplicitWhitelistSystemMode(getWhitelistMode());
+    }
+
+    /**
+     * Returns whether the package is a static overlay, whose installation should depend on the
+     * allowlisting of the overlay's target's package name, rather than of its own package name.
+     *
+     * @param pkg A package (which need not be an overlay)
+     */
+    private static boolean shouldUseOverlayTargetName(AndroidPackage pkg) {
+        return pkg.isOverlayIsStatic();
     }
 
     /** See {@link #isEnforceMode()}. */
@@ -369,8 +454,26 @@ class UserSystemPackageInstaller {
         if (runtimeMode != USER_TYPE_PACKAGE_WHITELIST_MODE_DEVICE_DEFAULT) {
             return runtimeMode;
         }
+        return getDeviceDefaultWhitelistMode();
+    }
+
+    /** Gets the PackageWhitelistMode as defined by {@code config_userTypePackageWhitelistMode}. */
+    private @PackageWhitelistMode int getDeviceDefaultWhitelistMode() {
         return Resources.getSystem()
                 .getInteger(com.android.internal.R.integer.config_userTypePackageWhitelistMode);
+    }
+
+    static @NonNull String modeToString(@PackageWhitelistMode int mode) {
+        // Must handle some types separately because they're not bitwise flags
+        switch (mode) {
+            case USER_TYPE_PACKAGE_WHITELIST_MODE_DEVICE_DEFAULT:
+                return "DEVICE_DEFAULT";
+            case USER_TYPE_PACKAGE_WHITELIST_MODE_NONE:
+                return "NONE";
+            default:
+                return DebugUtils.flagsToString(UserSystemPackageInstaller.class,
+                        "USER_TYPE_PACKAGE_WHITELIST_MODE_", mode);
+        }
     }
 
     /**
@@ -383,7 +486,7 @@ class UserSystemPackageInstaller {
 
     /**
      * Gets the system package names that should be installed on users of the given user type, as
-     * determined by SystemConfig, the whitelist mode, and the apps actually on the device.
+     * determined by SystemConfig, the allowlist mode, and the apps actually on the device.
      * Names are the {@link PackageParser.Package#packageName}, not necessarily the manifest names.
      *
      * Returns null if all system packages should be installed (due to enforce-mode being off).
@@ -405,7 +508,7 @@ class UserSystemPackageInstaller {
             }
             if (shouldInstallPackage(pkg, mWhitelistedPackagesForUserTypes,
                     whitelistedPackages, implicitlyWhitelist)) {
-                // Although the whitelist uses manifest names, this function returns packageNames.
+                // Although the allowlist uses manifest names, this function returns packageNames.
                 installPackages.add(pkg.getPackageName());
             }
         });
@@ -414,7 +517,7 @@ class UserSystemPackageInstaller {
 
     /**
      * Returns whether the given system package should be installed on the given user, based on the
-     * the given whitelist of system packages.
+     * the given allowlist of system packages.
      *
      * @param sysPkg the system package. Must be a system package; no verification for this is done.
      * @param userTypeWhitelist map of package manifest names to user types on which they should be
@@ -424,19 +527,20 @@ class UserSystemPackageInstaller {
      *                      <b>particular</b> user. This must be consistent with userTypeWhitelist,
      *                      but is passed in separately to avoid repeatedly calculating it from
      *                      userTypeWhitelist.
-     * @param implicitlyWhitelist whether non-mentioned packages are implicitly whitelisted.
+     * @param implicitlyWhitelist whether non-mentioned packages are implicitly allowlisted.
      */
     @VisibleForTesting
     static boolean shouldInstallPackage(AndroidPackage sysPkg,
             @NonNull ArrayMap<String, Long> userTypeWhitelist,
             @NonNull Set<String> userWhitelist, boolean implicitlyWhitelist) {
-        final String pkgName = sysPkg.getManifestPackageName();
+        final String pkgName = shouldUseOverlayTargetName(sysPkg) ?
+                sysPkg.getOverlayTarget() : sysPkg.getManifestPackageName();
         return (implicitlyWhitelist && !userTypeWhitelist.containsKey(pkgName))
                 || userWhitelist.contains(pkgName);
     }
 
     /**
-     * Gets the package manifest names that are whitelisted for users of the given user type,
+     * Gets the package manifest names that are allowlisted for users of the given user type,
      * as determined by SystemConfig.
      */
     @VisibleForTesting
@@ -455,9 +559,9 @@ class UserSystemPackageInstaller {
 
     /**
      * Set of package manifest names that are included anywhere in the package-to-user-type
-     * whitelist, as determined by SystemConfig.
+     * allowlist, as determined by SystemConfig.
      *
-     * Packages that are whitelisted, but then blacklisted so that they aren't to be installed on
+     * Packages that are allowlisted, but then denylisted so that they aren't to be installed on
      * any user, are still present in this list, since that is a valid scenario (e.g. if an OEM
      * completely blacklists an AOSP app).
      */
@@ -475,9 +579,9 @@ class UserSystemPackageInstaller {
      * To enforce this:
      * <ul>
      *  <li>Illegal user types are ignored.</li>
-     *  <li>Packages that never whitelisted at all (even if they are explicitly blacklisted) are
+     *  <li>Packages that never allowlisted at all (even if they are explicitly denylisted) are
      *          ignored.</li>
-     *  <li>Packages that are blacklisted whenever they are whitelisted will be stored with the
+     *  <li>Packages that are denylisted whenever they are allowlisted will be stored with the
      *          value 0 (since this is a valid scenario, e.g. if an OEM completely blacklists an
      *          AOSP app).</li>
      * </ul>
@@ -493,7 +597,7 @@ class UserSystemPackageInstaller {
                 sysConfig.getAndClearPackageToUserTypeWhitelist();
         // result maps packageName -> userTypes on which the package should be installed.
         final ArrayMap<String, Long> result = new ArrayMap<>(whitelist.size() + 1);
-        // First, do the whitelisted user types.
+        // First, do the allowlisted user types.
         for (int i = 0; i < whitelist.size(); i++) {
             final String pkgName = whitelist.keyAt(i).intern();
             final long typesBitSet = getTypesBitSet(whitelist.valueAt(i), baseTypeBitSets);
@@ -501,7 +605,7 @@ class UserSystemPackageInstaller {
                 result.put(pkgName, typesBitSet);
             }
         }
-        // Then, un-whitelist any blacklisted user types.
+        // Then, un-allowlist any denylisted user types.
         final ArrayMap<String, Set<String>> blacklist =
                 sysConfig.getAndClearPackageToUserTypeBlacklist();
         for (int i = 0; i < blacklist.size(); i++) {
@@ -511,7 +615,7 @@ class UserSystemPackageInstaller {
             if (typesBitSet != null) {
                 result.put(pkgName, typesBitSet & ~nonTypesBitSet);
             } else if (nonTypesBitSet != 0) {
-                // Package was never whitelisted but is validly blacklisted.
+                // Package was never allowlisted but is validly denylisted.
                 result.put(pkgName, 0L);
             }
         }
@@ -601,33 +705,40 @@ class UserSystemPackageInstaller {
         return userTypeList;
     }
 
-    void dump(PrintWriter pw) {
-        final String prefix = "    ";
-        final String prefix2 = prefix + prefix;
+    void dump(IndentingPrintWriter pw) {
         final int mode = getWhitelistMode();
         pw.println("Whitelisted packages per user type");
-        pw.print(prefix); pw.print("Mode: ");
+
+        pw.increaseIndent();
+        pw.print("Mode: ");
         pw.print(mode);
         pw.print(isEnforceMode(mode) ? " (enforced)" : "");
         pw.print(isLogMode(mode) ? " (logged)" : "");
         pw.print(isImplicitWhitelistMode(mode) ? " (implicit)" : "");
         pw.print(isIgnoreOtaMode(mode) ? " (ignore OTAs)" : "");
         pw.println();
+        pw.decreaseIndent();
 
-        pw.print(prefix); pw.println("Legend");
+        pw.increaseIndent();
+        pw.println("Legend");
+        pw.increaseIndent();
         for (int idx = 0; idx < mUserTypes.length; idx++) {
-            pw.print(prefix2); pw.println(idx + " -> " + mUserTypes[idx]);
+            pw.println(idx + " -> " + mUserTypes[idx]);
         }
+        pw.decreaseIndent(); pw.decreaseIndent();
 
+        pw.increaseIndent();
         final int size = mWhitelistedPackagesForUserTypes.size();
         if (size == 0) {
-            pw.print(prefix); pw.println("No packages");
+            pw.println("No packages");
+            pw.decreaseIndent();
             return;
         }
-        pw.print(prefix); pw.print(size); pw.println(" packages:");
+        pw.print(size); pw.println(" packages:");
+        pw.increaseIndent();
         for (int pkgIdx = 0; pkgIdx < size; pkgIdx++) {
             final String pkgName = mWhitelistedPackagesForUserTypes.keyAt(pkgIdx);
-            pw.print(prefix2); pw.print(pkgName); pw.print(": ");
+            pw.print(pkgName); pw.print(": ");
             final long userTypesBitSet = mWhitelistedPackagesForUserTypes.valueAt(pkgIdx);
             for (int idx = 0; idx < mUserTypes.length; idx++) {
                 if ((userTypesBitSet & (1 << idx)) != 0) {
@@ -635,6 +746,55 @@ class UserSystemPackageInstaller {
                 }
             }
             pw.println();
+        }
+        pw.decreaseIndent(); pw.decreaseIndent();
+
+        pw.increaseIndent();
+        dumpPackageWhitelistProblems(pw, mode, /* verbose= */ true, /* criticalOnly= */ false);
+        pw.decreaseIndent();
+    }
+
+    void dumpPackageWhitelistProblems(IndentingPrintWriter pw, @PackageWhitelistMode int mode,
+            boolean verbose, boolean criticalOnly) {
+        // Handle special cases first
+        if (mode == USER_TYPE_PACKAGE_WHITELIST_MODE_NONE) {
+            mode = getWhitelistMode();
+        } else if (mode == USER_TYPE_PACKAGE_WHITELIST_MODE_DEVICE_DEFAULT) {
+            mode = getDeviceDefaultWhitelistMode();
+        }
+        if (criticalOnly) {
+            // Ignore log mode (if set) since log-only issues are not critical.
+            mode &= ~USER_TYPE_PACKAGE_WHITELIST_MODE_LOG;
+        }
+        Slog.v(TAG, "dumpPackageWhitelistProblems(): using mode " + modeToString(mode));
+
+        final List<String> errors = getPackagesWhitelistErrors(mode);
+        showIssues(pw, verbose, errors, "errors");
+
+        if (criticalOnly) return;
+
+        final List<String> warnings = getPackagesWhitelistWarnings();
+        showIssues(pw, verbose, warnings, "warnings");
+    }
+
+    private static void showIssues(IndentingPrintWriter pw, boolean verbose, List<String> issues,
+            String issueType) {
+        final int size = issues.size();
+        if (size == 0) {
+            if (verbose) {
+                pw.print("No "); pw.println(issueType);
+            }
+            return;
+        }
+        if (verbose) {
+            pw.print(size); pw.print(' '); pw.println(issueType);
+            pw.increaseIndent();
+        }
+        for (int i = 0; i < size; i++) {
+            pw.println(issues.get(i));
+        }
+        if (verbose) {
+            pw.decreaseIndent();
         }
     }
 }

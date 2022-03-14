@@ -35,6 +35,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import android.app.PropertyInvalidatedCache;
 import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -42,7 +43,6 @@ import android.content.pm.UserInfo;
 import android.os.Looper;
 import android.os.SystemProperties;
 import android.os.UserManager;
-import android.os.UserManagerInternal;
 import android.support.test.uiautomator.UiDevice;
 import android.util.ArrayMap;
 import android.util.ArraySet;
@@ -98,6 +98,9 @@ public class UserSystemPackageInstallerTest {
         if (Looper.myLooper() == null) {
             Looper.prepare();
         }
+        // Disable binder caches in this process.
+        PropertyInvalidatedCache.disableForTestMode();
+
         LocalServices.removeServiceForTest(UserManagerInternal.class);
         UserManagerService ums = new UserManagerService(InstrumentationRegistry.getContext());
 
@@ -146,7 +149,7 @@ public class UserSystemPackageInstallerTest {
                 ArrayMap<String, Set<String>> r = new ArrayMap<>();
                 r.put("com.android.package1", new ArraySet<>(Arrays.asList(
                         USER_TYPE_PROFILE_MANAGED, "invalid-garbage2")));
-                // com.android.package2 has nothing blacklisted
+                // com.android.package2 has nothing denylisted
                 r.put("com.android.package3", new ArraySet<>(Arrays.asList("SYSTEM")));
                 return r;
             }
@@ -192,7 +195,7 @@ public class UserSystemPackageInstallerTest {
 
     /**
      * Test that determineWhitelistedPackagesForUserTypes does not include packages that were never
-     * whitelisted properly, but does include packages that were whitelisted but then blacklisted.
+     * allowlisted properly, but does include packages that were allowlisted but then denylisted.
      */
     @Test
     public void testDetermineWhitelistedPackagesForUserTypes_noNetWhitelisting() {
@@ -201,22 +204,22 @@ public class UserSystemPackageInstallerTest {
             public ArrayMap<String, Set<String>> getAndClearPackageToUserTypeWhitelist() {
                 ArrayMap<String, Set<String>> r = new ArrayMap<>();
                 r.put("com.android.package1", new ArraySet<>(Arrays.asList("invalid1")));
-                // com.android.package2 has no whitelisting
+                // com.android.package2 has no allowlisting
                 r.put("com.android.package3", new ArraySet<>(Arrays.asList("PROFILE", "FULL")));
                 r.put("com.android.package4", new ArraySet<>(Arrays.asList("PROFILE")));
                 r.put("com.android.package5", new ArraySet<>());
-                // com.android.package6 has no whitelisting
+                // com.android.package6 has no allowlisting
                 return r;
             }
 
             @Override
             public ArrayMap<String, Set<String>> getAndClearPackageToUserTypeBlacklist() {
                 ArrayMap<String, Set<String>> r = new ArrayMap<>();
-                // com.android.package1 has no blacklisting
+                // com.android.package1 has no denylisting
                 r.put("com.android.package2", new ArraySet<>(Arrays.asList("FULL")));
                 r.put("com.android.package3", new ArraySet<>(Arrays.asList("PROFILE", "FULL")));
                 r.put("com.android.package4", new ArraySet<>(Arrays.asList("PROFILE", "invalid4")));
-                // com.android.package5 has no blacklisting
+                // com.android.package5 has no denylisting
                 r.put("com.android.package6", new ArraySet<>(Arrays.asList("invalid6")));
                 return r;
             }
@@ -238,18 +241,18 @@ public class UserSystemPackageInstallerTest {
      */
     @Test
     public void testShouldInstallPackage() {
-        final String packageName1 = "pkg1"; // whitelisted
-        final String packageName2 = "pkg2"; // whitelisted and blacklisted
-        final String packageName3 = "pkg3"; // whitelisted for a different user type
-        final String packageName4 = "pkg4"; // not whitelisted nor blacklisted at all
+        final String packageName1 = "pkg1"; // allowlisted
+        final String packageName2 = "pkg2"; // allowlisted and denylisted
+        final String packageName3 = "pkg3"; // allowlisted for a different user type
+        final String packageName4 = "pkg4"; // not allowlisted nor denylisted at all
 
-        // Whitelist: user type bitset for each pkg (for the test, all that matters is 0 vs non-0).
+        // Allowlist: user type bitset for each pkg (for the test, all that matters is 0 vs non-0).
         final ArrayMap<String, Long> pkgBitSetMap = new ArrayMap<>();
         pkgBitSetMap.put(packageName1, 0b01L);
         pkgBitSetMap.put(packageName2, 0L);
         pkgBitSetMap.put(packageName3, 0b10L);
 
-        // Whitelist of pkgs for this specific user, i.e. subset of pkgBitSetMap for this user.
+        // Allowlist of pkgs for this specific user, i.e. subset of pkgBitSetMap for this user.
         final Set<String> userWhitelist = new ArraySet<>();
         userWhitelist.add(packageName1);
 
@@ -262,7 +265,7 @@ public class UserSystemPackageInstallerTest {
         final AndroidPackage pkg4 = ((ParsedPackage) PackageImpl.forTesting(packageName4)
                 .hideAsParsed()).hideAsFinal();
 
-        // No implicit whitelist, so only install pkg1.
+        // No implicit allowlist, so only install pkg1.
         boolean implicit = false;
         assertTrue(UserSystemPackageInstaller.shouldInstallPackage(
                 pkg1, pkgBitSetMap, userWhitelist, implicit));
@@ -273,7 +276,7 @@ public class UserSystemPackageInstallerTest {
         assertFalse(UserSystemPackageInstaller.shouldInstallPackage(
                 pkg4, pkgBitSetMap, userWhitelist, implicit));
 
-        // Use implicit whitelist, so install pkg1 and pkg4
+        // Use implicit allowlist, so install pkg1 and pkg4
         implicit = true;
         assertTrue(UserSystemPackageInstaller.shouldInstallPackage(
                 pkg1, pkgBitSetMap, userWhitelist, implicit));
@@ -298,12 +301,12 @@ public class UserSystemPackageInstallerTest {
         final long maskOfTypeA = 0b0001L;
         final long maskOfTypeC = 0b0100L;
 
-        final String packageName1 = "pkg1"; // whitelisted for user type A
-        final String packageName2 = "pkg2"; // blacklisted whenever whitelisted
-        final String packageName3 = "pkg3"; // whitelisted for user type C
-        final String packageName4 = "pkg4"; // whitelisted for user type A
+        final String packageName1 = "pkg1"; // allowlisted for user type A
+        final String packageName2 = "pkg2"; // denylisted whenever allowlisted
+        final String packageName3 = "pkg3"; // allowlisted for user type C
+        final String packageName4 = "pkg4"; // allowlisted for user type A
 
-        final ArrayMap<String, Long> pkgBitSetMap = new ArrayMap<>(); // Whitelist: bitset per pkg
+        final ArrayMap<String, Long> pkgBitSetMap = new ArrayMap<>(); // Allowlist: bitset per pkg
         pkgBitSetMap.put(packageName1, maskOfTypeA);
         pkgBitSetMap.put(packageName2, 0L);
         pkgBitSetMap.put(packageName3, maskOfTypeC);
@@ -362,7 +365,71 @@ public class UserSystemPackageInstallerTest {
         for (PackageInfo p : packageInfos) {
             actualPackages.add(p.packageName);
         }
+
+        // Add static overlays to expectedPackages since they are not (supposed to be)
+        // in the allowlist but they should be installed if their target is.
+        for (PackageInfo p : packageInfos) {
+            if (p.isStaticOverlayPackage() && expectedPackages.contains(p.overlayTarget)) {
+                expectedPackages.add(p.packageName);
+            }
+        }
         checkPackageDifferences(expectedPackages, actualPackages);
+    }
+
+    /**
+     * Test that static overlay package not in allowlist should be installed for all users
+     * based on their targets, in Explicit mode.
+     */
+    @Test
+    public void testInstallOverlayPackagesExplicitMode() {
+        setUserTypePackageWhitelistMode(USER_TYPE_PACKAGE_WHITELIST_MODE_ENFORCE);
+
+        final String[] userTypes = new String[]{"type"};
+        final long maskOfType = 0b0001L;
+
+        final String packageName1 = "whitelistedPkg";
+        final String packageName2 = "nonWhitelistedPkg";
+        final String overlayName1 = String.format("%s.auto_generated_rro_product__", packageName1);
+        final String overlayName2 = String.format("%s.auto_generated_rro_product__", packageName2);
+        final String overlayName3 = String.format("%s.non_static_overlay", packageName1);
+
+        // Static overlay for allowlisted package1 -> should be installed, like package1
+        final AndroidPackage overlayPackage1 = ((ParsedPackage) PackageImpl.forTesting(overlayName1)
+                .setOverlay(true)
+                .setOverlayIsStatic(true)
+                .setOverlayTarget(packageName1)
+                .hideAsParsed())
+                .hideAsFinal();
+
+        // Static overlay for non-allowlisted package2 -> should not be installed, like package2
+        final AndroidPackage overlayPackage2 = ((ParsedPackage) PackageImpl.forTesting(overlayName2)
+                .setOverlay(true)
+                .setOverlayIsStatic(true)
+                .setOverlayTarget(packageName2)
+                .hideAsParsed())
+                .hideAsFinal();
+
+        // Non-static overlay for package1 -> not explicitly allowlisted, so shouldn't be installed
+        final AndroidPackage overlayPackage3 = ((ParsedPackage) PackageImpl.forTesting(overlayName3)
+                .setOverlay(true)
+                .setOverlayIsStatic(false) // non-static
+                .setOverlayTarget(packageName1)
+                .hideAsParsed())
+                .hideAsFinal();
+
+        final ArrayMap<String, Long> userTypeWhitelist = new ArrayMap<>();
+        userTypeWhitelist.put(packageName1, maskOfType);
+
+        final Set<String> userWhitelist = new ArraySet<>();
+        userWhitelist.add(packageName1);
+
+        boolean implicit = false;
+        assertTrue("Should install static overlay for package1", UserSystemPackageInstaller
+                .shouldInstallPackage(overlayPackage1, userTypeWhitelist, userWhitelist, implicit));
+        assertFalse("Should not install static overlay for package2", UserSystemPackageInstaller
+                .shouldInstallPackage(overlayPackage2, userTypeWhitelist, userWhitelist, implicit));
+        assertFalse("Should not install regular overlay for package1", UserSystemPackageInstaller
+                .shouldInstallPackage(overlayPackage3, userTypeWhitelist, userWhitelist, implicit));
     }
 
     /** Asserts that actual is a subset of expected. */
@@ -443,7 +510,7 @@ public class UserSystemPackageInstallerTest {
         assertFalse(mUserSystemPackageInstaller.isIgnoreOtaMode());
     }
 
-    /** Sets the whitelist mode to the desired value via adb's setprop. */
+    /** Sets the allowlist mode to the desired value via adb's setprop. */
     private void setUserTypePackageWhitelistMode(int mode) {
         UiDevice uiDevice = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         try {
@@ -459,7 +526,7 @@ public class UserSystemPackageInstallerTest {
     /** @see UserSystemPackageInstaller#mWhitelistedPackagesForUserTypes */
     private ArrayMap<String, Long> getNewPackageToWhitelistedBitSetMap() {
         final ArrayMap<String, Long> pkgBitSetMap = new ArrayMap<>();
-        // "android" is always treated as whitelisted for all types, regardless of the xml file.
+        // "android" is always treated as allowlisted for all types, regardless of the xml file.
         pkgBitSetMap.put("android", ~0L);
         return pkgBitSetMap;
     }

@@ -34,6 +34,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
@@ -49,6 +51,7 @@ import static java.util.Objects.requireNonNull;
 
 import android.annotation.Nullable;
 import android.app.Notification;
+import android.os.Handler;
 import android.os.RemoteException;
 import android.service.notification.NotificationListenerService.Ranking;
 import android.service.notification.NotificationListenerService.RankingMap;
@@ -59,13 +62,15 @@ import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Pair;
 
+import androidx.annotation.NonNull;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.statusbar.IStatusBarService;
 import com.android.internal.statusbar.NotificationVisibility;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.dump.DumpManager;
-import com.android.systemui.statusbar.FeatureFlags;
+import com.android.systemui.dump.LogBufferEulogizer;
+import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.statusbar.RankingBuilder;
 import com.android.systemui.statusbar.notification.collection.NoManSimulator.NotifEvent;
 import com.android.systemui.statusbar.notification.collection.NotifCollection.CancellationReason;
@@ -74,10 +79,12 @@ import com.android.systemui.statusbar.notification.collection.coalescer.GroupCoa
 import com.android.systemui.statusbar.notification.collection.coalescer.GroupCoalescer.BatchableNotificationHandler;
 import com.android.systemui.statusbar.notification.collection.notifcollection.CollectionReadyForBuildListener;
 import com.android.systemui.statusbar.notification.collection.notifcollection.DismissedByUserStats;
+import com.android.systemui.statusbar.notification.collection.notifcollection.InternalNotifUpdater;
 import com.android.systemui.statusbar.notification.collection.notifcollection.NotifCollectionListener;
 import com.android.systemui.statusbar.notification.collection.notifcollection.NotifCollectionLogger;
 import com.android.systemui.statusbar.notification.collection.notifcollection.NotifDismissInterceptor;
 import com.android.systemui.statusbar.notification.collection.notifcollection.NotifLifetimeExtender;
+import com.android.systemui.util.time.FakeSystemClock;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -100,11 +107,14 @@ import java.util.Map;
 public class NotifCollectionTest extends SysuiTestCase {
 
     @Mock private IStatusBarService mStatusBarService;
+    @Mock private FeatureFlags mFeatureFlags;
     @Mock private NotifCollectionLogger mLogger;
+    @Mock private LogBufferEulogizer mEulogizer;
+    @Mock private Handler mMainHandler;
+
     @Mock private GroupCoalescer mGroupCoalescer;
     @Spy private RecordingCollectionListener mCollectionListener;
     @Mock private CollectionReadyForBuildListener mBuildListener;
-    @Mock private FeatureFlags mFeatureFlags;
 
     @Spy private RecordingLifetimeExtender mExtender1 = new RecordingLifetimeExtender("Extender1");
     @Spy private RecordingLifetimeExtender mExtender2 = new RecordingLifetimeExtender("Extender2");
@@ -127,6 +137,7 @@ public class NotifCollectionTest extends SysuiTestCase {
     private InOrder mListenerInOrder;
 
     private NoManSimulator mNoMan;
+    private FakeSystemClock mClock = new FakeSystemClock();
 
     @Before
     public void setUp() {
@@ -136,13 +147,18 @@ public class NotifCollectionTest extends SysuiTestCase {
         when(mFeatureFlags.isNewNotifPipelineRenderingEnabled()).thenReturn(true);
         when(mFeatureFlags.isNewNotifPipelineEnabled()).thenReturn(true);
 
+        when(mEulogizer.record(any(Exception.class))).thenAnswer(i -> i.getArguments()[0]);
+
         mListenerInOrder = inOrder(mCollectionListener);
 
         mCollection = new NotifCollection(
                 mStatusBarService,
-                mock(DumpManager.class),
+                mClock,
                 mFeatureFlags,
-                mLogger);
+                mLogger,
+                mMainHandler,
+                mEulogizer,
+                mock(DumpManager.class));
         mCollection.attach(mGroupCoalescer);
         mCollection.addCollectionListener(mCollectionListener);
         mCollection.setBuildListener(mBuildListener);
@@ -154,6 +170,8 @@ public class NotifCollectionTest extends SysuiTestCase {
 
         mNoMan = new NoManSimulator();
         mNoMan.addListener(mNotifHandler);
+
+        mNotifHandler.onNotificationsInitialized();
     }
 
     @Test
@@ -365,8 +383,6 @@ public class NotifCollectionTest extends SysuiTestCase {
         // THEN we send the dismissal to system server
         verify(mStatusBarService).onNotificationClear(
                 notif2.sbn.getPackageName(),
-                notif2.sbn.getTag(),
-                88,
                 notif2.sbn.getUser().getIdentifier(),
                 notif2.sbn.getKey(),
                 stats.dismissalSurface,
@@ -430,7 +446,7 @@ public class NotifCollectionTest extends SysuiTestCase {
     }
 
     @Test
-    public void testDismissingLifetimeExtendedSummaryDoesNotDismissChildren() {
+    public void testRetractingLifetimeExtendedSummaryDoesNotDismissChildren() {
         // GIVEN A notif group with one summary and two children
         mCollection.addNotificationLifetimeExtender(mExtender1);
         CollectionEvent notif1 = postNotif(
@@ -448,15 +464,16 @@ public class NotifCollectionTest extends SysuiTestCase {
         NotificationEntry entry2 = mCollectionListener.getEntry(notif2.key);
         NotificationEntry entry3 = mCollectionListener.getEntry(notif3.key);
 
-        // GIVEN that the summary and one child are retracted, but both are lifetime-extended
+        // GIVEN that the summary and one child are retracted by the app, but both are
+        // lifetime-extended
         mExtender1.shouldExtendLifetime = true;
-        mNoMan.retractNotif(notif1.sbn, REASON_CANCEL);
-        mNoMan.retractNotif(notif2.sbn, REASON_CANCEL);
+        mNoMan.retractNotif(notif1.sbn, REASON_APP_CANCEL);
+        mNoMan.retractNotif(notif2.sbn, REASON_APP_CANCEL);
         assertEquals(
                 new ArraySet<>(List.of(entry1, entry2, entry3)),
                 new ArraySet<>(mCollection.getAllNotifs()));
 
-        // WHEN the summary is dismissed by the user
+        // WHEN the summary is retracted by the app
         mCollection.dismissNotification(entry1, defaultStats(entry1));
 
         // THEN the summary is removed, but both children stick around
@@ -465,6 +482,28 @@ public class NotifCollectionTest extends SysuiTestCase {
                 new ArraySet<>(mCollection.getAllNotifs()));
         assertEquals(NOT_DISMISSED, entry2.getDismissState());
         assertEquals(NOT_DISMISSED, entry3.getDismissState());
+    }
+
+    @Test
+    public void testNMSReportsUserDismissalAlwaysRemovesNotif() throws RemoteException {
+        // GIVEN notifications are lifetime extended
+        mExtender1.shouldExtendLifetime = true;
+        CollectionEvent notif = postNotif(buildNotif(TEST_PACKAGE, 1, "myTag"));
+        CollectionEvent notif2 = postNotif(buildNotif(TEST_PACKAGE, 2, "myTag"));
+        NotificationEntry entry = mCollectionListener.getEntry(notif.key);
+        NotificationEntry entry2 = mCollectionListener.getEntry(notif2.key);
+        assertEquals(
+                new ArraySet<>(List.of(entry, entry2)),
+                new ArraySet<>(mCollection.getAllNotifs()));
+
+        // WHEN the notifications are reported to be dismissed by the user by NMS
+        mNoMan.retractNotif(notif.sbn, REASON_CANCEL);
+        mNoMan.retractNotif(notif2.sbn, REASON_CLICK);
+
+        // THEN the notifications are removed b/c they were dismissed by the user
+        assertEquals(
+                new ArraySet<>(List.of()),
+                new ArraySet<>(mCollection.getAllNotifs()));
     }
 
     @Test
@@ -493,8 +532,6 @@ public class NotifCollectionTest extends SysuiTestCase {
         // THEN we never send the dismissal to system server
         verify(mStatusBarService, never()).onNotificationClear(
                 notif.sbn.getPackageName(),
-                notif.sbn.getTag(),
-                47,
                 notif.sbn.getUser().getIdentifier(),
                 notif.sbn.getKey(),
                 stats.dismissalSurface,
@@ -531,8 +568,6 @@ public class NotifCollectionTest extends SysuiTestCase {
         // THEN the notification is never sent to system server to dismiss
         verify(mStatusBarService, never()).onNotificationClear(
                 eq(notif.sbn.getPackageName()),
-                eq(notif.sbn.getTag()),
-                eq(47),
                 eq(notif.sbn.getUser().getIdentifier()),
                 eq(notif.sbn.getKey()),
                 anyInt(),
@@ -561,8 +596,6 @@ public class NotifCollectionTest extends SysuiTestCase {
         // THEN we send the dismissal to system server
         verify(mStatusBarService).onNotificationClear(
                 eq(notif.sbn.getPackageName()),
-                eq(notif.sbn.getTag()),
-                eq(47),
                 eq(notif.sbn.getUser().getIdentifier()),
                 eq(notif.sbn.getKey()),
                 anyInt(),
@@ -821,13 +854,13 @@ public class NotifCollectionTest extends SysuiTestCase {
         NotifEvent notif2 = mNoMan.postNotif(buildNotif(TEST_PACKAGE2, 88));
         NotificationEntry entry2 = mCollectionListener.getEntry(notif2.key);
 
-        // WHEN a notification is removed
-        mNoMan.retractNotif(notif2.sbn, REASON_CLICK);
+        // WHEN a notification is removed by the app
+        mNoMan.retractNotif(notif2.sbn, REASON_APP_CANCEL);
 
         // THEN each extender is asked whether to extend, even if earlier ones return true
-        verify(mExtender1).shouldExtendLifetime(entry2, REASON_CLICK);
-        verify(mExtender2).shouldExtendLifetime(entry2, REASON_CLICK);
-        verify(mExtender3).shouldExtendLifetime(entry2, REASON_CLICK);
+        verify(mExtender1).shouldExtendLifetime(entry2, REASON_APP_CANCEL);
+        verify(mExtender2).shouldExtendLifetime(entry2, REASON_APP_CANCEL);
+        verify(mExtender3).shouldExtendLifetime(entry2, REASON_APP_CANCEL);
 
         // THEN the entry is not removed
         assertTrue(mCollection.getAllNotifs().contains(entry2));
@@ -1090,8 +1123,6 @@ public class NotifCollectionTest extends SysuiTestCase {
         // THEN we send the dismissals to system server
         verify(mStatusBarService).onNotificationClear(
                 notif1.sbn.getPackageName(),
-                notif1.sbn.getTag(),
-                47,
                 notif1.sbn.getUser().getIdentifier(),
                 notif1.sbn.getKey(),
                 stats1.dismissalSurface,
@@ -1100,8 +1131,6 @@ public class NotifCollectionTest extends SysuiTestCase {
 
         verify(mStatusBarService).onNotificationClear(
                 notif2.sbn.getPackageName(),
-                notif2.sbn.getTag(),
-                88,
                 notif2.sbn.getUser().getIdentifier(),
                 notif2.sbn.getKey(),
                 stats2.dismissalSurface,
@@ -1261,6 +1290,115 @@ public class NotifCollectionTest extends SysuiTestCase {
         verify(mInterceptor3, never()).shouldInterceptDismissal(clearable);
     }
 
+    @Test
+    public void testClearNotificationDoesntThrowIfMissing() {
+        // GIVEN that enough time has passed that we're beyond the forgiveness window
+        mClock.advanceTime(5001);
+
+        // WHEN we get a remove event for a notification we don't know about
+        final NotificationEntry container = new NotificationEntryBuilder()
+                .setPkg(TEST_PACKAGE)
+                .setId(47)
+                .build();
+        mNotifHandler.onNotificationRemoved(
+                container.getSbn(),
+                new RankingMap(new Ranking[]{ container.getRanking() }));
+
+        // THEN the event is ignored
+        verify(mCollectionListener, never()).onEntryRemoved(any(NotificationEntry.class), anyInt());
+    }
+
+    @Test
+    public void testClearNotificationDoesntThrowIfInForgivenessWindow() {
+        // GIVEN that some time has passed but we're still within the initialization forgiveness
+        // window
+        mClock.advanceTime(4999);
+
+        // WHEN we get a remove event for a notification we don't know about
+        final NotificationEntry container = new NotificationEntryBuilder()
+                .setPkg(TEST_PACKAGE)
+                .setId(47)
+                .build();
+        mNotifHandler.onNotificationRemoved(
+                container.getSbn(),
+                new RankingMap(new Ranking[]{ container.getRanking() }));
+
+        // THEN no exception is thrown, but no event is fired
+        verify(mCollectionListener, never()).onEntryRemoved(any(NotificationEntry.class), anyInt());
+    }
+
+    private Runnable getInternalNotifUpdateRunnable(StatusBarNotification sbn) {
+        InternalNotifUpdater updater = mCollection.getInternalNotifUpdater("Test");
+        updater.onInternalNotificationUpdate(sbn, "reason");
+        ArgumentCaptor<Runnable> runnableCaptor = ArgumentCaptor.forClass(Runnable.class);
+        verify(mMainHandler).post(runnableCaptor.capture());
+        return runnableCaptor.getValue();
+    }
+
+    @Test
+    public void testGetInternalNotifUpdaterPostsToMainHandler() {
+        InternalNotifUpdater updater = mCollection.getInternalNotifUpdater("Test");
+        updater.onInternalNotificationUpdate(mock(StatusBarNotification.class), "reason");
+        verify(mMainHandler).post(any());
+    }
+
+    @Test
+    public void testSecondPostCallsUpdateWithTrue() {
+        // GIVEN a pipeline with one notification
+        NotifEvent notifEvent = mNoMan.postNotif(buildNotif(TEST_PACKAGE, 47, "myTag"));
+        NotificationEntry entry = mCollectionListener.getEntry(notifEvent.key);
+
+        // KNOWING that it already called listener methods once
+        verify(mCollectionListener).onEntryAdded(eq(entry));
+        verify(mCollectionListener).onRankingApplied();
+
+        // WHEN we update the notification via the system
+        mNoMan.postNotif(buildNotif(TEST_PACKAGE, 47, "myTag"));
+
+        // THEN entry updated gets called, added does not, and ranking is called again
+        verify(mCollectionListener).onEntryUpdated(eq(entry));
+        verify(mCollectionListener).onEntryUpdated(eq(entry), eq(true));
+        verify(mCollectionListener).onEntryAdded((entry));
+        verify(mCollectionListener, times(2)).onRankingApplied();
+    }
+
+    @Test
+    public void testInternalNotifUpdaterCallsUpdate() {
+        // GIVEN a pipeline with one notification
+        NotifEvent notifEvent = mNoMan.postNotif(buildNotif(TEST_PACKAGE, 47, "myTag"));
+        NotificationEntry entry = mCollectionListener.getEntry(notifEvent.key);
+
+        // KNOWING that it will call listener methods once
+        verify(mCollectionListener).onEntryAdded(eq(entry));
+        verify(mCollectionListener).onRankingApplied();
+
+        // WHEN we update that notification internally
+        StatusBarNotification sbn = notifEvent.sbn;
+        getInternalNotifUpdateRunnable(sbn).run();
+
+        // THEN only entry updated gets called a second time
+        verify(mCollectionListener).onEntryAdded(eq(entry));
+        verify(mCollectionListener).onRankingApplied();
+        verify(mCollectionListener).onEntryUpdated(eq(entry));
+        verify(mCollectionListener).onEntryUpdated(eq(entry), eq(false));
+    }
+
+    @Test
+    public void testInternalNotifUpdaterIgnoresNew() {
+        // GIVEN a pipeline without any notifications
+        StatusBarNotification sbn = buildNotif(TEST_PACKAGE, 47, "myTag").build().getSbn();
+
+        // WHEN we internally update an unknown notification
+        getInternalNotifUpdateRunnable(sbn).run();
+
+        // THEN only entry updated gets called a second time
+        verify(mCollectionListener, never()).onEntryAdded(any());
+        verify(mCollectionListener, never()).onRankingUpdate(any());
+        verify(mCollectionListener, never()).onRankingApplied();
+        verify(mCollectionListener, never()).onEntryUpdated(any());
+        verify(mCollectionListener, never()).onEntryUpdated(any(), anyBoolean());
+    }
+
     private static NotificationEntryBuilder buildNotif(String pkg, int id, String tag) {
         return new NotificationEntryBuilder()
                 .setPkg(pkg)
@@ -1311,6 +1449,11 @@ public class NotifCollectionTest extends SysuiTestCase {
         }
 
         @Override
+        public void onEntryUpdated(NotificationEntry entry, boolean fromSystem) {
+            onEntryUpdated(entry);
+        }
+
+        @Override
         public void onEntryRemoved(NotificationEntry entry, int reason) {
         }
 
@@ -1345,25 +1488,26 @@ public class NotifCollectionTest extends SysuiTestCase {
             mName = name;
         }
 
+        @NonNull
         @Override
         public String getName() {
             return mName;
         }
 
         @Override
-        public void setCallback(OnEndLifetimeExtensionCallback callback) {
+        public void setCallback(@NonNull OnEndLifetimeExtensionCallback callback) {
             this.callback = callback;
         }
 
         @Override
         public boolean shouldExtendLifetime(
-                NotificationEntry entry,
+                @NonNull NotificationEntry entry,
                 @CancellationReason int reason) {
             return shouldExtendLifetime;
         }
 
         @Override
-        public void cancelLifetimeExtension(NotificationEntry entry) {
+        public void cancelLifetimeExtension(@NonNull NotificationEntry entry) {
             if (onCancelLifetimeExtension != null) {
                 onCancelLifetimeExtension.run();
             }

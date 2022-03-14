@@ -18,9 +18,8 @@ package com.android.systemui.shared.system;
 
 import android.graphics.Matrix;
 import android.graphics.Rect;
-import android.view.Surface;
-import android.view.SurfaceControl.Transaction;
 import android.view.SurfaceControl;
+import android.view.SurfaceControl.Transaction;
 
 public class TransactionCompat {
 
@@ -66,6 +65,11 @@ public class TransactionCompat {
         return this;
     }
 
+    public TransactionCompat setOpaque(SurfaceControlCompat surfaceControl, boolean opaque) {
+        mTransaction.setOpaque(surfaceControl.mSurfaceControl, opaque);
+        return this;
+    }
+
     public TransactionCompat setMatrix(SurfaceControlCompat surfaceControl, float dsdx, float dtdx,
             float dtdy, float dsdy) {
         mTransaction.setMatrix(surfaceControl.mSurfaceControl, dsdx, dtdx, dtdy, dsdy);
@@ -93,20 +97,13 @@ public class TransactionCompat {
         return this;
     }
 
-    public TransactionCompat deferTransactionUntil(SurfaceControlCompat surfaceControl,
-            SurfaceControl barrier, long frameNumber) {
-        mTransaction.deferTransactionUntil(surfaceControl.mSurfaceControl, barrier,
-                frameNumber);
-        return this;
-    }
-
-    public TransactionCompat setEarlyWakeup() {
-        mTransaction.setEarlyWakeup();
-        return this;
-    }
-
     public TransactionCompat setColor(SurfaceControlCompat surfaceControl, float[] color) {
         mTransaction.setColor(surfaceControl.mSurfaceControl, color);
         return this;
+    }
+
+    public static void setRelativeLayer(Transaction t, SurfaceControl surfaceControl,
+            SurfaceControl relativeTo, int z) {
+        t.setRelativeLayer(surfaceControl, relativeTo, z);
     }
 }

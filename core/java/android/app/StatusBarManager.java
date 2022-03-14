@@ -26,6 +26,8 @@ import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.os.Binder;
+import android.os.Build;
+import android.os.Bundle;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.os.ServiceManager;
@@ -34,6 +36,7 @@ import android.util.Slog;
 import android.view.View;
 
 import com.android.internal.statusbar.IStatusBarService;
+import com.android.internal.statusbar.NotificationVisibility;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -43,7 +46,7 @@ import java.lang.annotation.RetentionPolicy;
  */
 @SystemService(Context.STATUS_BAR_SERVICE)
 public class StatusBarManager {
-
+    // LINT.IfChange
     /** @hide */
     public static final int DISABLE_EXPAND = View.STATUS_BAR_DISABLE_EXPAND;
     /** @hide */
@@ -54,7 +57,7 @@ public class StatusBarManager {
 
     /** @hide */
     @Deprecated
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final int DISABLE_NOTIFICATION_TICKER
             = View.STATUS_BAR_DISABLE_NOTIFICATION_TICKER;
     /** @hide */
@@ -71,6 +74,9 @@ public class StatusBarManager {
     public static final int DISABLE_SEARCH = View.STATUS_BAR_DISABLE_SEARCH;
 
     /** @hide */
+    public static final int DISABLE_ONGOING_CALL_CHIP = View.STATUS_BAR_DISABLE_ONGOING_CALL_CHIP;
+
+    /** @hide */
     @Deprecated
     public static final int DISABLE_NAVIGATION =
             View.STATUS_BAR_DISABLE_HOME | View.STATUS_BAR_DISABLE_RECENT;
@@ -82,7 +88,7 @@ public class StatusBarManager {
     public static final int DISABLE_MASK = DISABLE_EXPAND | DISABLE_NOTIFICATION_ICONS
             | DISABLE_NOTIFICATION_ALERTS | DISABLE_NOTIFICATION_TICKER
             | DISABLE_SYSTEM_INFO | DISABLE_RECENT | DISABLE_HOME | DISABLE_BACK | DISABLE_CLOCK
-            | DISABLE_SEARCH;
+            | DISABLE_SEARCH | DISABLE_ONGOING_CALL_CHIP;
 
     /** @hide */
     @IntDef(flag = true, prefix = {"DISABLE_"}, value = {
@@ -96,7 +102,8 @@ public class StatusBarManager {
             DISABLE_RECENT,
             DISABLE_BACK,
             DISABLE_CLOCK,
-            DISABLE_SEARCH
+            DISABLE_SEARCH,
+            DISABLE_ONGOING_CALL_CHIP
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface DisableFlags {}
@@ -137,6 +144,7 @@ public class StatusBarManager {
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface Disable2Flags {}
+    // LINT.ThenChange(frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/DisableFlagsLogger.kt)
 
     /**
      * Default disable flags for setup
@@ -262,6 +270,45 @@ public class StatusBarManager {
     }
 
     /**
+     * Simulate notification click for testing
+     *
+     * @hide
+     */
+    @TestApi
+    public void clickNotification(@Nullable String key, int rank, int count, boolean visible) {
+        clickNotificationInternal(key, rank, count, visible);
+    }
+
+    private void clickNotificationInternal(String key, int rank, int count, boolean visible) {
+        try {
+            final IStatusBarService svc = getService();
+            if (svc != null) {
+                svc.onNotificationClick(key,
+                        NotificationVisibility.obtain(key, rank, count, visible));
+            }
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Simulate notification feedback for testing
+     *
+     * @hide
+     */
+    @TestApi
+    public void sendNotificationFeedback(@Nullable String key, @Nullable Bundle feedback) {
+        try {
+            final IStatusBarService svc = getService();
+            if (svc != null) {
+                svc.onNotificationFeedbackReceived(key, feedback);
+            }
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Expand the notifications panel.
      *
      * @hide
@@ -282,15 +329,59 @@ public class StatusBarManager {
     /**
      * Collapse the notifications and settings panels.
      *
+     * Starting in Android {@link Build.VERSION_CODES.S}, apps targeting SDK level {@link
+     * Build.VERSION_CODES.S} or higher will need {@link android.Manifest.permission.STATUS_BAR}
+     * permission to call this API.
+     *
      * @hide
      */
-    @UnsupportedAppUsage
+    @RequiresPermission(android.Manifest.permission.STATUS_BAR)
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, publicAlternatives = "This operation"
+            + " is not allowed anymore, please see {@link android.content"
+            + ".Intent#ACTION_CLOSE_SYSTEM_DIALOGS} for more details.")
     @TestApi
     public void collapsePanels() {
+
         try {
             final IStatusBarService svc = getService();
             if (svc != null) {
                 svc.collapsePanels();
+            }
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Toggles the notification panel.
+     *
+     * @hide
+     */
+    @RequiresPermission(android.Manifest.permission.STATUS_BAR)
+    @TestApi
+    public void togglePanel() {
+        try {
+            final IStatusBarService svc = getService();
+            if (svc != null) {
+                svc.togglePanel();
+            }
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Sends system keys to the status bar.
+     *
+     * @hide
+     */
+    @RequiresPermission(android.Manifest.permission.STATUS_BAR)
+    @TestApi
+    public void handleSystemKey(int key) {
+        try {
+            final IStatusBarService svc = getService();
+            if (svc != null) {
+                svc.handleSystemKey(key);
             }
         } catch (RemoteException ex) {
             throw ex.rethrowFromSystemServer();
@@ -313,7 +404,7 @@ public class StatusBarManager {
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void expandSettingsPanel(@Nullable String subPanel) {
         try {
             final IStatusBarService svc = getService();
@@ -326,7 +417,7 @@ public class StatusBarManager {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void setIcon(String slot, int iconId, int iconLevel, String contentDescription) {
         try {
             final IStatusBarService svc = getService();
@@ -340,7 +431,7 @@ public class StatusBarManager {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void removeIcon(String slot) {
         try {
             final IStatusBarService svc = getService();
@@ -353,7 +444,7 @@ public class StatusBarManager {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void setIconVisibility(String slot, boolean visible) {
         try {
             final IStatusBarService svc = getService();
@@ -374,7 +465,6 @@ public class StatusBarManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(android.Manifest.permission.STATUS_BAR)
     public void setDisabledForSetup(boolean disabled) {
         try {
@@ -400,8 +490,9 @@ public class StatusBarManager {
      * @hide
      */
     @TestApi
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
     @RequiresPermission(android.Manifest.permission.STATUS_BAR)
-    public void setDisabledForSimNetworkLock(boolean disabled) {
+    public void setExpansionDisabledForSimNetworkLock(boolean disabled) {
         try {
             final int userId = Binder.getCallingUserHandle().getIdentifier();
             final IStatusBarService svc = getService();
@@ -422,7 +513,6 @@ public class StatusBarManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(android.Manifest.permission.STATUS_BAR)
     @NonNull
     public DisableInfo getDisableInfo() {
@@ -455,7 +545,6 @@ public class StatusBarManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final class DisableInfo {
 
         private boolean mStatusBarExpansion;
@@ -488,7 +577,6 @@ public class StatusBarManager {
          * @hide
          */
         @SystemApi
-        @TestApi
         public boolean isStatusBarExpansionDisabled() {
             return mStatusBarExpansion;
         }
@@ -504,7 +592,6 @@ public class StatusBarManager {
          * @hide
          */
         @SystemApi
-        @TestApi
         public boolean isNavigateToHomeDisabled() {
             return mNavigateHome;
         }
@@ -520,7 +607,6 @@ public class StatusBarManager {
          * @hide
          */
         @SystemApi
-        @TestApi
         public boolean isNotificationPeekingDisabled() {
             return mNotificationPeeking;
         }
@@ -536,7 +622,6 @@ public class StatusBarManager {
          * @hide
          */
         @SystemApi
-        @TestApi
         public boolean isRecentsDisabled() {
             return mRecents;
         }
@@ -552,7 +637,6 @@ public class StatusBarManager {
          * @hide
          */
         @SystemApi
-        @TestApi
         public boolean isSearchDisabled() {
             return mSearch;
         }
@@ -610,7 +694,6 @@ public class StatusBarManager {
          * @hide
          */
         @SystemApi
-        @TestApi
         public boolean areAllComponentsEnabled() {
             return !mStatusBarExpansion && !mNavigateHome && !mNotificationPeeking && !mRecents
                     && !mSearch && !mSystemIcons && !mClock && !mNotificationIcons;

@@ -16,45 +16,173 @@
 
 package com.android.keyguard;
 
-import android.content.Context;
-import android.test.UiThreadTest;
-import android.view.LayoutInflater;
+import static android.view.WindowInsets.Type.ime;
+import static android.view.WindowInsets.Type.systemBars;
+
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import android.graphics.Insets;
+import android.testing.AndroidTestingRunner;
+import android.testing.TestableLooper;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.widget.FrameLayout;
 
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
-import com.android.systemui.R;
 import com.android.systemui.SysuiTestCase;
-import com.android.systemui.statusbar.policy.KeyguardStateController;
 
+import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 @SmallTest
-@RunWith(AndroidJUnit4.class)
+@RunWith(AndroidTestingRunner.class)
+@TestableLooper.RunWithLooper()
 public class KeyguardSecurityContainerTest extends SysuiTestCase {
+    private static final int SCREEN_WIDTH = 1600;
+    private static final int FAKE_MEASURE_SPEC =
+            View.MeasureSpec.makeMeasureSpec(SCREEN_WIDTH, View.MeasureSpec.EXACTLY);
 
-    @UiThreadTest
+    @Rule
+    public MockitoRule mRule = MockitoJUnit.rule();
+
+    @Mock
+    private WindowInsetsController mWindowInsetsController;
+
+    @Mock
+    private KeyguardSecurityViewFlipper mSecurityViewFlipper;
+
+    private KeyguardSecurityContainer mKeyguardSecurityContainer;
+
+    @Before
+    public void setup() {
+        // Needed here, otherwise when mKeyguardSecurityContainer is created below, it'll cache
+        // the real references (rather than the TestableResources that this call creates).
+        mContext.ensureTestableResources();
+        FrameLayout.LayoutParams securityViewFlipperLayoutParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+
+        when(mSecurityViewFlipper.getWindowInsetsController()).thenReturn(mWindowInsetsController);
+        when(mSecurityViewFlipper.getLayoutParams()).thenReturn(securityViewFlipperLayoutParams);
+        mKeyguardSecurityContainer = new KeyguardSecurityContainer(getContext());
+        mKeyguardSecurityContainer.mSecurityViewFlipper = mSecurityViewFlipper;
+        mKeyguardSecurityContainer.addView(mSecurityViewFlipper, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
     @Test
-    public void showSecurityScreen_canInflateAllModes() {
-        mDependency.injectMockDependency(KeyguardStateController.class);
-        KeyguardSecurityContainer keyguardSecurityContainer =
-                new KeyguardSecurityContainer(getContext());
+    public void onMeasure_usesHalfWidthWithOneHandedModeEnabled() {
+        mKeyguardSecurityContainer.setOneHandedMode(/* oneHandedMode= */true);
 
-        Context context = getContext();
+        int halfWidthMeasureSpec =
+                View.MeasureSpec.makeMeasureSpec(SCREEN_WIDTH / 2, View.MeasureSpec.EXACTLY);
+        mKeyguardSecurityContainer.onMeasure(FAKE_MEASURE_SPEC, FAKE_MEASURE_SPEC);
 
-        for (int theme : new int[] {R.style.Theme_SystemUI, R.style.Theme_SystemUI_Light}) {
-            context.setTheme(theme);
-            final LayoutInflater inflater = LayoutInflater.from(context);
-            KeyguardSecurityModel.SecurityMode[] modes =
-                    KeyguardSecurityModel.SecurityMode.values();
-            for (KeyguardSecurityModel.SecurityMode mode : modes) {
-                final int resId = keyguardSecurityContainer.getLayoutIdFor(mode);
-                if (resId == 0) {
-                    continue;
-                }
-                inflater.inflate(resId, null /* root */, false /* attach */);
-            }
-        }
+        verify(mSecurityViewFlipper).measure(halfWidthMeasureSpec, FAKE_MEASURE_SPEC);
+    }
+
+    @Test
+    public void onMeasure_usesFullWidthWithOneHandedModeDisabled() {
+        mKeyguardSecurityContainer.setOneHandedMode(/* oneHandedMode= */false);
+
+        mKeyguardSecurityContainer.measure(FAKE_MEASURE_SPEC, FAKE_MEASURE_SPEC);
+        verify(mSecurityViewFlipper).measure(FAKE_MEASURE_SPEC, FAKE_MEASURE_SPEC);
+    }
+
+    @Test
+    public void onMeasure_respectsViewInsets() {
+        int imeInsetAmount = 100;
+        int systemBarInsetAmount = 10;
+
+        mKeyguardSecurityContainer.setOneHandedMode(/* oneHandedMode= */false);
+
+        Insets imeInset = Insets.of(0, 0, 0, imeInsetAmount);
+        Insets systemBarInset = Insets.of(0, 0, 0, systemBarInsetAmount);
+
+        WindowInsets insets = new WindowInsets.Builder()
+                .setInsets(ime(), imeInset)
+                .setInsetsIgnoringVisibility(systemBars(), systemBarInset)
+                .build();
+
+        // It's reduced by the max of the systembar and IME, so just subtract IME inset.
+        int expectedHeightMeasureSpec = View.MeasureSpec.makeMeasureSpec(
+                SCREEN_WIDTH - imeInsetAmount, View.MeasureSpec.EXACTLY);
+
+        mKeyguardSecurityContainer.onApplyWindowInsets(insets);
+        mKeyguardSecurityContainer.measure(FAKE_MEASURE_SPEC, FAKE_MEASURE_SPEC);
+        verify(mSecurityViewFlipper).measure(FAKE_MEASURE_SPEC, expectedHeightMeasureSpec);
+    }
+
+    @Test
+    public void onMeasure_respectsViewInsets_largerSystembar() {
+        int imeInsetAmount = 0;
+        int systemBarInsetAmount = 10;
+
+        mKeyguardSecurityContainer.setOneHandedMode(/* oneHandedMode= */false);
+
+        Insets imeInset = Insets.of(0, 0, 0, imeInsetAmount);
+        Insets systemBarInset = Insets.of(0, 0, 0, systemBarInsetAmount);
+
+        WindowInsets insets = new WindowInsets.Builder()
+                .setInsets(ime(), imeInset)
+                .setInsetsIgnoringVisibility(systemBars(), systemBarInset)
+                .build();
+
+        int expectedHeightMeasureSpec = View.MeasureSpec.makeMeasureSpec(
+                SCREEN_WIDTH - systemBarInsetAmount, View.MeasureSpec.EXACTLY);
+
+        mKeyguardSecurityContainer.onApplyWindowInsets(insets);
+        mKeyguardSecurityContainer.measure(FAKE_MEASURE_SPEC, FAKE_MEASURE_SPEC);
+        verify(mSecurityViewFlipper).measure(FAKE_MEASURE_SPEC, expectedHeightMeasureSpec);
+    }
+
+    private void setupForUpdateKeyguardPosition(boolean oneHandedMode) {
+        mKeyguardSecurityContainer.setOneHandedMode(oneHandedMode);
+        mKeyguardSecurityContainer.setOneHandedModeLeftAligned(true, false);
+
+        mKeyguardSecurityContainer.measure(FAKE_MEASURE_SPEC, FAKE_MEASURE_SPEC);
+        mKeyguardSecurityContainer.layout(0, 0, SCREEN_WIDTH, SCREEN_WIDTH);
+
+        // Clear any interactions with the mock so we know the interactions definitely come from the
+        // below testing.
+        reset(mSecurityViewFlipper);
+    }
+
+    @Test
+    public void setIsLeftAligned_movesKeyguard() {
+        setupForUpdateKeyguardPosition(/* oneHandedMode= */ true);
+
+        mKeyguardSecurityContainer.setOneHandedModeLeftAligned(
+                /* leftAligned= */false, /* animate= */false);
+        verify(mSecurityViewFlipper).setTranslationX(
+                mKeyguardSecurityContainer.getWidth() - mSecurityViewFlipper.getWidth());
+
+        mKeyguardSecurityContainer.setOneHandedModeLeftAligned(
+                /* leftAligned= */true, /* animate= */false);
+        verify(mSecurityViewFlipper).setTranslationX(0.0f);
+    }
+
+    @Test
+    public void setIsLeftAligned_doesntMoveTwoHandedKeyguard() {
+        setupForUpdateKeyguardPosition(/* oneHandedMode= */ false);
+
+        mKeyguardSecurityContainer.setOneHandedModeLeftAligned(
+                /* leftAligned= */false, /* animate= */false);
+        verify(mSecurityViewFlipper, never()).setTranslationX(anyInt());
+
+        mKeyguardSecurityContainer.setOneHandedModeLeftAligned(
+                /* leftAligned= */true, /* animate= */false);
+        verify(mSecurityViewFlipper, never()).setTranslationX(anyInt());
     }
 }

@@ -24,11 +24,18 @@ import android.os.Bundle;
  * @hide
  */
 oneway interface IMediaRouter2 {
-    void notifyRestoreRoute();
+    void notifyRouterRegistered(in List<MediaRoute2Info> currentRoutes,
+            in RoutingSessionInfo currentSystemSessionInfo);
     void notifyRoutesAdded(in List<MediaRoute2Info> routes);
     void notifyRoutesRemoved(in List<MediaRoute2Info> routes);
     void notifyRoutesChanged(in List<MediaRoute2Info> routes);
     void notifySessionCreated(int requestId, in @nullable RoutingSessionInfo sessionInfo);
     void notifySessionInfoChanged(in RoutingSessionInfo sessionInfo);
     void notifySessionReleased(in RoutingSessionInfo sessionInfo);
+    /**
+     * Gets hints of the new session for the given route.
+     * Call MediaRouterService#requestCreateSessionWithRouter2 to pass the result.
+     */
+    void requestCreateSessionByManager(long uniqueRequestId, in RoutingSessionInfo oldSession,
+        in MediaRoute2Info route);
 }

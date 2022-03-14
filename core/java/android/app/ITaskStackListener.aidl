@@ -18,6 +18,7 @@ package android.app;
 
 import android.app.ActivityManager;
 import android.content.ComponentName;
+import android.window.TaskSnapshot;
 
 /** @hide */
 oneway interface ITaskStackListener {
@@ -43,9 +44,10 @@ oneway interface ITaskStackListener {
      * @param homeVisible whether or not the home task is visible
      * @param clearedTask whether or not the launch activity also cleared the task as a part of
      * starting
+     * @param wasVisible whether the activity was visible before the restart attempt
      */
     void onActivityRestartAttempt(in ActivityManager.RunningTaskInfo task, boolean homeTaskVisible,
-            boolean clearedTask);
+            boolean clearedTask, boolean wasVisible);
 
     /**
      * Called when we launched an activity that we forced to be resizable.
@@ -58,9 +60,9 @@ oneway interface ITaskStackListener {
     void onActivityForcedResizable(String packageName, int taskId, int reason);
 
     /**
-     * Called when we launched an activity that dismissed the docked stack.
+     * Called when we launched an activity that dismissed the docked task.
      */
-    void onActivityDismissingDockedStack();
+    void onActivityDismissingDockedTask();
 
     /**
      * Called when an activity was requested to be launched on a secondary display but was not
@@ -140,19 +142,7 @@ oneway interface ITaskStackListener {
     /**
      * Called when a task snapshot got updated.
      */
-    void onTaskSnapshotChanged(int taskId, in ActivityManager.TaskSnapshot snapshot);
-
-    /**
-     * Called when the resumed activity is in size compatibility mode and its override configuration
-     * is different from the current one of system.
-     *
-     * @param displayId Id of the display where the activity resides.
-     * @param activityToken Token of the size compatibility mode activity. It will be null when
-     *                      switching to a activity that is not in size compatibility mode or the
-     *                      configuration of the activity.
-     * @see com.android.server.wm.ActivityRecord#inSizeCompatMode
-     */
-    void onSizeCompatModeActivityChanged(int displayId, in IBinder activityToken);
+    void onTaskSnapshotChanged(int taskId, in TaskSnapshot snapshot);
 
     /**
      * Reports that an Activity received a back key press when there were no additional activities
@@ -161,21 +151,6 @@ oneway interface ITaskStackListener {
      * @param taskInfo info about the task which received the back press
      */
     void onBackPressedOnTaskRoot(in ActivityManager.RunningTaskInfo taskInfo);
-
-    /*
-     * Called when contents are drawn for the first time on a display which can only contain one
-     * task.
-     *
-     * @param displayId the id of the display on which contents are drawn.
-     */
-    void onSingleTaskDisplayDrawn(int displayId);
-
-    /*
-     * Called when the last task is removed from a display which can only contain one task.
-     *
-     * @param displayId the id of the display from which the window is removed.
-     */
-    void onSingleTaskDisplayEmpty(int displayId);
 
     /**
      * Called when a task is reparented to a stack on a different display.
@@ -204,4 +179,40 @@ oneway interface ITaskStackListener {
      * @param {@code true} if the task got focus, {@code false} if it lost it.
      */
     void onTaskFocusChanged(int taskId, boolean focused);
+
+    /**
+     * Called when a task changes its requested orientation. It is different from {@link
+     * #onActivityRequestedOrientationChanged(int, int)} in the sense that this method is called
+     * when a task changes requested orientation due to activity launch, dimiss or reparenting.
+     *
+     * @param taskId id of the task.
+     * @param requestedOrientation the new requested orientation of this task as screen orientations
+     *                             in {@link android.content.pm.ActivityInfo}.
+     */
+     void onTaskRequestedOrientationChanged(int taskId, int requestedOrientation);
+
+    /**
+     * Called when a rotation is about to start on the foreground activity.
+     * This applies for:
+     *   * free sensor rotation
+     *   * forced rotation
+     *   * rotation settings set through adb command line
+     *   * rotation that occurs when rotation tile is toggled in quick settings
+     *
+     * @param displayId id of the display where activity will rotate
+     */
+     void onActivityRotation(int displayId);
+
+    /**
+     * Called when a task is moved to the back behind the home stack.
+     *
+     * @param taskInfo info about the task which moved
+     */
+    void onTaskMovedToBack(in ActivityManager.RunningTaskInfo taskInfo);
+
+    /**
+     * Called when the lock task mode changes. See ActivityManager#LOCK_TASK_MODE_* and
+     * LockTaskController.
+     */
+    void onLockTaskModeChanged(int mode);
 }

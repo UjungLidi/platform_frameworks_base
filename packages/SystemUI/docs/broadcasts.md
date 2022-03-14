@@ -30,9 +30,20 @@ Additionally, the dispatcher supports the following:
 
 If introducing a new `BroadcastReceiver` (not declared in `AndroidManifest`) that satisfies the constraints above, use the dispatcher to reduce the load on `system_server`.
 
-Do not use the dispatcher to obtain the last broadcast (by passing a null `BroadcastReceiver`). `BroadcastDispatcher#registerReceiver` **does not** return the last sticky Intent.
-
 Additionally, if listening to some broadcast is latency critical (beyond 100ms of latency), consider registering with Context instead.
+
+### A note on sticky broadcasts
+
+Sticky broadcasts are those that have been sent using `Context#sendStickyBroadcast` or `Context#sendStickyBroadcastAsUser`. In general they behave like regular broadcasts, but they are also cached (they may be replaced later) to provide the following two features:
+ * They may be returned by `Context#registerReceiver` if the broadcast is matched by the `IntentFilter`. In case that multiple cached broadcast match the filter, any one of those may be returned.
+ * All cached sticky broadcasts that match the filter will be sent to the just registered `BroadcastReceiver#onReceive`.
+
+Sticky broadcasts are `@Deprecated` since API 24 and the general recommendation is to use regular broadcasts and API that allows to retrieve last known state.
+
+Because of this and in order to provide the necessary optimizations, `BroadcastDispatcher` does not offer support for sticky intents:
+
+* Do not use the dispatcher to obtain the last broadcast (by passing a null `BroadcastReceiver`). `BroadcastDispatcher#registerReceiver` **does not** return the last sticky Intent.
+* Do not expect cached sticky broadcasts to be delivered on registration. This may happen but it's not guaranteed.
 
 ## How do I use the dispatcher?
 
@@ -51,17 +62,17 @@ Acquire the dispatcher by using `@Inject` to obtain a `BroadcastDispatcher`. The
  * @param executor An executor to dispatch [BroadcastReceiver.onReceive]. Pass null to use an
  *                 executor in the main thread (default).
  * @param user A user handle to determine which broadcast should be dispatched to this receiver.
- *             By default, it is the current user.
+ *             Pass `null` to use the user of the context (system user in SystemUI).
  * @throws IllegalArgumentException if the filter has other constraints that are not actions or
  *                                  categories or the filter has no actions.
  */
 @JvmOverloads
-fun registerReceiver(
-        BroadcastReceiver, 
-        IntentFilter, 
-        Executor? = context.mainExecutor,
-        UserHandle = context.user
-) {
+open fun registerReceiver(
+    receiver: BroadcastReceiver,
+    filter: IntentFilter,
+    executor: Executor? = null,
+    user: UserHandle? = null
+)
 ```
 
 All subscriptions are done with the same overloaded method. As specified in the doc, in order to pass a `UserHandle` with the default `Executor`, pass `null` for the `Executor`.

@@ -23,7 +23,6 @@ import static com.android.internal.util.function.pooled.PooledLambda.obtainMessa
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
@@ -64,7 +63,6 @@ import java.lang.ref.WeakReference;
  * @hide
  */
 @SystemApi
-@TestApi
 public final class FillWindow implements AutoCloseable {
     private static final String TAG = FillWindow.class.getSimpleName();
 
@@ -208,12 +206,18 @@ public final class FillWindow implements AutoCloseable {
         if (sDebug) Log.d(TAG, "handleShow()");
         synchronized (mLock) {
             if (mWm != null && mFillView != null) {
-                p.flags |= WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH;
-                if (!mShowing) {
-                    mWm.addView(mFillView, p);
-                    mShowing = true;
-                } else {
-                    mWm.updateViewLayout(mFillView, p);
+                try {
+                    p.flags |= WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH;
+                    if (!mShowing) {
+                        mWm.addView(mFillView, p);
+                        mShowing = true;
+                    } else {
+                        mWm.updateViewLayout(mFillView, p);
+                    }
+                } catch (WindowManager.BadTokenException e) {
+                    if (sDebug) Log.d(TAG, "Filed with token " + p.token + " gone.");
+                } catch (IllegalStateException e) {
+                    if (sDebug) Log.d(TAG, "Exception showing window.");
                 }
             }
         }
@@ -223,8 +227,12 @@ public final class FillWindow implements AutoCloseable {
         if (sDebug) Log.d(TAG, "handleHide()");
         synchronized (mLock) {
             if (mWm != null && mFillView != null && mShowing) {
-                mWm.removeView(mFillView);
-                mShowing = false;
+                try {
+                    mWm.removeView(mFillView);
+                    mShowing = false;
+                } catch (IllegalStateException e) {
+                    if (sDebug) Log.d(TAG, "Exception hiding window.");
+                }
             }
         }
     }

@@ -16,6 +16,8 @@
 
 package com.android.server.accessibility;
 
+import static android.accessibilityservice.AccessibilityTrace.FLAGS_ACCESSIBILITY_INTERACTION_CONNECTION;
+import static android.accessibilityservice.AccessibilityTrace.FLAGS_WINDOW_MANAGER_INTERNAL;
 import static android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
 import static android.view.accessibility.AccessibilityEvent.WINDOWS_CHANGE_ACCESSIBILITY_FOCUSED;
 
@@ -69,6 +71,7 @@ public class AccessibilityWindowManager {
     private final AccessibilityEventSender mAccessibilityEventSender;
     private final AccessibilitySecurityPolicy mSecurityPolicy;
     private final AccessibilityUserManager mAccessibilityUserManager;
+    private final AccessibilityTraceManager mTraceManager;
 
     // Connections and window tokens for cross-user windows
     private final SparseArray<RemoteAccessibilityConnection>
@@ -151,6 +154,10 @@ public class AccessibilityWindowManager {
                 // In some cases, onWindowsForAccessibilityChanged will be called immediately in
                 // setWindowsForAccessibilityCallback. We'll lost windows if flag is false.
                 mTrackingWindows = true;
+                if (traceWMEnabled()) {
+                    logTraceWM("setWindowsForAccessibilityCallback",
+                            "displayId=" + mDisplayId + ";callback=" + this);
+                }
                 result = mWindowManagerInternal.setWindowsForAccessibilityCallback(
                         mDisplayId, this);
                 if (!result) {
@@ -167,6 +174,10 @@ public class AccessibilityWindowManager {
          */
         void stopTrackingWindowsLocked() {
             if (mTrackingWindows) {
+                if (traceWMEnabled()) {
+                    logTraceWM("setWindowsForAccessibilityCallback",
+                            "displayId=" + mDisplayId + ";callback=null");
+                }
                 mWindowManagerInternal.setWindowsForAccessibilityCallback(
                         mDisplayId, null);
                 mTrackingWindows = false;
@@ -284,11 +295,13 @@ public class AccessibilityWindowManager {
          * Computes partial interactive region of given windowId.
          *
          * @param windowId The windowId
+         * @param forceComputeRegion set outRegion when the windowId matches one on the screen even
+         *                           though the region is not covered by other windows above it.
          * @param outRegion The output to which to write the bounds.
-         * @return true if outRegion is not empty.
+         * @return {@code true} if outRegion is not empty.
          */
         boolean computePartialInteractiveRegionForWindowLocked(int windowId,
-                @NonNull Region outRegion) {
+                boolean forceComputeRegion, @NonNull Region outRegion) {
             if (mWindows == null) {
                 return false;
             }
@@ -309,6 +322,9 @@ public class AccessibilityWindowManager {
                         currentWindow.getRegionInScreen(currentWindowRegions);
                         outRegion.set(currentWindowRegions);
                         windowInteractiveRegion = outRegion;
+                        if (forceComputeRegion) {
+                            windowInteractiveRegionChanged = true;
+                        }
                         continue;
                     }
                 } else if (currentWindow.getType()
@@ -365,6 +381,20 @@ public class AccessibilityWindowManager {
                     // Someone may be waiting for the windows - advertise it.
                     mLock.notifyAll();
                 }
+            }
+        }
+
+        /**
+         * Called when the display is reparented and becomes an embedded
+         * display.
+         *
+         * @param embeddedDisplayId The embedded display Id.
+         */
+        @Override
+        public void onDisplayReparented(int embeddedDisplayId) {
+            // Removes the un-used window observer for the embedded display.
+            synchronized (mLock) {
+                mDisplayWindowsObservers.remove(embeddedDisplayId);
             }
         }
 
@@ -467,6 +497,9 @@ public class AccessibilityWindowManager {
                 return true;
             }
             if (oldWindow.displayId != newWindow.displayId) {
+                return true;
+            }
+            if (oldWindow.taskId != newWindow.taskId) {
                 return true;
             }
             return false;
@@ -669,6 +702,7 @@ public class AccessibilityWindowManager {
             reportedWindow.setAnchorId(window.accessibilityIdOfAnchor);
             reportedWindow.setPictureInPicture(window.inPictureInPicture);
             reportedWindow.setDisplayId(window.displayId);
+            reportedWindow.setTaskId(window.taskId);
 
             final int parentId = findWindowIdLocked(userId, window.parentToken);
             if (parentId >= 0) {
@@ -702,12 +736,12 @@ public class AccessibilityWindowManager {
                 case WindowManager.LayoutParams.TYPE_PHONE:
                 case WindowManager.LayoutParams.TYPE_PRIORITY_PHONE:
                 case WindowManager.LayoutParams.TYPE_TOAST:
-                case WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG: {
+                case WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG:
+                case WindowManager.LayoutParams.TYPE_INPUT_METHOD_DIALOG: {
                     return AccessibilityWindowInfo.TYPE_APPLICATION;
                 }
 
-                case WindowManager.LayoutParams.TYPE_INPUT_METHOD:
-                case WindowManager.LayoutParams.TYPE_INPUT_METHOD_DIALOG: {
+                case WindowManager.LayoutParams.TYPE_INPUT_METHOD: {
                     return AccessibilityWindowInfo.TYPE_INPUT_METHOD;
                 }
 
@@ -725,7 +759,8 @@ public class AccessibilityWindowManager {
                 case WindowManager.LayoutParams.TYPE_SYSTEM_ERROR:
                 case WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY:
                 case WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY:
-                case WindowManager.LayoutParams.TYPE_SCREENSHOT: {
+                case WindowManager.LayoutParams.TYPE_SCREENSHOT:
+                case WindowManager.LayoutParams.TYPE_ACCESSIBILITY_MAGNIFICATION_OVERLAY: {
                     return AccessibilityWindowInfo.TYPE_SYSTEM;
                 }
 
@@ -747,6 +782,13 @@ public class AccessibilityWindowManager {
          * Dumps all {@link AccessibilityWindowInfo}s here.
          */
         void dumpLocked(FileDescriptor fd, final PrintWriter pw, String[] args) {
+            pw.append("Global Info [ ");
+            pw.println("Top focused display Id = " + mTopFocusedDisplayId);
+            pw.println("     Active Window Id = " + mActiveWindowId);
+            pw.println("     Top Focused Window Id = " + mTopFocusedWindowId);
+            pw.println("     Accessibility Focused Window Id = " + mAccessibilityFocusedWindowId
+                    + " ]");
+            pw.println();
             if (mWindows != null) {
                 final int windowCount = mWindows.size();
                 for (int j = 0; j < windowCount; j++) {
@@ -831,19 +873,21 @@ public class AccessibilityWindowManager {
     }
 
     /**
-     * Constructor for AccessibilityManagerService.
+     * Constructor for AccessibilityWindowManager.
      */
     public AccessibilityWindowManager(@NonNull Object lock, @NonNull Handler handler,
             @NonNull WindowManagerInternal windowManagerInternal,
             @NonNull AccessibilityEventSender accessibilityEventSender,
             @NonNull AccessibilitySecurityPolicy securityPolicy,
-            @NonNull AccessibilityUserManager accessibilityUserManager) {
+            @NonNull AccessibilityUserManager accessibilityUserManager,
+            @NonNull AccessibilityTraceManager traceManager) {
         mLock = lock;
         mHandler = handler;
         mWindowManagerInternal = windowManagerInternal;
         mAccessibilityEventSender = accessibilityEventSender;
         mSecurityPolicy = securityPolicy;
         mAccessibilityUserManager = accessibilityUserManager;
+        mTraceManager = traceManager;
     }
 
     /**
@@ -944,6 +988,9 @@ public class AccessibilityWindowManager {
         final int windowId;
         boolean shouldComputeWindows = false;
         final IBinder token = window.asBinder();
+        if (traceWMEnabled()) {
+            logTraceWM("getDisplayIdForWindow", "token=" + token);
+        }
         final int displayId = mWindowManagerInternal.getDisplayIdForWindow(token);
         synchronized (mLock) {
             // We treat calls from a profile as if made by its parent as profiles
@@ -955,7 +1002,8 @@ public class AccessibilityWindowManager {
 
             // Makes sure the reported package is one the caller has access to.
             packageName = mSecurityPolicy.resolveValidReportedPackageLocked(
-                    packageName, UserHandle.getCallingAppId(), resolvedUserId);
+                    packageName, UserHandle.getCallingAppId(), resolvedUserId,
+                    Binder.getCallingPid());
 
             windowId = sNextWindowId++;
             // If the window is from a process that runs across users such as
@@ -989,9 +1037,15 @@ public class AccessibilityWindowManager {
             registerIdLocked(leashToken, windowId);
         }
         if (shouldComputeWindows) {
+            if (traceWMEnabled()) {
+                logTraceWM("computeWindowsForAccessibility", "displayId=" + displayId);
+            }
             mWindowManagerInternal.computeWindowsForAccessibility(displayId);
         }
-
+        if (traceWMEnabled()) {
+            logTraceWM("setAccessibilityIdToSurfaceMetadata",
+                    "token=" + token + ";windowId=" + windowId);
+        }
         mWindowManagerInternal.setAccessibilityIdToSurfaceMetadata(token, windowId);
         return windowId;
     }
@@ -1125,6 +1179,10 @@ public class AccessibilityWindowManager {
             mActiveWindowId = AccessibilityWindowInfo.UNDEFINED_WINDOW_ID;
         }
         if (binder != null) {
+            if (traceWMEnabled()) {
+                logTraceWM("setAccessibilityIdToSurfaceMetadata", "token=" + binder
+                        + ";windowId=AccessibilityWindowInfo.UNDEFINED_WINDOW_ID");
+            }
             mWindowManagerInternal.setAccessibilityIdToSurfaceMetadata(
                     binder, AccessibilityWindowInfo.UNDEFINED_WINDOW_ID);
         }
@@ -1155,6 +1213,9 @@ public class AccessibilityWindowManager {
      * @return The userId
      */
     public int getWindowOwnerUserId(@NonNull IBinder windowToken) {
+        if (traceWMEnabled()) {
+            logTraceWM("getWindowOwnerUserId", "token=" + windowToken);
+        }
         return mWindowManagerInternal.getWindowOwnerUserId(windowToken);
     }
 
@@ -1232,10 +1293,13 @@ public class AccessibilityWindowManager {
      */
     public boolean computePartialInteractiveRegionForWindowLocked(int windowId,
             @NonNull Region outRegion) {
-        windowId = resolveParentWindowIdLocked(windowId);
-        final DisplayWindowsObserver observer = getDisplayWindowObserverByWindowIdLocked(windowId);
+        final int parentWindowId = resolveParentWindowIdLocked(windowId);
+        final DisplayWindowsObserver observer = getDisplayWindowObserverByWindowIdLocked(
+                parentWindowId);
+
         if (observer != null) {
-            return observer.computePartialInteractiveRegionForWindowLocked(windowId, outRegion);
+            return observer.computePartialInteractiveRegionForWindowLocked(parentWindowId,
+                    parentWindowId != windowId, outRegion);
         }
 
         return false;
@@ -1336,7 +1400,7 @@ public class AccessibilityWindowManager {
             mTouchInteractionInProgress = false;
             // We want to set the active window to be current immediately
             // after the user has stopped touching the screen since if the
-            // user types with the IME he should get a feedback for the
+            // user types with the IME they should get a feedback for the
             // letter typed in the text view which is in the input focused
             // window. Note that we always deliver hover accessibility events
             // (they are a result of user touching the screen) so change of
@@ -1530,6 +1594,10 @@ public class AccessibilityWindowManager {
         for (int i = 0; i < connectionList.size(); i++) {
             final RemoteAccessibilityConnection connection = connectionList.get(i);
             if (connection != null) {
+                if (traceIntConnEnabled()) {
+                    logTraceIntConn("notifyOutsideTouch");
+                }
+
                 try {
                     connection.getRemote().notifyOutsideTouch();
                 } catch (RemoteException re) {
@@ -1550,6 +1618,9 @@ public class AccessibilityWindowManager {
      */
     public int getDisplayIdByUserIdAndWindowIdLocked(int userId, int windowId) {
         final IBinder windowToken = getWindowTokenForUserAndWindowIdLocked(userId, windowId);
+        if (traceWMEnabled()) {
+            logTraceWM("getDisplayIdForWindow", "token=" + windowToken);
+        }
         final int displayId = mWindowManagerInternal.getDisplayIdForWindow(windowToken);
         return displayId;
     }
@@ -1578,6 +1649,9 @@ public class AccessibilityWindowManager {
      * @return The input focused windowId, or -1 if not found
      */
     private int findFocusedWindowId(int userId) {
+        if (traceWMEnabled()) {
+            logTraceWM("getFocusedWindowToken", "");
+        }
         final IBinder token = mWindowManagerInternal.getFocusedWindowToken();
         synchronized (mLock) {
             return findWindowIdLocked(userId, token);
@@ -1627,6 +1701,9 @@ public class AccessibilityWindowManager {
                 return;
             }
         }
+        if (traceIntConnEnabled()) {
+            logTraceIntConn("notifyOutsideTouch");
+        }
         try {
             connection.getRemote().clearAccessibilityFocus();
         } catch (RemoteException re) {
@@ -1647,6 +1724,25 @@ public class AccessibilityWindowManager {
             }
         }
         return null;
+    }
+
+    private boolean traceWMEnabled() {
+        return mTraceManager.isA11yTracingEnabledForTypes(FLAGS_WINDOW_MANAGER_INTERNAL);
+    }
+
+    private void logTraceWM(String methodName, String params) {
+        mTraceManager.logTrace("WindowManagerInternal." + methodName,
+                    FLAGS_WINDOW_MANAGER_INTERNAL, params);
+    }
+
+    private boolean traceIntConnEnabled() {
+        return mTraceManager.isA11yTracingEnabledForTypes(
+                FLAGS_ACCESSIBILITY_INTERACTION_CONNECTION);
+    }
+
+    private void logTraceIntConn(String methodName) {
+        mTraceManager.logTrace(
+                    LOG_TAG + "." + methodName, FLAGS_ACCESSIBILITY_INTERACTION_CONNECTION);
     }
 
     /**

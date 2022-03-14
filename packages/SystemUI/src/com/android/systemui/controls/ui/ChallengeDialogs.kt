@@ -26,7 +26,9 @@ import android.service.controls.actions.FloatAction
 import android.service.controls.actions.ModeAction
 import android.text.InputType
 import android.util.Log
+import android.view.LayoutInflater
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.widget.CheckBox
 import android.widget.EditText
 
@@ -47,19 +49,45 @@ object ChallengeDialogs {
      * [ControlAction#RESPONSE_CHALLENGE_PIN] responses, decided by the useAlphaNumeric
      * parameter.
      */
-    fun createPinDialog(cvh: ControlViewHolder, useAlphaNumeric: Boolean): Dialog? {
+    fun createPinDialog(
+        cvh: ControlViewHolder,
+        useAlphaNumeric: Boolean,
+        useRetryStrings: Boolean,
+        onCancel: () -> Unit
+    ): Dialog? {
         val lastAction = cvh.lastAction
         if (lastAction == null) {
             Log.e(ControlsUiController.TAG,
                 "PIN Dialog attempted but no last action is set. Will not show")
             return null
         }
-        val builder = AlertDialog.Builder(cvh.context, STYLE).apply {
-            val res = cvh.context.resources
-            setTitle(res.getString(R.string.controls_pin_verify, cvh.title.getText()))
-            setView(R.layout.controls_dialog_pin)
-            setPositiveButton(
-                android.R.string.ok,
+        val res = cvh.context.resources
+        val (title, instructions) = if (useRetryStrings) {
+            Pair(
+                res.getString(R.string.controls_pin_wrong),
+                R.string.controls_pin_instructions_retry
+            )
+        } else {
+            Pair(
+                res.getString(R.string.controls_pin_verify, cvh.title.getText()),
+                R.string.controls_pin_instructions
+            )
+        }
+        return object : AlertDialog(cvh.context, STYLE) {
+            override fun dismiss() {
+                window?.decorView?.let {
+                    // workaround for b/159309083
+                    it.context.getSystemService(InputMethodManager::class.java)
+                            ?.hideSoftInputFromWindow(it.windowToken, 0)
+                }
+                super.dismiss()
+            }
+        }.apply {
+            setTitle(title)
+            setView(LayoutInflater.from(context).inflate(R.layout.controls_dialog_pin, null))
+            setButton(
+                DialogInterface.BUTTON_POSITIVE,
+                context.getText(android.R.string.ok),
                 DialogInterface.OnClickListener { dialog, _ ->
                     if (dialog is Dialog) {
                         dialog.requireViewById<EditText>(R.id.controls_pin_input)
@@ -69,18 +97,22 @@ object ChallengeDialogs {
                         dialog.dismiss()
                     }
             })
-            setNegativeButton(
-                android.R.string.cancel,
-                DialogInterface.OnClickListener { dialog, _ -> dialog.cancel() }
+            setButton(
+                DialogInterface.BUTTON_NEGATIVE,
+                context.getText(android.R.string.cancel),
+                DialogInterface.OnClickListener { dialog, _ ->
+                    onCancel.invoke()
+                    dialog.cancel()
+                }
             )
-        }
-        return builder.create().apply {
+
             getWindow().apply {
                 setType(WINDOW_TYPE)
                 setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
             }
             setOnShowListener(DialogInterface.OnShowListener { _ ->
                 val editText = requireViewById<EditText>(R.id.controls_pin_input)
+                editText.setHint(instructions)
                 val useAlphaCheckBox = requireViewById<CheckBox>(R.id.controls_pin_use_alpha)
                 useAlphaCheckBox.setChecked(useAlphaNumeric)
                 setInputType(editText, useAlphaCheckBox.isChecked())
@@ -95,7 +127,7 @@ object ChallengeDialogs {
     /**
      * AlertDialogs to handle [ControlAction#RESPONSE_CHALLENGE_ACK] response type.
      */
-    fun createConfirmationDialog(cvh: ControlViewHolder): Dialog? {
+    fun createConfirmationDialog(cvh: ControlViewHolder, onCancel: () -> Unit): Dialog? {
         val lastAction = cvh.lastAction
         if (lastAction == null) {
             Log.e(ControlsUiController.TAG,
@@ -104,7 +136,7 @@ object ChallengeDialogs {
         }
         val builder = AlertDialog.Builder(cvh.context, STYLE).apply {
             val res = cvh.context.resources
-            setMessage(res.getString(
+            setTitle(res.getString(
                 R.string.controls_confirmation_message, cvh.title.getText()))
             setPositiveButton(
                 android.R.string.ok,
@@ -114,7 +146,10 @@ object ChallengeDialogs {
             })
             setNegativeButton(
                 android.R.string.cancel,
-                DialogInterface.OnClickListener { dialog, _ -> dialog.cancel() }
+                DialogInterface.OnClickListener { dialog, _ ->
+                    onCancel.invoke()
+                    dialog.cancel()
+                }
             )
         }
         return builder.create().apply {

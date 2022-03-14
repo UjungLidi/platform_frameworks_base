@@ -120,6 +120,7 @@ public class AccessibilityWindowManagerTest {
     @Mock private AccessibilityWindowManager.AccessibilityEventSender mMockA11yEventSender;
     @Mock private AccessibilitySecurityPolicy mMockA11ySecurityPolicy;
     @Mock private AccessibilitySecurityPolicy.AccessibilityUserManager mMockA11yUserManager;
+    @Mock private AccessibilityTraceManager mMockA11yTraceManager;
 
     @Mock private IBinder mMockHostToken;
     @Mock private IBinder mMockEmbeddedToken;
@@ -134,13 +135,14 @@ public class AccessibilityWindowManagerTest {
         when(mMockA11ySecurityPolicy.resolveCallingUserIdEnforcingPermissionsLocked(
                 USER_SYSTEM_ID)).thenReturn(USER_SYSTEM_ID);
         when(mMockA11ySecurityPolicy.resolveValidReportedPackageLocked(
-                anyString(), anyInt(), anyInt())).thenReturn(PACKAGE_NAME);
+                anyString(), anyInt(), anyInt(), anyInt())).thenReturn(PACKAGE_NAME);
 
         mA11yWindowManager = new AccessibilityWindowManager(new Object(), mHandler,
                 mMockWindowManagerInternal,
                 mMockA11yEventSender,
                 mMockA11ySecurityPolicy,
-                mMockA11yUserManager);
+                mMockA11yUserManager,
+                mMockA11yTraceManager);
         // Starts tracking window of default display and sets the default display
         // as top focused display before each testing starts.
         startTrackingPerDisplay(Display.DEFAULT_DISPLAY);
@@ -832,6 +834,19 @@ public class AccessibilityWindowManagerTest {
     public void getTokenLocked_windowIsNotRegistered_shouldReturnNull() {
         final IBinder token = mA11yWindowManager.getTokenLocked(OTHER_WINDOW_ID);
         assertNull(token);
+    }
+
+    @Test
+    public void onDisplayReparented_shouldRemoveObserver() throws RemoteException {
+        // Starts tracking window of second display.
+        startTrackingPerDisplay(SECONDARY_DISPLAY_ID);
+        assertTrue(mA11yWindowManager.isTrackingWindowsLocked(SECONDARY_DISPLAY_ID));
+        // Notifies the second display is an embedded one of the default display.
+        final WindowsForAccessibilityCallback callbacks =
+                mCallbackOfWindows.get(Display.DEFAULT_DISPLAY);
+        callbacks.onDisplayReparented(SECONDARY_DISPLAY_ID);
+        // Makes sure the observer of the second display is removed.
+        assertFalse(mA11yWindowManager.isTrackingWindowsLocked(SECONDARY_DISPLAY_ID));
     }
 
     private void registerLeashedTokenAndWindowId() {

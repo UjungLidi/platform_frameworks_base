@@ -150,6 +150,7 @@ public class IntentFilter implements Parcelable {
     private static final String AGLOB_STR = "aglob";
     private static final String SGLOB_STR = "sglob";
     private static final String PREFIX_STR = "prefix";
+    private static final String SUFFIX_STR = "suffix";
     private static final String LITERAL_STR = "literal";
     private static final String PATH_STR = "path";
     private static final String PORT_STR = "port";
@@ -275,6 +276,14 @@ public class IntentFilter implements Parcelable {
      * @hide
      */
     public static final String SCHEME_HTTPS = "https";
+
+    /**
+     * Package scheme
+     *
+     * @see #addDataScheme(String)
+     * @hide
+     */
+    public static final String SCHEME_PACKAGE = "package";
 
     /**
      * The value to indicate a wildcard for incoming match arguments.
@@ -562,7 +571,7 @@ public class IntentFilter implements Parcelable {
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public final void setAutoVerify(boolean autoVerify) {
         mVerifyState &= ~STATE_VERIFY_AUTO;
         if (autoVerify) mVerifyState |= STATE_VERIFY_AUTO;
@@ -942,7 +951,7 @@ public class IntentFilter implements Parcelable {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public final boolean hasExactDataType(String type) {
         return mDataTypes != null && mDataTypes.contains(type);
     }
@@ -1136,7 +1145,7 @@ public class IntentFilter implements Parcelable {
         }
 
         @Override
-        public boolean equals(Object obj) {
+        public boolean equals(@Nullable Object obj) {
             if (obj instanceof AuthorityEntry) {
                 final AuthorityEntry other = (AuthorityEntry)obj;
                 return match(other);
@@ -1168,7 +1177,12 @@ public class IntentFilter implements Parcelable {
         public int match(Uri data, boolean wildcardSupported) {
             String host = data.getHost();
             if (host == null) {
-                return NO_MATCH_DATA;
+                if (wildcardSupported && mWild) {
+                    // special case, if no host is provided, but the Authority is wildcard, match
+                    return MATCH_CATEGORY_HOST;
+                } else {
+                    return NO_MATCH_DATA;
+                }
             }
             if (false) Log.v("IntentFilter",
                     "Match host " + host + ": " + mHost);
@@ -1183,7 +1197,8 @@ public class IntentFilter implements Parcelable {
                     return NO_MATCH_DATA;
                 }
             }
-            if (mPort >= 0) {
+            // if we're dealing with wildcard support, we ignore ports
+            if (!wildcardSupported && mPort >= 0) {
                 if (mPort != data.getPort()) {
                     return NO_MATCH_DATA;
                 }
@@ -1212,7 +1227,8 @@ public class IntentFilter implements Parcelable {
      * path, or a simple pattern, depending on <var>type</var>.
      * @param type Determines how <var>ssp</var> will be compared to
      * determine a match: either {@link PatternMatcher#PATTERN_LITERAL},
-     * {@link PatternMatcher#PATTERN_PREFIX}, or
+     * {@link PatternMatcher#PATTERN_PREFIX},
+     * {@link PatternMatcher#PATTERN_SUFFIX}, or
      * {@link PatternMatcher#PATTERN_SIMPLE_GLOB}.
      *
      * @see #matchData
@@ -1281,7 +1297,7 @@ public class IntentFilter implements Parcelable {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public final boolean hasDataSchemeSpecificPart(PatternMatcher ssp) {
         if (mDataSchemeSpecificParts == null) {
             return false;
@@ -1365,7 +1381,7 @@ public class IntentFilter implements Parcelable {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public final boolean hasDataAuthority(AuthorityEntry auth) {
         if (mDataAuthorities == null) {
             return false;
@@ -1405,7 +1421,8 @@ public class IntentFilter implements Parcelable {
      * path, or a simple pattern, depending on <var>type</var>.
      * @param type Determines how <var>path</var> will be compared to
      * determine a match: either {@link PatternMatcher#PATTERN_LITERAL},
-     * {@link PatternMatcher#PATTERN_PREFIX}, or
+     * {@link PatternMatcher#PATTERN_PREFIX},
+     * {@link PatternMatcher#PATTERN_SUFFIX}, or
      * {@link PatternMatcher#PATTERN_SIMPLE_GLOB}.
      *
      * @see #matchData
@@ -1474,7 +1491,7 @@ public class IntentFilter implements Parcelable {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public final boolean hasDataPath(PatternMatcher path) {
         if (mDataPaths == null) {
             return false;
@@ -1580,12 +1597,13 @@ public class IntentFilter implements Parcelable {
      * @param wildcardSupported if true, will allow parameters to use wildcards
      */
     private int matchData(String type, String scheme, Uri data, boolean wildcardSupported) {
-        final ArrayList<String> types = mDataTypes;
+        final boolean wildcardWithMimegroups = wildcardSupported && countMimeGroups() != 0;
+        final List<String> types = mDataTypes;
         final ArrayList<String> schemes = mDataSchemes;
 
         int match = MATCH_CATEGORY_EMPTY;
 
-        if (types == null && schemes == null) {
+        if (!wildcardWithMimegroups && types == null && schemes == null) {
             return ((type == null && data == null)
                 ? (MATCH_CATEGORY_EMPTY+MATCH_ADJUSTMENT_NORMAL) : NO_MATCH_DATA);
         }
@@ -1640,7 +1658,9 @@ public class IntentFilter implements Parcelable {
             }
         }
 
-        if (types != null) {
+        if (wildcardWithMimegroups) {
+            return MATCH_CATEGORY_TYPE;
+        } else if (types != null) {
             if (findMimeType(type)) {
                 match = MATCH_CATEGORY_TYPE;
             } else {
@@ -1903,6 +1923,9 @@ public class IntentFilter implements Parcelable {
                 case PatternMatcher.PATTERN_ADVANCED_GLOB:
                     serializer.attribute(null, AGLOB_STR, pe.getPath());
                     break;
+                case PatternMatcher.PATTERN_SUFFIX:
+                    serializer.attribute(null, SUFFIX_STR, pe.getPath());
+                    break;
             }
             serializer.endTag(null, SSP_STR);
         }
@@ -1932,6 +1955,9 @@ public class IntentFilter implements Parcelable {
                     break;
                 case PatternMatcher.PATTERN_ADVANCED_GLOB:
                     serializer.attribute(null, AGLOB_STR, pe.getPath());
+                    break;
+                case PatternMatcher.PATTERN_SUFFIX:
+                    serializer.attribute(null, SUFFIX_STR, pe.getPath());
                     break;
             }
             serializer.endTag(null, PATH_STR);
@@ -2040,6 +2066,8 @@ public class IntentFilter implements Parcelable {
                     addDataSchemeSpecificPart(ssp, PatternMatcher.PATTERN_SIMPLE_GLOB);
                 } else if ((ssp=parser.getAttributeValue(null, AGLOB_STR)) != null) {
                     addDataSchemeSpecificPart(ssp, PatternMatcher.PATTERN_ADVANCED_GLOB);
+                } else if ((ssp=parser.getAttributeValue(null, SUFFIX_STR)) != null) {
+                    addDataSchemeSpecificPart(ssp, PatternMatcher.PATTERN_SUFFIX);
                 }
             } else if (tagName.equals(AUTH_STR)) {
                 String host = parser.getAttributeValue(null, HOST_STR);
@@ -2057,6 +2085,8 @@ public class IntentFilter implements Parcelable {
                     addDataPath(path, PatternMatcher.PATTERN_SIMPLE_GLOB);
                 } else if ((path=parser.getAttributeValue(null, AGLOB_STR)) != null) {
                     addDataPath(path, PatternMatcher.PATTERN_ADVANCED_GLOB);
+                } else if ((path=parser.getAttributeValue(null, SUFFIX_STR)) != null) {
+                    addDataPath(path, PatternMatcher.PATTERN_SUFFIX);
                 }
             } else {
                 Log.w("IntentFilter", "Unknown tag parsing IntentFilter: " + tagName);

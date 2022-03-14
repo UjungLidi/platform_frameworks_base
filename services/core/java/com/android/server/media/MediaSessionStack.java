@@ -16,11 +16,11 @@
 
 package com.android.server.media;
 
+import static com.android.server.media.MediaSessionPolicyProvider.SESSION_POLICY_IGNORE_BUTTON_SESSION;
+
 import android.media.Session2Token;
 import android.media.session.MediaSession;
-import android.os.Debug;
 import android.os.UserHandle;
-import android.util.IntArray;
 import android.util.Log;
 import android.util.SparseArray;
 
@@ -101,7 +101,8 @@ class MediaSessionStack {
         if (mMediaButtonSession == record) {
             // When the media button session is removed, nullify the media button session and do not
             // search for the alternative media session within the app. It's because the alternative
-            // media session might be a dummy which isn't able to handle the media key events.
+            // media session might be a fake which isn't able to handle the media key events.
+            // TODO(b/154456172): Make this decision unaltered by non-media app's playback.
             updateMediaButtonSession(null);
         }
         clearCache(record.getUserId());
@@ -158,7 +159,7 @@ class MediaSessionStack {
                     findMediaButtonSession(mMediaButtonSession.getUid());
             if (newMediaButtonSession != mMediaButtonSession
                     && (newMediaButtonSession.getSessionPolicies()
-                    & SessionPolicyProvider.SESSION_POLICY_IGNORE_BUTTON_SESSION) == 0) {
+                            & SESSION_POLICY_IGNORE_BUTTON_SESSION) == 0) {
                 // Check if the policy states that this session should not be updated as a media
                 // button session.
                 updateMediaButtonSession(newMediaButtonSession);
@@ -185,23 +186,48 @@ class MediaSessionStack {
      */
     public void updateMediaButtonSessionIfNeeded() {
         if (DEBUG) {
-            Log.d(TAG, "updateMediaButtonSessionIfNeeded, callers=" + Debug.getCallers(2));
+            Log.d(TAG, "updateMediaButtonSessionIfNeeded, callers=" + getCallers(2));
         }
-        IntArray audioPlaybackUids = mAudioPlayerStateMonitor.getSortedAudioPlaybackClientUids();
+        List<Integer> audioPlaybackUids =
+                mAudioPlayerStateMonitor.getSortedAudioPlaybackClientUids();
         for (int i = 0; i < audioPlaybackUids.size(); i++) {
-            MediaSessionRecordImpl mediaButtonSession =
-                    findMediaButtonSession(audioPlaybackUids.get(i));
-            if (mediaButtonSession == null) continue;
-            boolean ignoreButtonSession = (mediaButtonSession.getSessionPolicies()
-                    & SessionPolicyProvider.SESSION_POLICY_IGNORE_BUTTON_SESSION) != 0;
-            if (mediaButtonSession == mMediaButtonSession && ignoreButtonSession) {
+            int audioPlaybackUid = audioPlaybackUids.get(i);
+            MediaSessionRecordImpl mediaButtonSession = findMediaButtonSession(audioPlaybackUid);
+            if (mediaButtonSession == null) {
+                if (DEBUG) {
+                    Log.d(TAG, "updateMediaButtonSessionIfNeeded, skipping uid="
+                            + audioPlaybackUid);
+                }
+                // Ignore if the lastly played app isn't a media app (i.e. has no media session)
+                continue;
+            }
+            boolean ignoreButtonSession =
+                    (mediaButtonSession.getSessionPolicies()
+                            & SESSION_POLICY_IGNORE_BUTTON_SESSION) != 0;
+            if (DEBUG) {
+                Log.d(TAG, "updateMediaButtonSessionIfNeeded, checking uid=" + audioPlaybackUid
+                        + ", mediaButtonSession=" + mediaButtonSession
+                        + ", ignoreButtonSession=" + ignoreButtonSession);
+            }
+            if (!ignoreButtonSession) {
+                mAudioPlayerStateMonitor.cleanUpAudioPlaybackUids(mediaButtonSession.getUid());
+                if (mediaButtonSession != mMediaButtonSession) {
+                    updateMediaButtonSession(mediaButtonSession);
+                }
+                return;
+            }
+        }
+    }
+
+    // TODO: Remove this and make updateMediaButtonSessionIfNeeded() to also cover this case.
+    public void updateMediaButtonSessionBySessionPolicyChange(MediaSessionRecord record) {
+        if ((record.getSessionPolicies() & SESSION_POLICY_IGNORE_BUTTON_SESSION) != 0) {
+            if (record == mMediaButtonSession) {
+                // TODO(b/154456172): Make this decision unaltered by non-media app's playback.
                 updateMediaButtonSession(null);
-                return;
             }
-            if (mediaButtonSession != mMediaButtonSession && !ignoreButtonSession) {
-                updateMediaButtonSession(mediaButtonSession);
-                return;
-            }
+        } else {
+            updateMediaButtonSessionIfNeeded();
         }
     }
 
@@ -217,6 +243,10 @@ class MediaSessionStack {
     private MediaSessionRecordImpl findMediaButtonSession(int uid) {
         MediaSessionRecordImpl mediaButtonSession = null;
         for (MediaSessionRecordImpl session : mSessions) {
+            if (session instanceof MediaSession2Record) {
+                // TODO(jaewan): Make MediaSession2 to receive media key event
+                continue;
+            }
             if (uid == session.getUid()) {
                 if (session.checkPlaybackActiveState(
                         mAudioPlayerStateMonitor.isPlaybackActive(session.getUid()))) {
@@ -280,7 +310,7 @@ class MediaSessionStack {
         return mMediaButtonSession;
     }
 
-    private void updateMediaButtonSession(MediaSessionRecordImpl newMediaButtonSession) {
+    public void updateMediaButtonSession(MediaSessionRecordImpl newMediaButtonSession) {
         MediaSessionRecordImpl oldMediaButtonSession = mMediaButtonSession;
         mMediaButtonSession = newMediaButtonSession;
         mOnMediaButtonSessionChangedListener.onMediaButtonSessionChanged(
@@ -295,7 +325,7 @@ class MediaSessionStack {
         int size = records.size();
         for (int i = 0; i < size; i++) {
             MediaSessionRecord record = records.get(i);
-            if (record.checkPlaybackActiveState(true)) {
+            if (record.checkPlaybackActiveState(true) && record.canHandleVolumeKey()) {
                 mCachedVolumeDefault = record;
                 return record;
             }
@@ -381,5 +411,25 @@ class MediaSessionStack {
         // mCachedActiveLists may also include the list of sessions for UserHandle.USER_ALL,
         // so they also need to be cleared.
         mCachedActiveLists.remove(UserHandle.USER_ALL);
+    }
+
+    // Code copied from android.os.Debug#getCallers(int)
+    private static String getCallers(final int depth) {
+        final StackTraceElement[] callStack = Thread.currentThread().getStackTrace();
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < depth; i++) {
+            sb.append(getCaller(callStack, i)).append(" ");
+        }
+        return sb.toString();
+    }
+
+    // Code copied from android.os.Debug#getCaller(StackTraceElement[], int)
+    private static String getCaller(StackTraceElement[] callStack, int depth) {
+        // callStack[4] is the caller of the method that called getCallers()
+        if (4 + depth >= callStack.length) {
+            return "<bottom of call stack>";
+        }
+        StackTraceElement caller = callStack[4 + depth];
+        return caller.getClassName() + "." + caller.getMethodName() + ":" + caller.getLineNumber();
     }
 }

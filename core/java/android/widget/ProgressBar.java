@@ -54,6 +54,7 @@ import android.view.View;
 import android.view.ViewDebug;
 import android.view.ViewHierarchyEncoder;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.animation.AlphaAnimation;
 import android.view.animation.Animation;
@@ -69,6 +70,7 @@ import com.android.internal.R;
 
 import java.text.NumberFormat;
 import java.util.ArrayList;
+import java.util.Locale;
 
 /**
  * <p>
@@ -238,7 +240,7 @@ public class ProgressBar extends View {
     /** Value used to track progress animation, in the range [0...1]. */
     private float mVisualProgress;
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     boolean mMirrorForRtl = false;
 
     private boolean mAggregatedIsVisible;
@@ -248,6 +250,9 @@ public class ProgressBar extends View {
     private final ArrayList<RefreshData> mRefreshData = new ArrayList<RefreshData>();
 
     private ObjectAnimator mLastProgressAnimator;
+
+    private NumberFormat mPercentFormat;
+    private Locale mCachedLocale;
 
     /**
      * Create a new progress bar with range 0...100 and initial progress of 0.
@@ -310,9 +315,6 @@ public class ProgressBar extends View {
         setMax(a.getInt(R.styleable.ProgressBar_max, mMax));
 
         setProgress(a.getInt(R.styleable.ProgressBar_progress, mProgress));
-        // onProgressRefresh() is only called when the progress changes. So we should set
-        // stateDescription during initialization here.
-        super.setStateDescription(formatStateDescription(mProgress));
 
         setSecondaryProgress(a.getInt(
                 R.styleable.ProgressBar_secondaryProgress, mSecondaryProgress));
@@ -821,6 +823,7 @@ public class ProgressBar extends View {
      * @see #setIndeterminateTintList(ColorStateList)
      * @see Drawable#setTintBlendMode(BlendMode)
      */
+    @RemotableViewMethod
     public void setIndeterminateTintBlendMode(@Nullable BlendMode blendMode) {
         if (mProgressTintInfo == null) {
             mProgressTintInfo = new ProgressTintInfo();
@@ -1130,6 +1133,7 @@ public class ProgressBar extends View {
      * @see #getProgressTintMode()
      * @see Drawable#setTintBlendMode(BlendMode)
      */
+    @RemotableViewMethod
     public void setProgressTintBlendMode(@Nullable BlendMode blendMode) {
         if (mProgressTintInfo == null) {
             mProgressTintInfo = new ProgressTintInfo();
@@ -1246,6 +1250,7 @@ public class ProgressBar extends View {
      * @see #setProgressBackgroundTintList(ColorStateList)
      * @see Drawable#setTintBlendMode(BlendMode)
      */
+    @RemotableViewMethod
     public void setProgressBackgroundTintBlendMode(@Nullable BlendMode blendMode) {
         if (mProgressTintInfo == null) {
             mProgressTintInfo = new ProgressTintInfo();
@@ -1303,6 +1308,7 @@ public class ProgressBar extends View {
      * @see #getSecondaryProgressTintList()
      * @see Drawable#setTintList(ColorStateList)
      */
+    @RemotableViewMethod
     public void setSecondaryProgressTintList(@Nullable ColorStateList tint) {
         if (mProgressTintInfo == null) {
             mProgressTintInfo = new ProgressTintInfo();
@@ -1358,6 +1364,7 @@ public class ProgressBar extends View {
      * @see #setSecondaryProgressTintList(ColorStateList)
      * @see Drawable#setTintBlendMode(BlendMode)
      */
+    @RemotableViewMethod
     public void setSecondaryProgressTintBlendMode(@Nullable BlendMode blendMode) {
         if (mProgressTintInfo == null) {
             mProgressTintInfo = new ProgressTintInfo();
@@ -1591,8 +1598,15 @@ public class ProgressBar extends View {
      * @return state description based on progress
      */
     private CharSequence formatStateDescription(int progress) {
-        return NumberFormat.getPercentInstance(mContext.getResources().getConfiguration().locale)
-                .format(getPercent(progress));
+        // Cache the locale-appropriate NumberFormat.  Configuration locale is guaranteed
+        // non-null, so the first time this is called we will always get the appropriate
+        // NumberFormat, then never regenerate it unless the locale changes on the fly.
+        final Locale curLocale = mContext.getResources().getConfiguration().getLocales().get(0);
+        if (!curLocale.equals(mCachedLocale)) {
+            mCachedLocale = curLocale;
+            mPercentFormat = NumberFormat.getPercentInstance(curLocale);
+        }
+        return mPercentFormat.format(getPercent(progress));
     }
 
     /**
@@ -1606,6 +1620,7 @@ public class ProgressBar extends View {
      * @param stateDescription The state description.
      */
     @Override
+    @RemotableViewMethod
     public void setStateDescription(@Nullable CharSequence stateDescription) {
         mCustomStateDescription = stateDescription;
         if (stateDescription == null) {
@@ -1616,7 +1631,8 @@ public class ProgressBar extends View {
     }
 
     void onProgressRefresh(float scale, boolean fromUser, int progress) {
-        if (mCustomStateDescription == null) {
+        if (AccessibilityManager.getInstance(mContext).isEnabled()
+                && mCustomStateDescription == null) {
             super.setStateDescription(formatStateDescription(mProgress));
         }
     }
@@ -1663,7 +1679,7 @@ public class ProgressBar extends View {
         // Stub method.
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private synchronized void refreshProgress(int id, int progress, boolean fromUser,
             boolean animate) {
         if (mUiThreadId == Thread.currentThread().getId()) {
@@ -2340,6 +2356,7 @@ public class ProgressBar extends View {
                     AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_INT, getMin(), getMax(),
                     getProgress());
             info.setRangeInfo(rangeInfo);
+            info.setStateDescription(formatStateDescription(mProgress));
         }
     }
 

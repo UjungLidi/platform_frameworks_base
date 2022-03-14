@@ -16,6 +16,8 @@
 
 package com.android.server.accessibility;
 
+import static android.view.WindowManager.ScreenshotSource.SCREENSHOT_ACCESSIBILITY_ACTIONS;
+
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
@@ -65,7 +67,7 @@ import java.util.concurrent.TimeUnit;
  */
 public class SystemActionPerformerTest {
     private static final int LATCH_TIMEOUT_MS = 500;
-    private static final int LEGACY_SYSTEM_ACTION_COUNT = 9;
+    private static final int LEGACY_SYSTEM_ACTION_COUNT = 8;
     private static final int NEW_ACTION_ID = 20;
     private static final String LABEL_1 = "label1";
     private static final String LABEL_2 = "label2";
@@ -74,14 +76,14 @@ public class SystemActionPerformerTest {
     private static final String DESCRIPTION1 = "description1";
     private static final String DESCRIPTION2 = "description2";
     private static final PendingIntent TEST_PENDING_INTENT_1 = PendingIntent.getBroadcast(
-            InstrumentationRegistry.getTargetContext(), 0, new Intent(INTENT_ACTION1), 0);
+            InstrumentationRegistry.getTargetContext(), 0, new Intent(INTENT_ACTION1), PendingIntent.FLAG_MUTABLE_UNAUDITED);
     private static final RemoteAction NEW_TEST_ACTION_1 = new RemoteAction(
             Icon.createWithContentUri("content://test"),
             LABEL_1,
             DESCRIPTION1,
             TEST_PENDING_INTENT_1);
     private static final PendingIntent TEST_PENDING_INTENT_2 = PendingIntent.getBroadcast(
-            InstrumentationRegistry.getTargetContext(), 0, new Intent(INTENT_ACTION2), 0);
+            InstrumentationRegistry.getTargetContext(), 0, new Intent(INTENT_ACTION2), PendingIntent.FLAG_MUTABLE_UNAUDITED);
     private static final RemoteAction NEW_TEST_ACTION_2 = new RemoteAction(
             Icon.createWithContentUri("content://test"),
             LABEL_2,
@@ -294,21 +296,13 @@ public class SystemActionPerformerTest {
     }
 
     @Test
-    public void testToggleSplitScreen_legacy() {
-        setupWithRealContext();
-        mSystemActionPerformer.performSystemAction(
-                AccessibilityService.GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN);
-        verify(mMockStatusBarManagerInternal).toggleSplitScreen();
-    }
-
-    @Test
     public void testScreenshot_requestsFromScreenshotHelper_legacy() {
         setupWithMockContext();
         mSystemActionPerformer.performSystemAction(
                 AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT);
         verify(mMockScreenshotHelper).takeScreenshot(
                 eq(android.view.WindowManager.TAKE_SCREENSHOT_FULLSCREEN), anyBoolean(),
-                anyBoolean(), any(Handler.class), any());
+                anyBoolean(), eq(SCREENSHOT_ACCESSIBILITY_ACTIONS), any(Handler.class), any());
     }
 
     // PendingIntent is a final class and cannot be mocked. So we are using this

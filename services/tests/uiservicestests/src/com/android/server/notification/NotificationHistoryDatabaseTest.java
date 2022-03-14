@@ -44,15 +44,13 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
-import org.mockito.internal.matchers.Not;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.GregorianCalendar;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 
 @RunWith(AndroidJUnit4.class)
 public class NotificationHistoryDatabaseTest extends UiServiceTestCase {
@@ -125,6 +123,7 @@ public class NotificationHistoryDatabaseTest extends UiServiceTestCase {
         for (long i = cal.getTimeInMillis(); i >= 5; i--) {
             File file = mock(File.class);
             when(file.getName()).thenReturn(String.valueOf(i));
+            when(file.getAbsolutePath()).thenReturn(String.valueOf(i));
             AtomicFile af = new AtomicFile(file);
             expectedFiles.add(af);
             mDataBase.mHistoryFiles.addLast(af);
@@ -135,6 +134,7 @@ public class NotificationHistoryDatabaseTest extends UiServiceTestCase {
         for (int i = 5; i >= 0; i--) {
             File file = mock(File.class);
             when(file.getName()).thenReturn(String.valueOf(cal.getTimeInMillis() - i));
+            when(file.getAbsolutePath()).thenReturn(String.valueOf(cal.getTimeInMillis() - i));
             AtomicFile af = new AtomicFile(file);
             mDataBase.mHistoryFiles.addLast(af);
         }
@@ -149,7 +149,7 @@ public class NotificationHistoryDatabaseTest extends UiServiceTestCase {
     }
 
     @Test
-    public void testPrune_badFileName() {
+    public void testPrune_badFileName_noCrash() {
         GregorianCalendar cal = new GregorianCalendar();
         cal.setTimeInMillis(10);
         int retainDays = 1;
@@ -159,7 +159,8 @@ public class NotificationHistoryDatabaseTest extends UiServiceTestCase {
         // add 5 files with a creation date of "today", but the file names are bad
         for (long i = cal.getTimeInMillis(); i >= 5; i--) {
             File file = mock(File.class);
-            when(file.getName()).thenReturn(i + ".txt");
+            when(file.getName()).thenReturn(i + ".bak");
+            when(file.getAbsolutePath()).thenReturn(i + ".bak");
             AtomicFile af = new AtomicFile(file);
             mDataBase.mHistoryFiles.addLast(af);
         }
@@ -309,22 +310,22 @@ public class NotificationHistoryDatabaseTest extends UiServiceTestCase {
     public void testRemoveConversationRunnable() throws Exception {
         NotificationHistory nh = mock(NotificationHistory.class);
         NotificationHistoryDatabase.RemoveConversationRunnable rcr =
-                mDataBase.new RemoveConversationRunnable("pkg", "convo");
+                mDataBase.new RemoveConversationRunnable("pkg", Set.of("convo", "another"));
         rcr.setNotificationHistory(nh);
 
         AtomicFile af = mock(AtomicFile.class);
         when(af.getBaseFile()).thenReturn(new File(mRootDir, "af"));
         mDataBase.mHistoryFiles.addLast(af);
 
-        when(nh.removeConversationFromWrite("pkg", "convo")).thenReturn(true);
+        when(nh.removeConversationsFromWrite("pkg", Set.of("convo", "another"))).thenReturn(true);
 
         mDataBase.mBuffer = mock(NotificationHistory.class);
 
         rcr.run();
 
-        verify(mDataBase.mBuffer).removeConversationFromWrite("pkg", "convo");
+        verify(mDataBase.mBuffer).removeConversationsFromWrite("pkg",Set.of("convo", "another"));
         verify(af).openRead();
-        verify(nh).removeConversationFromWrite("pkg", "convo");
+        verify(nh).removeConversationsFromWrite("pkg",Set.of("convo", "another"));
         verify(af).startWrite();
     }
 
@@ -332,22 +333,68 @@ public class NotificationHistoryDatabaseTest extends UiServiceTestCase {
     public void testRemoveConversationRunnable_noChanges() throws Exception {
         NotificationHistory nh = mock(NotificationHistory.class);
         NotificationHistoryDatabase.RemoveConversationRunnable rcr =
-                mDataBase.new RemoveConversationRunnable("pkg", "convo");
+                mDataBase.new RemoveConversationRunnable("pkg", Set.of("convo"));
         rcr.setNotificationHistory(nh);
 
         AtomicFile af = mock(AtomicFile.class);
         when(af.getBaseFile()).thenReturn(new File(mRootDir, "af"));
         mDataBase.mHistoryFiles.addLast(af);
 
-        when(nh.removeConversationFromWrite("pkg", "convo")).thenReturn(false);
+        when(nh.removeConversationsFromWrite("pkg", Set.of("convo"))).thenReturn(false);
 
         mDataBase.mBuffer = mock(NotificationHistory.class);
 
         rcr.run();
 
-        verify(mDataBase.mBuffer).removeConversationFromWrite("pkg", "convo");
+        verify(mDataBase.mBuffer).removeConversationsFromWrite("pkg", Set.of("convo"));
         verify(af).openRead();
-        verify(nh).removeConversationFromWrite("pkg", "convo");
+        verify(nh).removeConversationsFromWrite("pkg", Set.of("convo"));
+        verify(af, never()).startWrite();
+    }
+
+    @Test
+    public void testRemoveChannelRunnable() throws Exception {
+        NotificationHistory nh = mock(NotificationHistory.class);
+        NotificationHistoryDatabase.RemoveChannelRunnable rcr =
+                mDataBase.new RemoveChannelRunnable("pkg", "channel");
+        rcr.setNotificationHistory(nh);
+
+        AtomicFile af = mock(AtomicFile.class);
+        when(af.getBaseFile()).thenReturn(new File(mRootDir, "af"));
+        mDataBase.mHistoryFiles.addLast(af);
+
+        when(nh.removeChannelFromWrite("pkg", "channel")).thenReturn(true);
+
+        mDataBase.mBuffer = mock(NotificationHistory.class);
+
+        rcr.run();
+
+        verify(mDataBase.mBuffer).removeChannelFromWrite("pkg", "channel");
+        verify(af).openRead();
+        verify(nh).removeChannelFromWrite("pkg", "channel");
+        verify(af).startWrite();
+    }
+
+    @Test
+    public void testRemoveChannelRunnable_noChanges() throws Exception {
+        NotificationHistory nh = mock(NotificationHistory.class);
+        NotificationHistoryDatabase.RemoveChannelRunnable rcr =
+                mDataBase.new RemoveChannelRunnable("pkg", "channel");
+        rcr.setNotificationHistory(nh);
+
+        AtomicFile af = mock(AtomicFile.class);
+        when(af.getBaseFile()).thenReturn(new File(mRootDir, "af"));
+        mDataBase.mHistoryFiles.addLast(af);
+
+        when(nh.removeChannelFromWrite("pkg", "channel")).thenReturn(false);
+
+        mDataBase.mBuffer = mock(NotificationHistory.class);
+
+        rcr.run();
+
+        verify(mDataBase.mBuffer).removeChannelFromWrite("pkg", "channel");
+        verify(af).openRead();
+        verify(nh).removeChannelFromWrite("pkg", "channel");
         verify(af, never()).startWrite();
     }
 
@@ -360,16 +407,47 @@ public class NotificationHistoryDatabaseTest extends UiServiceTestCase {
                 mDataBase.new WriteBufferRunnable();
 
         mDataBase.mBuffer = nh;
-        wbr.currentTime = 5;
-        wbr.latestNotificationsFile = mock(AtomicFile.class);
+        AtomicFile af = mock(AtomicFile.class);
         File file = mock(File.class);
         when(file.getName()).thenReturn("5");
-        when(wbr.latestNotificationsFile.getBaseFile()).thenReturn(file);
+        when(af.getBaseFile()).thenReturn(file);
 
-        wbr.run();
+        wbr.run(5, af);
 
         assertThat(mDataBase.mHistoryFiles.size()).isEqualTo(1);
         assertThat(mDataBase.mBuffer).isNotEqualTo(nh);
         verify(mAlarmManager, times(1)).setExactAndAllowWhileIdle(anyInt(), anyLong(), any());
+    }
+
+    @Test
+    public void testRemoveFilePathFromHistory_hasMatch() throws Exception {
+        for (int i = 0; i < 5; i++) {
+            AtomicFile af = mock(AtomicFile.class);
+            when(af.getBaseFile()).thenReturn(new File(mRootDir, "af" + i));
+            mDataBase.mHistoryFiles.addLast(af);
+        }
+        // Baseline size of history files
+        assertThat(mDataBase.mHistoryFiles.size()).isEqualTo(5);
+
+        // Remove only file number 3
+        String filePathToRemove = new File(mRootDir, "af3").getAbsolutePath();
+        mDataBase.removeFilePathFromHistory(filePathToRemove);
+        assertThat(mDataBase.mHistoryFiles.size()).isEqualTo(4);
+    }
+
+    @Test
+    public void testRemoveFilePathFromHistory_noMatch() throws Exception {
+        for (int i = 0; i < 5; i++) {
+            AtomicFile af = mock(AtomicFile.class);
+            when(af.getBaseFile()).thenReturn(new File(mRootDir, "af" + i));
+            mDataBase.mHistoryFiles.addLast(af);
+        }
+        // Baseline size of history files
+        assertThat(mDataBase.mHistoryFiles.size()).isEqualTo(5);
+
+        // Attempt to remove a filename that doesn't exist, expect nothing to break or change
+        String filePathToRemove = new File(mRootDir, "af.thisfileisfake").getAbsolutePath();
+        mDataBase.removeFilePathFromHistory(filePathToRemove);
+        assertThat(mDataBase.mHistoryFiles.size()).isEqualTo(5);
     }
 }

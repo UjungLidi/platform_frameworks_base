@@ -22,7 +22,6 @@ import static com.android.server.wm.AlphaAnimationSpecProto.TO;
 import static com.android.server.wm.AnimationSpecProto.ALPHA;
 import static com.android.server.wm.SurfaceAnimator.ANIMATION_TYPE_DIMMER;
 
-import android.annotation.Nullable;
 import android.graphics.Rect;
 import android.util.Log;
 import android.util.proto.ProtoOutputStream;
@@ -31,7 +30,6 @@ import android.view.SurfaceControl;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.wm.SurfaceAnimator.AnimationType;
-import com.android.server.wm.SurfaceAnimator.OnAnimationFinishedCallback;
 
 import java.io.PrintWriter;
 
@@ -53,7 +51,7 @@ class Dimmer {
 
         @Override
         public SurfaceControl.Transaction getPendingTransaction() {
-            return mHost.getPendingTransaction();
+            return mHost.getSyncTransaction();
         }
 
         @Override
@@ -160,8 +158,7 @@ class Dimmer {
     @VisibleForTesting
     interface SurfaceAnimatorStarter {
         void startAnimation(SurfaceAnimator surfaceAnimator, SurfaceControl.Transaction t,
-                AnimationAdapter anim, boolean hidden, @AnimationType int type,
-                @Nullable OnAnimationFinishedCallback animationFinishedCallback);
+                AnimationAdapter anim, boolean hidden, @AnimationType int type);
     }
 
     Dimmer(WindowContainer host) {
@@ -178,6 +175,7 @@ class Dimmer {
                 .setParent(mHost.getSurfaceControl())
                 .setColorLayer()
                 .setName("Dim Layer for - " + mHost.getName())
+                .setCallsite("Dimmer.makeDimLayer")
                 .build();
     }
 
@@ -206,7 +204,7 @@ class Dimmer {
     }
 
     private void dim(SurfaceControl.Transaction t, WindowContainer container, int relativeLayer,
-            float alpha) {
+            float alpha, int blurRadius) {
         final DimState d = getDimState(container);
 
         if (d == null) {
@@ -222,6 +220,7 @@ class Dimmer {
             t.setLayer(d.mDimLayer, Integer.MAX_VALUE);
         }
         t.setAlpha(d.mDimLayer, alpha);
+        t.setBackgroundBlurRadius(d.mDimLayer, blurRadius);
 
         d.mDimming = true;
     }
@@ -249,7 +248,7 @@ class Dimmer {
      * @param alpha The alpha at which to Dim.
      */
     void dimAbove(SurfaceControl.Transaction t, float alpha) {
-        dim(t, null, 1, alpha);
+        dim(t, null, 1, alpha, 0);
     }
 
     /**
@@ -262,19 +261,21 @@ class Dimmer {
      * @param alpha     The alpha at which to Dim.
      */
     void dimAbove(SurfaceControl.Transaction t, WindowContainer container, float alpha) {
-        dim(t, container, 1, alpha);
+        dim(t, container, 1, alpha, 0);
     }
 
     /**
      * Like {@link #dimAbove} but places the dim below the given container.
      *
-     * @param t         A transaction in which to apply the Dim.
-     * @param container The container which to dim below. Should be a child of our host.
-     * @param alpha     The alpha at which to Dim.
+     * @param t          A transaction in which to apply the Dim.
+     * @param container  The container which to dim below. Should be a child of our host.
+     * @param alpha      The alpha at which to Dim.
+     * @param blurRadius The amount of blur added to the Dim.
      */
 
-    void dimBelow(SurfaceControl.Transaction t, WindowContainer container, float alpha) {
-        dim(t, container, -1, alpha);
+    void dimBelow(SurfaceControl.Transaction t, WindowContainer container, float alpha,
+                  int blurRadius) {
+        dim(t, container, -1, alpha, blurRadius);
     }
 
     /**
@@ -348,7 +349,7 @@ class Dimmer {
         mSurfaceAnimatorStarter.startAnimation(animator, t, new LocalAnimationAdapter(
                 new AlphaAnimationSpec(startAlpha, endAlpha, getDimDuration(container)),
                 mHost.mWmService.mSurfaceAnimationRunner), false /* hidden */,
-                ANIMATION_TYPE_DIMMER, null /* animationFinishedCallback */);
+                ANIMATION_TYPE_DIMMER);
     }
 
     private long getDimDuration(WindowContainer container) {
@@ -382,8 +383,8 @@ class Dimmer {
 
         @Override
         public void apply(SurfaceControl.Transaction t, SurfaceControl sc, long currentPlayTime) {
-            float alpha = ((float) currentPlayTime / getDuration()) * (mToAlpha - mFromAlpha)
-                    + mFromAlpha;
+            final float fraction = getFraction(currentPlayTime);
+            final float alpha = fraction * (mToAlpha - mFromAlpha) + mFromAlpha;
             t.setAlpha(sc, alpha);
         }
 

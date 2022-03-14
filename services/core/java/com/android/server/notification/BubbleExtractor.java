@@ -17,7 +17,7 @@ package com.android.server.notification;
 
 import static android.app.Notification.FLAG_BUBBLE;
 import static android.app.Notification.FLAG_FOREGROUND_SERVICE;
-import static android.app.NotificationChannel.USER_LOCKED_ALLOW_BUBBLE;
+import static android.app.NotificationChannel.ALLOW_BUBBLE_OFF;
 import static android.app.NotificationManager.BUBBLE_PREFERENCE_ALL;
 import static android.app.NotificationManager.BUBBLE_PREFERENCE_NONE;
 import static android.app.NotificationManager.BUBBLE_PREFERENCE_SELECTED;
@@ -71,30 +71,42 @@ public class BubbleExtractor implements NotificationSignalExtractor {
             return null;
         }
 
-        int bubblePreference =
+        boolean notifCanPresentAsBubble = canPresentAsBubble(record)
+                && !mActivityManager.isLowRamDevice()
+                && record.isConversation()
+                && record.getShortcutInfo() != null
+                && (record.getNotification().flags & FLAG_FOREGROUND_SERVICE) == 0;
+
+        boolean userEnabledBubbles = mConfig.bubblesEnabled(record.getUser());
+        int appPreference =
                 mConfig.getBubblePreference(
                         record.getSbn().getPackageName(), record.getSbn().getUid());
         NotificationChannel recordChannel = record.getChannel();
-
-        if (!mConfig.bubblesEnabled() || bubblePreference == BUBBLE_PREFERENCE_NONE) {
+        if (!userEnabledBubbles
+                || appPreference == BUBBLE_PREFERENCE_NONE
+                || !notifCanPresentAsBubble) {
             record.setAllowBubble(false);
+            if (!notifCanPresentAsBubble) {
+                // clear out bubble metadata since it can't be used
+                record.getNotification().setBubbleMetadata(null);
+            }
         } else if (recordChannel == null) {
             // the app is allowed but there's no channel to check
             record.setAllowBubble(true);
-        } else if (bubblePreference == BUBBLE_PREFERENCE_ALL) {
-            // by default the channel is not allowed, only don't bubble if the user specified
-            boolean userLockedNoBubbles = !recordChannel.canBubble()
-                    && (recordChannel.getUserLockedFields() & USER_LOCKED_ALLOW_BUBBLE) != 0;
-            record.setAllowBubble(!userLockedNoBubbles);
-        } else if (bubblePreference == BUBBLE_PREFERENCE_SELECTED) {
+        } else if (appPreference == BUBBLE_PREFERENCE_ALL) {
+            record.setAllowBubble(recordChannel.getAllowBubbles() != ALLOW_BUBBLE_OFF);
+        } else if (appPreference == BUBBLE_PREFERENCE_SELECTED) {
             record.setAllowBubble(recordChannel.canBubble());
         }
+        if (DBG) {
+            Slog.d(TAG, "record: " + record.getKey()
+                    + " appPref: " + appPreference
+                    + " canBubble: " + record.canBubble()
+                    + " canPresentAsBubble: " + notifCanPresentAsBubble
+                    + " flagRemoved: " + record.isFlagBubbleRemoved());
+        }
 
-        final boolean fulfillsPolicy = record.canBubble()
-                && record.isConversation()
-                && !mActivityManager.isLowRamDevice()
-                && (record.getNotification().flags & FLAG_FOREGROUND_SERVICE) == 0;
-        final boolean applyFlag = fulfillsPolicy && canPresentAsBubble(record);
+        final boolean applyFlag = record.canBubble() && !record.isFlagBubbleRemoved();
         if (applyFlag) {
             record.getNotification().flags |= FLAG_BUBBLE;
         } else {
@@ -155,20 +167,20 @@ public class BubbleExtractor implements NotificationSignalExtractor {
             // TODO: check the shortcut intent / ensure it can show in activity view
             return true;
         }
-        return canLaunchInActivityView(mContext, metadata.getIntent(), pkg);
+        return canLaunchInTaskView(mContext, metadata.getIntent(), pkg);
     }
 
     /**
      * Whether an intent is properly configured to display in an {@link
-     * android.app.ActivityView} for bubbling.
+     * com.android.wm.shell.TaskView} for bubbling.
      *
      * @param context       the context to use.
      * @param pendingIntent the pending intent of the bubble.
      * @param packageName   the notification package name for this bubble.
      */
-    // Keep checks in sync with BubbleController#canLaunchInActivityView.
+    // Keep checks in sync with BubbleController#canLaunchInTaskView.
     @VisibleForTesting
-    protected boolean canLaunchInActivityView(Context context, PendingIntent pendingIntent,
+    protected boolean canLaunchInTaskView(Context context, PendingIntent pendingIntent,
             String packageName) {
         if (pendingIntent == null) {
             Slog.w(TAG, "Unable to create bubble -- no intent");

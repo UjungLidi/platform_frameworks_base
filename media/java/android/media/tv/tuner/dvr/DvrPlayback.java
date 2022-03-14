@@ -26,6 +26,10 @@ import android.media.tv.tuner.Tuner.Result;
 import android.media.tv.tuner.TunerUtils;
 import android.media.tv.tuner.filter.Filter;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
+import android.util.Log;
+
+import com.android.internal.util.FrameworkStatsLog;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -72,9 +76,16 @@ public class DvrPlayback implements AutoCloseable {
      */
     public static final int PLAYBACK_STATUS_FULL = Constants.PlaybackStatus.SPACE_FULL;
 
+    private static final String TAG = "TvTunerPlayback";
+
     private long mNativeContext;
     private OnPlaybackStatusChangedListener mListener;
     private Executor mExecutor;
+    private int mUserId;
+    private static int sInstantId = 0;
+    private int mSegmentId = 0;
+    private int mUnderflow;
+    private final Object mListenerLock = new Object();
 
     private native int nativeAttachFilter(Filter filter);
     private native int nativeDetachFilter(Filter filter);
@@ -88,45 +99,62 @@ public class DvrPlayback implements AutoCloseable {
     private native long nativeRead(byte[] bytes, long offset, long size);
 
     private DvrPlayback() {
+        mUserId = Process.myUid();
+        mSegmentId = (sInstantId & 0x0000ffff) << 16;
+        sInstantId++;
     }
 
     /** @hide */
     public void setListener(
             @NonNull Executor executor, @NonNull OnPlaybackStatusChangedListener listener) {
-        mExecutor = executor;
-        mListener = listener;
+        synchronized (mListenerLock) {
+            mExecutor = executor;
+            mListener = listener;
+        }
     }
 
     private void onPlaybackStatusChanged(int status) {
-        if (mExecutor != null && mListener != null) {
-            mExecutor.execute(() -> mListener.onPlaybackStatusChanged(status));
+        if (status == PLAYBACK_STATUS_EMPTY) {
+            mUnderflow++;
+        }
+        synchronized (mListenerLock) {
+            if (mExecutor != null && mListener != null) {
+                mExecutor.execute(() -> mListener.onPlaybackStatusChanged(status));
+            }
         }
     }
 
 
     /**
-     * Attaches a filter to DVR interface for recording.
+     * Attaches a filter to DVR interface for playback.
      *
-     * <p>There can be multiple filters attached. Attached filters are independent, so the order
-     * doesn't matter.
+     * @deprecated attaching filters is not valid in Dvr Playback use case. This API is a no-op.
+     *             Filters opened by {@link Tuner#openFilter} are used for DVR playback.
      *
      * @param filter the filter to be attached.
      * @return result status of the operation.
      */
     @Result
+    @Deprecated
     public int attachFilter(@NonNull Filter filter) {
-        return nativeAttachFilter(filter);
+        // no-op
+        return Tuner.RESULT_UNAVAILABLE;
     }
 
     /**
      * Detaches a filter from DVR interface.
      *
+     * @deprecated detaching filters is not valid in Dvr Playback use case. This API is a no-op.
+     *             Filters opened by {@link Tuner#openFilter} are used for DVR playback.
+     *
      * @param filter the filter to be detached.
      * @return result status of the operation.
      */
     @Result
+    @Deprecated
     public int detachFilter(@NonNull Filter filter) {
-        return nativeDetachFilter(filter);
+        // no-op
+        return Tuner.RESULT_UNAVAILABLE;
     }
 
     /**
@@ -149,6 +177,13 @@ public class DvrPlayback implements AutoCloseable {
      */
     @Result
     public int start() {
+        mSegmentId =  (mSegmentId & 0xffff0000) | (((mSegmentId & 0x0000ffff) + 1) & 0x0000ffff);
+        mUnderflow = 0;
+        Log.d(TAG, "Write Stats Log for Playback.");
+        FrameworkStatsLog
+                .write(FrameworkStatsLog.TV_TUNER_DVR_STATUS, mUserId,
+                    FrameworkStatsLog.TV_TUNER_DVR_STATUS__TYPE__PLAYBACK,
+                    FrameworkStatsLog.TV_TUNER_DVR_STATUS__STATE__STARTED, mSegmentId, 0);
         return nativeStartDvr();
     }
 
@@ -162,6 +197,11 @@ public class DvrPlayback implements AutoCloseable {
      */
     @Result
     public int stop() {
+        Log.d(TAG, "Write Stats Log for Playback.");
+        FrameworkStatsLog
+                .write(FrameworkStatsLog.TV_TUNER_DVR_STATUS, mUserId,
+                    FrameworkStatsLog.TV_TUNER_DVR_STATUS__TYPE__PLAYBACK,
+                    FrameworkStatsLog.TV_TUNER_DVR_STATUS__STATE__STOPPED, mSegmentId, mUnderflow);
         return nativeStopDvr();
     }
 

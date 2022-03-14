@@ -37,16 +37,20 @@ import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
 import com.android.systemui.Dependency;
 import com.android.systemui.R;
-import com.android.systemui.assist.AssistHandleViewController;
+import com.android.systemui.assist.AssistLogger;
 import com.android.systemui.assist.AssistManager;
-import com.android.systemui.statusbar.NavigationBarController;
+import com.android.systemui.assist.AssistantSessionEvent;
+import com.android.systemui.dagger.SysUISingleton;
 
 import java.util.Locale;
+
+import javax.inject.Inject;
 
 /**
  * Default UiController implementation. Shows white edge lights along the bottom of the phone,
  * expanding from the corners to meet in the center.
  */
+@SysUISingleton
 public class DefaultUiController implements AssistManager.UiController {
 
     private static final String TAG = "DefaultUiController";
@@ -58,6 +62,7 @@ public class DefaultUiController implements AssistManager.UiController {
 
     protected final FrameLayout mRoot;
     protected InvocationLightsView mInvocationLightsView;
+    protected final AssistLogger mAssistLogger;
 
     private final WindowManager mWindowManager;
     private final WindowManager.LayoutParams mLayoutParams;
@@ -69,7 +74,9 @@ public class DefaultUiController implements AssistManager.UiController {
 
     private ValueAnimator mInvocationAnimator = new ValueAnimator();
 
-    public DefaultUiController(Context context) {
+    @Inject
+    public DefaultUiController(Context context, AssistLogger assistLogger) {
+        mAssistLogger = assistLogger;
         mRoot = new FrameLayout(context);
         mWindowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
 
@@ -104,7 +111,6 @@ public class DefaultUiController implements AssistManager.UiController {
             if (!mInvocationInProgress) {
                 attach();
                 mInvocationInProgress = true;
-                updateAssistHandleVisibility();
             }
             setProgressInternal(type, progress);
         }
@@ -127,7 +133,6 @@ public class DefaultUiController implements AssistManager.UiController {
         }
         mInvocationLightsView.hide();
         mInvocationInProgress = false;
-        updateAssistHandleVisibility();
     }
 
     protected void logInvocationProgressMetrics(
@@ -142,6 +147,11 @@ public class DefaultUiController implements AssistManager.UiController {
             if (VERBOSE) {
                 Log.v(TAG, "Invocation started: type=" + type);
             }
+            mAssistLogger.reportAssistantInvocationEventFromLegacy(
+                    type,
+                    /* isInvocationComplete = */ false,
+                    /* assistantComponent = */ null,
+                    /* legacyDeviceState = */ null);
             MetricsLogger.action(new LogMaker(MetricsEvent.ASSISTANT)
                     .setType(MetricsEvent.TYPE_ACTION)
                     .setSubtype(Dependency.get(AssistManager.class).toLoggingSubType(type)));
@@ -152,20 +162,11 @@ public class DefaultUiController implements AssistManager.UiController {
             if (VERBOSE) {
                 Log.v(TAG, "Invocation cancelled: type=" + type);
             }
+            mAssistLogger.reportAssistantSessionEvent(
+                    AssistantSessionEvent.ASSISTANT_SESSION_INVOCATION_CANCELLED);
             MetricsLogger.action(new LogMaker(MetricsEvent.ASSISTANT)
                     .setType(MetricsEvent.TYPE_DISMISS)
                     .setSubtype(DISMISS_REASON_INVOCATION_CANCELLED));
-        }
-    }
-
-    private void updateAssistHandleVisibility() {
-        NavigationBarController navigationBarController =
-                Dependency.get(NavigationBarController.class);
-        AssistHandleViewController controller =
-                navigationBarController == null
-                        ? null : navigationBarController.getAssistHandlerViewController();
-        if (controller != null) {
-            controller.setAssistHintBlocked(mInvocationInProgress);
         }
     }
 

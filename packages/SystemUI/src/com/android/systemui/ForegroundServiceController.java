@@ -24,34 +24,27 @@ import android.util.SparseArray;
 
 import com.android.internal.messages.nano.SystemMessageProto;
 import com.android.systemui.appops.AppOpsController;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
-import com.android.systemui.statusbar.notification.NotificationEntryManager;
-import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.util.Assert;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * Tracks state of foreground services and notifications related to foreground services per user.
  */
-@Singleton
+@SysUISingleton
 public class ForegroundServiceController {
-    public static final int[] APP_OPS = new int[] {AppOpsManager.OP_CAMERA,
-            AppOpsManager.OP_SYSTEM_ALERT_WINDOW,
-            AppOpsManager.OP_RECORD_AUDIO,
-            AppOpsManager.OP_COARSE_LOCATION,
-            AppOpsManager.OP_FINE_LOCATION};
+    public static final int[] APP_OPS = new int[] {AppOpsManager.OP_SYSTEM_ALERT_WINDOW};
 
     private final SparseArray<ForegroundServicesUserState> mUserServices = new SparseArray<>();
     private final Object mMutex = new Object();
-    private final NotificationEntryManager mEntryManager;
     private final Handler mMainHandler;
 
     @Inject
-    public ForegroundServiceController(NotificationEntryManager entryManager,
-            AppOpsController appOpsController, @Main Handler mainHandler) {
-        mEntryManager = entryManager;
+    public ForegroundServiceController(
+            AppOpsController appOpsController,
+            @Main Handler mainHandler) {
         mMainHandler = mainHandler;
         appOpsController.addCallback(APP_OPS, (code, uid, packageName, active) -> {
             mMainHandler.post(() -> {
@@ -62,7 +55,7 @@ public class ForegroundServiceController {
 
     /**
      * @return true if this user has services missing notifications and therefore needs a
-     * disclosure notification.
+     * disclosure notification for running a foreground service.
      */
     public boolean isDisclosureNeededForUser(int userId) {
         synchronized (mMutex) {
@@ -74,26 +67,13 @@ public class ForegroundServiceController {
 
     /**
      * @return true if this user/pkg has a missing or custom layout notification and therefore needs
-     * a disclosure notification for system alert windows.
+     * a disclosure notification showing the user which appsOps the app is using.
      */
     public boolean isSystemAlertWarningNeeded(int userId, String pkg) {
         synchronized (mMutex) {
             final ForegroundServicesUserState services = mUserServices.get(userId);
             if (services == null) return false;
-            return services.getStandardLayoutKey(pkg) == null;
-        }
-    }
-
-    /**
-     * Returns the key of the foreground service from this package using the standard template,
-     * if one exists.
-     */
-    @Nullable
-    public String getStandardLayoutKey(int userId, String pkg) {
-        synchronized (mMutex) {
-            final ForegroundServicesUserState services = mUserServices.get(userId);
-            if (services == null) return null;
-            return services.getStandardLayoutKey(pkg);
+            return services.getStandardLayoutKeys(pkg) == null;
         }
     }
 
@@ -136,29 +116,6 @@ public class ForegroundServiceController {
                 userServices.addOp(packageName, appOpCode);
             } else {
                 userServices.removeOp(packageName, appOpCode);
-            }
-        }
-
-        // TODO: (b/145659174) remove when moving to NewNotifPipeline. Replaced by
-        //  ForegroundCoordinator
-        // Update appOp if there's an associated pending or visible notification:
-        final String foregroundKey = getStandardLayoutKey(userId, packageName);
-        if (foregroundKey != null) {
-            final NotificationEntry entry = mEntryManager.getPendingOrActiveNotif(foregroundKey);
-            if (entry != null
-                    && uid == entry.getSbn().getUid()
-                    && packageName.equals(entry.getSbn().getPackageName())) {
-                boolean changed;
-                synchronized (entry.mActiveAppOps) {
-                    if (active) {
-                        changed = entry.mActiveAppOps.add(appOpCode);
-                    } else {
-                        changed = entry.mActiveAppOps.remove(appOpCode);
-                    }
-                }
-                if (changed) {
-                    mEntryManager.updateNotifications("appOpChanged pkg=" + packageName);
-                }
             }
         }
     }

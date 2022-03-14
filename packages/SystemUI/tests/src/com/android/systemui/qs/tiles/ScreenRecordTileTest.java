@@ -17,32 +17,44 @@
 package com.android.systemui.qs.tiles;
 
 import static junit.framework.Assert.assertEquals;
+import static junit.framework.Assert.assertNotNull;
 import static junit.framework.Assert.assertTrue;
 
+import static org.junit.Assert.assertFalse;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.os.Handler;
 import android.service.quicksettings.Tile;
 import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 
 import androidx.test.filters.SmallTest;
 
-import com.android.systemui.Dependency;
+import com.android.internal.logging.MetricsLogger;
 import com.android.systemui.R;
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.animation.DialogLaunchAnimator;
+import com.android.systemui.classifier.FalsingManagerFake;
+import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSTileHost;
+import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.screenrecord.RecordingController;
+import com.android.systemui.statusbar.phone.KeyguardDismissUtil;
+import com.android.systemui.statusbar.policy.KeyguardStateController;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 @RunWith(AndroidTestingRunner.class)
-@TestableLooper.RunWithLooper
+@TestableLooper.RunWithLooper(setAsMainLooper = true)
 @SmallTest
 public class ScreenRecordTileTest extends SysuiTestCase {
 
@@ -50,6 +62,20 @@ public class ScreenRecordTileTest extends SysuiTestCase {
     private RecordingController mController;
     @Mock
     private QSTileHost mHost;
+    @Mock
+    private KeyguardDismissUtil mKeyguardDismissUtil;
+    @Mock
+    private MetricsLogger mMetricsLogger;
+    @Mock
+    private StatusBarStateController mStatusBarStateController;
+    @Mock
+    private ActivityStarter mActivityStarter;
+    @Mock
+    private QSLogger mQSLogger;
+    @Mock
+    private KeyguardStateController mKeyguardStateController;
+    @Mock
+    private DialogLaunchAnimator mDialogLaunchAnimator;
 
     private TestableLooper mTestableLooper;
     private ScreenRecordTile mTile;
@@ -59,12 +85,26 @@ public class ScreenRecordTileTest extends SysuiTestCase {
         MockitoAnnotations.initMocks(this);
 
         mTestableLooper = TestableLooper.get(this);
-        mDependency.injectTestDependency(Dependency.BG_LOOPER, mTestableLooper.getLooper());
-        mController = mDependency.injectMockDependency(RecordingController.class);
 
         when(mHost.getContext()).thenReturn(mContext);
 
-        mTile = new ScreenRecordTile(mHost, mController);
+        mTile = new ScreenRecordTile(
+                mHost,
+                mTestableLooper.getLooper(),
+                new Handler(mTestableLooper.getLooper()),
+                new FalsingManagerFake(),
+                mMetricsLogger,
+                mStatusBarStateController,
+                mActivityStarter,
+                mQSLogger,
+                mController,
+                mKeyguardDismissUtil,
+                mKeyguardStateController,
+                mDialogLaunchAnimator
+        );
+
+        mTile.initialize();
+        mTestableLooper.processAllMessages();
     }
 
     // Test that the tile is inactive and labeled correctly when the controller is neither starting
@@ -81,8 +121,17 @@ public class ScreenRecordTileTest extends SysuiTestCase {
         assertTrue(mTile.getState().secondaryLabel.toString().equals(
                 mContext.getString(R.string.quick_settings_screen_record_start)));
 
-        mTile.handleClick();
-        verify(mController, times(1)).launchRecordPrompt();
+        mTile.handleClick(null /* view */);
+        mTestableLooper.processAllMessages();
+
+        ArgumentCaptor<Runnable> onStartRecordingClicked = ArgumentCaptor.forClass(Runnable.class);
+        verify(mController).createScreenRecordDialog(any(), onStartRecordingClicked.capture());
+
+        // When starting the recording, we collapse the shade and disable the dialog animation.
+        assertNotNull(onStartRecordingClicked.getValue());
+        onStartRecordingClicked.getValue().run();
+        verify(mDialogLaunchAnimator).disableAllCurrentDialogsExitAnimations();
+        verify(mHost).collapsePanels();
     }
 
     // Test that the tile is active and labeled correctly when the controller is starting
@@ -104,7 +153,7 @@ public class ScreenRecordTileTest extends SysuiTestCase {
         when(mController.isStarting()).thenReturn(true);
         when(mController.isRecording()).thenReturn(false);
 
-        mTile.handleClick();
+        mTile.handleClick(null /* view */);
 
         verify(mController, times(1)).cancelCountdown();
     }
@@ -129,8 +178,49 @@ public class ScreenRecordTileTest extends SysuiTestCase {
         when(mController.isStarting()).thenReturn(false);
         when(mController.isRecording()).thenReturn(true);
 
-        mTile.handleClick();
+        mTile.handleClick(null /* view */);
 
         verify(mController, times(1)).stopRecording();
+    }
+
+    @Test
+    public void testContentDescriptionHasTileName() {
+        mTile.refreshState();
+        mTestableLooper.processAllMessages();
+
+        assertTrue(mTile.getState().contentDescription.toString().contains(mTile.getState().label));
+    }
+
+    @Test
+    public void testForceExpandIcon_notRecordingNotStarting() {
+        when(mController.isStarting()).thenReturn(false);
+        when(mController.isRecording()).thenReturn(false);
+
+        mTile.refreshState();
+        mTestableLooper.processAllMessages();
+
+        assertTrue(mTile.getState().forceExpandIcon);
+    }
+
+    @Test
+    public void testForceExpandIcon_recordingNotStarting() {
+        when(mController.isStarting()).thenReturn(false);
+        when(mController.isRecording()).thenReturn(true);
+
+        mTile.refreshState();
+        mTestableLooper.processAllMessages();
+
+        assertFalse(mTile.getState().forceExpandIcon);
+    }
+
+    @Test
+    public void testForceExpandIcon_startingNotRecording() {
+        when(mController.isStarting()).thenReturn(true);
+        when(mController.isRecording()).thenReturn(false);
+
+        mTile.refreshState();
+        mTestableLooper.processAllMessages();
+
+        assertFalse(mTile.getState().forceExpandIcon);
     }
 }

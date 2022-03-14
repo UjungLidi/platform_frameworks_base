@@ -18,7 +18,9 @@ package com.android.systemui.statusbar.notification;
 
 import android.content.Intent;
 import android.service.notification.StatusBarNotification;
+import android.view.View;
 
+import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 
 /**
@@ -32,6 +34,12 @@ public interface NotificationActivityStarter {
     /** Called when the user clicks on a button in the notification guts which fires an intent. */
     void startNotificationGutsIntent(Intent intent, int appUid,
             ExpandableNotificationRow row);
+
+    /** Called when the user clicks "Manage" or "History" in the Shade. */
+    void startHistoryIntent(View view, boolean showHistory);
+
+    /** Called when the user succeed to drop notification to proper target view. */
+    void onDragSuccess(NotificationEntry entry);
 
     default boolean isCollapsingToShowActivityOverLockscreen() {
         return false;

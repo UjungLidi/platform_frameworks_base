@@ -20,6 +20,8 @@ import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
+import android.annotation.TestApi;
+import android.audio.policy.configuration.V7_0.AudioUsage;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.media.audiopolicy.AudioProductStrategy;
 import android.os.Build;
@@ -34,7 +36,9 @@ import android.util.proto.ProtoOutputStream;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -443,15 +447,32 @@ public final class AudioAttributes implements Parcelable {
      */
     public static final int FLAG_CAPTURE_PRIVATE = 0x1 << 13;
 
+    /**
+     * @hide
+     * Flag indicating the audio content has been processed to provide a virtual multichannel
+     * audio experience
+     */
+    public static final int FLAG_CONTENT_SPATIALIZED = 0x1 << 14;
+
+    /**
+     * @hide
+     * Flag indicating the audio content is to never be spatialized
+     */
+    public static final int FLAG_NEVER_SPATIALIZE = 0x1 << 15;
 
     // Note that even though FLAG_MUTE_HAPTIC is stored as a flag bit, it is not here since
     // it is known as a boolean value outside of AudioAttributes.
     private static final int FLAG_ALL = FLAG_AUDIBILITY_ENFORCED | FLAG_SECURE | FLAG_SCO
             | FLAG_BEACON | FLAG_HW_AV_SYNC | FLAG_HW_HOTWORD | FLAG_BYPASS_INTERRUPTION_POLICY
             | FLAG_BYPASS_MUTE | FLAG_LOW_LATENCY | FLAG_DEEP_BUFFER | FLAG_NO_MEDIA_PROJECTION
-            | FLAG_NO_SYSTEM_CAPTURE | FLAG_CAPTURE_PRIVATE;
+            | FLAG_NO_SYSTEM_CAPTURE | FLAG_CAPTURE_PRIVATE | FLAG_CONTENT_SPATIALIZED
+            | FLAG_NEVER_SPATIALIZE;
     private final static int FLAG_ALL_PUBLIC = FLAG_AUDIBILITY_ENFORCED |
             FLAG_HW_AV_SYNC | FLAG_LOW_LATENCY;
+    /* mask of flags that can be set by SDK and System APIs through the Builder */
+    private static final int FLAG_ALL_API_SET = FLAG_ALL_PUBLIC
+            | FLAG_BYPASS_INTERRUPTION_POLICY
+            | FLAG_BYPASS_MUTE;
 
     /**
      * Indicates that the audio may be captured by any app.
@@ -498,7 +519,7 @@ public final class AudioAttributes implements Parcelable {
     @Retention(RetentionPolicy.SOURCE)
     public @interface CapturePolicy {}
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private int mUsage = USAGE_UNKNOWN;
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     private int mContentType = CONTENT_TYPE_UNKNOWN;
@@ -507,7 +528,7 @@ public final class AudioAttributes implements Parcelable {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     private int mFlags = 0x0;
     private HashSet<String> mTags;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private String mFormattedTags;
     private Bundle mBundle; // lazy-initialized, may be null
 
@@ -607,6 +628,49 @@ public final class AudioAttributes implements Parcelable {
     }
 
     /**
+     * Return true if the audio content associated with these attributes has already been
+     * spatialized, that is it has already been processed to offer a binaural or transaural
+     * immersive audio experience.
+     * @return {@code true} if the content has been processed
+     */
+    public boolean isContentSpatialized() {
+        return (mFlags & FLAG_CONTENT_SPATIALIZED) != 0;
+    }
+
+    /** @hide */
+    @IntDef(flag = false, value = {
+            SPATIALIZATION_BEHAVIOR_AUTO,
+            SPATIALIZATION_BEHAVIOR_NEVER,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface SpatializationBehavior {};
+
+    /**
+     * Constant indicating the audio content associated with these attributes will follow the
+     * default platform behavior with regards to which content will be spatialized or not.
+     * @see #getSpatializationBehavior()
+     * @see Spatializer
+     */
+    public static final int SPATIALIZATION_BEHAVIOR_AUTO = 0;
+
+    /**
+     * Constant indicating the audio content associated with these attributes should never
+     * be virtualized.
+     * @see #getSpatializationBehavior()
+     * @see Spatializer
+     */
+    public static final int SPATIALIZATION_BEHAVIOR_NEVER = 1;
+
+    /**
+     * Return the behavior affecting whether spatialization will be used.
+     * @return the spatialization behavior
+     */
+    public @SpatializationBehavior int getSpatializationBehavior() {
+        return ((mFlags & FLAG_NEVER_SPATIALIZE) != 0)
+                ? SPATIALIZATION_BEHAVIOR_NEVER : SPATIALIZATION_BEHAVIOR_AUTO;
+    }
+
+    /**
      * Return the capture policy.
      * @return the capture policy set by {@link Builder#setAllowedCapturePolicy(int)} or
      *         the default if it was not called.
@@ -649,6 +713,8 @@ public final class AudioAttributes implements Parcelable {
         private int mSource = MediaRecorder.AudioSource.AUDIO_SOURCE_INVALID;
         private int mFlags = 0x0;
         private boolean mMuteHapticChannels = true;
+        private boolean mIsContentSpatialized = false;
+        private int mSpatializationBehavior = SPATIALIZATION_BEHAVIOR_AUTO;
         private HashSet<String> mTags = new HashSet<String>();
         private Bundle mBundle;
         private int mPrivacySensitive = PRIVACY_SENSITIVE_DEFAULT;
@@ -679,6 +745,8 @@ public final class AudioAttributes implements Parcelable {
             mFlags = aa.getAllFlags();
             mTags = (HashSet<String>) aa.mTags.clone();
             mMuteHapticChannels = aa.areHapticChannelsMuted();
+            mIsContentSpatialized = aa.isContentSpatialized();
+            mSpatializationBehavior = aa.getSpatializationBehavior();
         }
 
         /**
@@ -711,6 +779,12 @@ public final class AudioAttributes implements Parcelable {
             if (mMuteHapticChannels) {
                 aa.mFlags |= FLAG_MUTE_HAPTIC;
             }
+            if (mIsContentSpatialized) {
+                aa.mFlags |= FLAG_CONTENT_SPATIALIZED;
+            }
+            if (mSpatializationBehavior == SPATIALIZATION_BEHAVIOR_NEVER) {
+                aa.mFlags |= FLAG_NEVER_SPATIALIZE;
+            }
 
             if (mPrivacySensitive == PRIVACY_SENSITIVE_DEFAULT) {
                 // capturing for camcorder or communication is private by default to
@@ -731,6 +805,13 @@ public final class AudioAttributes implements Parcelable {
             if (mBundle != null) {
                 aa.mBundle = new Bundle(mBundle);
             }
+
+            // Allow the FLAG_HW_HOTWORD only for AudioSource.VOICE_RECOGNITION
+            if (mSource != MediaRecorder.AudioSource.VOICE_RECOGNITION
+                    && (mFlags & FLAG_HW_HOTWORD) == FLAG_HW_HOTWORD) {
+                aa.mFlags &= ~FLAG_HW_HOTWORD;
+            }
+
             return aa;
         }
 
@@ -838,8 +919,29 @@ public final class AudioAttributes implements Parcelable {
          * @return the same Builder instance.
          */
         public Builder setFlags(int flags) {
-            flags &= AudioAttributes.FLAG_ALL_PUBLIC;
+            flags &= AudioAttributes.FLAG_ALL_API_SET;
             mFlags |= flags;
+            return this;
+        }
+
+        /**
+         * @hide
+         * Request for capture in hotword mode.
+         *
+         * Requests an audio path optimized for Hotword detection use cases from
+         * the low power audio DSP. This is valid only for capture with
+         * audio source {@link MediaRecorder.AudioSource#VOICE_RECOGNITION}.
+         * There is no guarantee that this mode is available on the device.
+         * @return the same Builder instance.
+         */
+        @SystemApi
+        @RequiresPermission(android.Manifest.permission.CAPTURE_AUDIO_HOTWORD)
+        public @NonNull Builder setHotwordModeEnabled(boolean enable) {
+            if (enable) {
+                mFlags |= FLAG_HW_HOTWORD;
+            } else {
+                mFlags &= ~FLAG_HW_HOTWORD;
+            }
             return this;
         }
 
@@ -866,6 +968,35 @@ public final class AudioAttributes implements Parcelable {
          */
         public @NonNull Builder setAllowedCapturePolicy(@CapturePolicy int capturePolicy) {
             mFlags = capturePolicyToFlags(capturePolicy, mFlags);
+            return this;
+        }
+
+        /**
+         * Specifies whether the content has already been processed for spatialization.
+         * If it has, setting this to true will prevent issues such as double-processing.
+         * @param isSpatialized
+         * @return the same Builder instance
+         */
+        public @NonNull Builder setIsContentSpatialized(boolean isSpatialized) {
+            mIsContentSpatialized = isSpatialized;
+            return this;
+        }
+
+        /**
+         * Sets the behavior affecting whether spatialization will be used.
+         * @param sb the spatialization behavior
+         * @return the same Builder instance
+         *
+         */
+        public @NonNull Builder setSpatializationBehavior(@SpatializationBehavior int sb) {
+            switch (sb) {
+                case SPATIALIZATION_BEHAVIOR_NEVER:
+                case SPATIALIZATION_BEHAVIOR_AUTO:
+                    break;
+                default:
+                    throw new IllegalArgumentException("Invalid spatialization behavior " + sb);
+            }
+            mSpatializationBehavior = sb;
             return this;
         }
 
@@ -954,6 +1085,8 @@ public final class AudioAttributes implements Parcelable {
                     mContentType = attributes.mContentType;
                     mFlags = attributes.getAllFlags();
                     mMuteHapticChannels = attributes.areHapticChannelsMuted();
+                    mIsContentSpatialized = attributes.isContentSpatialized();
+                    mSpatializationBehavior = attributes.getSpatializationBehavior();
                     mTags = attributes.mTags;
                     mBundle = attributes.mBundle;
                     mSource = attributes.mSource;
@@ -1227,53 +1360,152 @@ public final class AudioAttributes implements Parcelable {
         return usageToString(mUsage);
     }
 
-    /** @hide */
-    public static String usageToString(int usage) {
+    /**
+     * Returns the string representation for the usage constant passed as parameter.
+     *
+     * @param usage one of the {@link AudioAttributes} usage constants
+     * @return string representing the {@link AudioAttributes} usage constant passed as a parameter
+     *
+     * @hide
+     */
+    @NonNull
+    public static String usageToString(@AttributeSdkUsage int usage) {
         switch(usage) {
             case USAGE_UNKNOWN:
-                return new String("USAGE_UNKNOWN");
+                return "USAGE_UNKNOWN";
             case USAGE_MEDIA:
-                return new String("USAGE_MEDIA");
+                return "USAGE_MEDIA";
             case USAGE_VOICE_COMMUNICATION:
-                return new String("USAGE_VOICE_COMMUNICATION");
+                return "USAGE_VOICE_COMMUNICATION";
             case USAGE_VOICE_COMMUNICATION_SIGNALLING:
-                return new String("USAGE_VOICE_COMMUNICATION_SIGNALLING");
+                return "USAGE_VOICE_COMMUNICATION_SIGNALLING";
             case USAGE_ALARM:
-                return new String("USAGE_ALARM");
+                return "USAGE_ALARM";
             case USAGE_NOTIFICATION:
-                return new String("USAGE_NOTIFICATION");
+                return "USAGE_NOTIFICATION";
             case USAGE_NOTIFICATION_RINGTONE:
-                return new String("USAGE_NOTIFICATION_RINGTONE");
+                return "USAGE_NOTIFICATION_RINGTONE";
             case USAGE_NOTIFICATION_COMMUNICATION_REQUEST:
-                return new String("USAGE_NOTIFICATION_COMMUNICATION_REQUEST");
+                return "USAGE_NOTIFICATION_COMMUNICATION_REQUEST";
             case USAGE_NOTIFICATION_COMMUNICATION_INSTANT:
-                return new String("USAGE_NOTIFICATION_COMMUNICATION_INSTANT");
+                return "USAGE_NOTIFICATION_COMMUNICATION_INSTANT";
             case USAGE_NOTIFICATION_COMMUNICATION_DELAYED:
-                return new String("USAGE_NOTIFICATION_COMMUNICATION_DELAYED");
+                return "USAGE_NOTIFICATION_COMMUNICATION_DELAYED";
             case USAGE_NOTIFICATION_EVENT:
-                return new String("USAGE_NOTIFICATION_EVENT");
+                return "USAGE_NOTIFICATION_EVENT";
             case USAGE_ASSISTANCE_ACCESSIBILITY:
-                return new String("USAGE_ASSISTANCE_ACCESSIBILITY");
+                return "USAGE_ASSISTANCE_ACCESSIBILITY";
             case USAGE_ASSISTANCE_NAVIGATION_GUIDANCE:
-                return new String("USAGE_ASSISTANCE_NAVIGATION_GUIDANCE");
+                return "USAGE_ASSISTANCE_NAVIGATION_GUIDANCE";
             case USAGE_ASSISTANCE_SONIFICATION:
-                return new String("USAGE_ASSISTANCE_SONIFICATION");
+                return "USAGE_ASSISTANCE_SONIFICATION";
             case USAGE_GAME:
-                return new String("USAGE_GAME");
+                return "USAGE_GAME";
             case USAGE_ASSISTANT:
-                return new String("USAGE_ASSISTANT");
+                return "USAGE_ASSISTANT";
             case USAGE_CALL_ASSISTANT:
-                return new String("USAGE_CALL_ASSISTANT");
+                return "USAGE_CALL_ASSISTANT";
             case USAGE_EMERGENCY:
-                return new String("USAGE_EMERGENCY");
+                return "USAGE_EMERGENCY";
             case USAGE_SAFETY:
-                return new String("USAGE_SAFETY");
+                return "USAGE_SAFETY";
             case USAGE_VEHICLE_STATUS:
-                return new String("USAGE_VEHICLE_STATUS");
+                return "USAGE_VEHICLE_STATUS";
             case USAGE_ANNOUNCEMENT:
-                return new String("USAGE_ANNOUNCEMENT");
+                return "USAGE_ANNOUNCEMENT";
             default:
-                return new String("unknown usage " + usage);
+                return "unknown usage " + usage;
+        }
+    }
+
+    /** @hide **/
+    @TestApi
+    @NonNull
+    public static String usageToXsdString(@AttributeUsage int usage) {
+        switch (usage) {
+            case AudioAttributes.USAGE_UNKNOWN:
+                return AudioUsage.AUDIO_USAGE_UNKNOWN.toString();
+            case AudioAttributes.USAGE_MEDIA:
+                return AudioUsage.AUDIO_USAGE_MEDIA.toString();
+            case AudioAttributes.USAGE_VOICE_COMMUNICATION:
+                return AudioUsage.AUDIO_USAGE_VOICE_COMMUNICATION.toString();
+            case AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING:
+                return AudioUsage.AUDIO_USAGE_VOICE_COMMUNICATION_SIGNALLING.toString();
+            case AudioAttributes.USAGE_ALARM:
+                return AudioUsage.AUDIO_USAGE_ALARM.toString();
+            case AudioAttributes.USAGE_NOTIFICATION:
+                return AudioUsage.AUDIO_USAGE_NOTIFICATION.toString();
+            case AudioAttributes.USAGE_NOTIFICATION_RINGTONE:
+                return AudioUsage.AUDIO_USAGE_NOTIFICATION_TELEPHONY_RINGTONE.toString();
+            case AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY:
+                return AudioUsage.AUDIO_USAGE_ASSISTANCE_ACCESSIBILITY.toString();
+            case AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE:
+                return AudioUsage.AUDIO_USAGE_ASSISTANCE_NAVIGATION_GUIDANCE.toString();
+            case AudioAttributes.USAGE_ASSISTANCE_SONIFICATION:
+                return AudioUsage.AUDIO_USAGE_ASSISTANCE_SONIFICATION.toString();
+            case AudioAttributes.USAGE_GAME:
+                return AudioUsage.AUDIO_USAGE_GAME.toString();
+            case AudioAttributes.USAGE_VIRTUAL_SOURCE:
+                return AudioUsage.AUDIO_USAGE_VIRTUAL_SOURCE.toString();
+            case AudioAttributes.USAGE_ASSISTANT:
+                return AudioUsage.AUDIO_USAGE_ASSISTANT.toString();
+            case AudioAttributes.USAGE_CALL_ASSISTANT:
+                return AudioUsage.AUDIO_USAGE_CALL_ASSISTANT.toString();
+            case AudioAttributes.USAGE_EMERGENCY:
+                return AudioUsage.AUDIO_USAGE_EMERGENCY.toString();
+            case AudioAttributes.USAGE_SAFETY:
+                return AudioUsage.AUDIO_USAGE_SAFETY.toString();
+            case AudioAttributes.USAGE_VEHICLE_STATUS:
+                return AudioUsage.AUDIO_USAGE_VEHICLE_STATUS.toString();
+            case AudioAttributes.USAGE_ANNOUNCEMENT:
+                return AudioUsage.AUDIO_USAGE_ANNOUNCEMENT.toString();
+            default:
+                Log.w(TAG, "Unknown usage value " + usage);
+                return AudioUsage.AUDIO_USAGE_UNKNOWN.toString();
+        }
+    }
+
+    private static final Map<String, Integer> sXsdStringToUsage = new HashMap<>();
+
+    static {
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_UNKNOWN.toString(), USAGE_UNKNOWN);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_UNKNOWN.toString(), USAGE_UNKNOWN);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_MEDIA.toString(), USAGE_MEDIA);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_VOICE_COMMUNICATION.toString(),
+                USAGE_VOICE_COMMUNICATION);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_VOICE_COMMUNICATION_SIGNALLING.toString(),
+                USAGE_VOICE_COMMUNICATION_SIGNALLING);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_ALARM.toString(), USAGE_ALARM);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_NOTIFICATION.toString(), USAGE_NOTIFICATION);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_NOTIFICATION_TELEPHONY_RINGTONE.toString(),
+                USAGE_NOTIFICATION_RINGTONE);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_ASSISTANCE_ACCESSIBILITY.toString(),
+                USAGE_ASSISTANCE_ACCESSIBILITY);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_ASSISTANCE_NAVIGATION_GUIDANCE.toString(),
+                USAGE_ASSISTANCE_NAVIGATION_GUIDANCE);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_ASSISTANCE_SONIFICATION.toString(),
+                USAGE_ASSISTANCE_SONIFICATION);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_GAME.toString(), USAGE_GAME);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_VIRTUAL_SOURCE.toString(),
+                USAGE_VIRTUAL_SOURCE);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_ASSISTANT.toString(), USAGE_ASSISTANT);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_CALL_ASSISTANT.toString(),
+                USAGE_CALL_ASSISTANT);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_EMERGENCY.toString(), USAGE_EMERGENCY);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_SAFETY.toString(), USAGE_SAFETY);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_VEHICLE_STATUS.toString(),
+                USAGE_VEHICLE_STATUS);
+        sXsdStringToUsage.put(AudioUsage.AUDIO_USAGE_ANNOUNCEMENT.toString(), USAGE_ANNOUNCEMENT);
+    }
+
+    /** @hide **/
+    @TestApi
+    public static @AttributeUsage int xsdStringToUsage(@NonNull String xsdUsage) {
+        if (sXsdStringToUsage.containsKey(xsdUsage)) {
+            return sXsdStringToUsage.get(xsdUsage);
+        } else {
+            Log.w(TAG, "Usage name not found in AudioUsage enum: " + xsdUsage);
+            return USAGE_UNKNOWN;
         }
     }
 

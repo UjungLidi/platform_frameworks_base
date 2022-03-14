@@ -59,10 +59,10 @@ import java.io.UnsupportedEncodingException;
  * cache the size, and then write the size-prefixed buffers.
  *
  * We are trying to avoid too much generated code here, but this class still
- * needs to have a somewhat sane API.  We can't have the multiple passes be
- * done by the calling code.  In addition, we want to avoid the memory high
- * water mark of duplicating all of the values into the traditional in-memory
- * Message objects. We need to find another way.
+ * needs to have API.  We can't have the multiple passes be done by the
+ * calling code.  In addition, we want to avoid the memory high water mark
+ * of duplicating all of the values into the traditional in-memory Message
+ * objects. We need to find another way.
  *
  * So what we do here is to let the calling code write the data into a
  * byte[] (actually a collection of them wrapped in the EncodedBuffer class),
@@ -2275,7 +2275,7 @@ public final class ProtoOutputStream extends ProtoStream {
     /**
      * Write an individual field tag by hand.
      *
-     * @see See <a href="https://developers.google.com/protocol-buffers/docs/encoding">Protobuf
+     * See <a href="https://developers.google.com/protocol-buffers/docs/encoding">Protobuf
      * Encoding</a> for details on the structure of how tags and data are written.
      */
     public void writeTag(int id, @WireType int wireType) {

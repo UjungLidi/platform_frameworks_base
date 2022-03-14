@@ -30,6 +30,9 @@ public final class ProcfsMemoryUtil {
             "RssAnon:",
             "VmSwap:"
     };
+    private static final String[] VMSTAT_KEYS = new String[] {
+            "oom_kill"
+    };
 
     private ProcfsMemoryUtil() {}
 
@@ -41,10 +44,11 @@ public final class ProcfsMemoryUtil {
     public static MemorySnapshot readMemorySnapshotFromProcfs(int pid) {
         long[] output = new long[STATUS_KEYS.length];
         output[0] = -1;
+        output[3] = -1;
+        output[4] = -1;
         Process.readProcLines("/proc/" + pid + "/status", STATUS_KEYS, output);
-        if (output[0] == -1 || (output[3] == 0 && output[4] == 0)) {
-            // Could not open file or anon rss / swap are 0 indicating the process is in a zombie
-            // state.
+        if (output[0] == -1 || output[3] == -1 || output[4] == -1) {
+            // Could not open or parse file.
             return null;
         }
         final MemorySnapshot snapshot = new MemorySnapshot();
@@ -97,5 +101,23 @@ public final class ProcfsMemoryUtil {
         public int rssInKilobytes;
         public int anonRssInKilobytes;
         public int swapInKilobytes;
+    }
+
+    /** Reads and parses selected entries of /proc/vmstat. */
+    @Nullable
+    static VmStat readVmStat() {
+        long[] vmstat = new long[VMSTAT_KEYS.length];
+        vmstat[0] = -1;
+        Process.readProcLines("/proc/vmstat", VMSTAT_KEYS, vmstat);
+        if (vmstat[0] == -1) {
+            return null;
+        }
+        VmStat result = new VmStat();
+        result.oomKillCount = (int) vmstat[0];
+        return result;
+    }
+
+    static final class VmStat {
+        public int oomKillCount;
     }
 }

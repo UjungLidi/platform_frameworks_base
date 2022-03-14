@@ -16,8 +16,6 @@
 
 package com.android.systemui.glwallpaper;
 
-import static com.android.systemui.glwallpaper.GLWallpaperRenderer.SurfaceProxy;
-
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.Mockito.doReturn;
@@ -35,6 +33,7 @@ import androidx.test.filters.SmallTest;
 import com.android.systemui.SysuiTestCase;
 
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -45,33 +44,16 @@ import java.util.Set;
 @SmallTest
 @RunWith(AndroidTestingRunner.class)
 @TestableLooper.RunWithLooper(setAsMainLooper = true)
+@Ignore
 public class ImageWallpaperRendererTest extends SysuiTestCase {
 
     private WallpaperManager mWpmSpy;
-    private SurfaceProxy mSurfaceProxy;
 
     @Before
     public void setUp() throws Exception {
         final WallpaperManager wpm = mContext.getSystemService(WallpaperManager.class);
         mWpmSpy = spy(wpm);
         mContext.addMockSystemService(WallpaperManager.class, mWpmSpy);
-
-        mSurfaceProxy = new SurfaceProxy() {
-            @Override
-            public void requestRender() {
-                // NO-op
-            }
-
-            @Override
-            public void preRender() {
-                // No-op
-            }
-
-            @Override
-            public void postRender() {
-                // No-op
-            }
-        };
     }
 
     @Test
@@ -91,12 +73,12 @@ public class ImageWallpaperRendererTest extends SysuiTestCase {
             doReturn(supportedWideGamuts).when(cmProxySpy).getSupportedColorSpaces();
 
             mWpmSpy.setBitmap(p3Bitmap);
-            ImageWallpaperRenderer rendererP3 = new ImageWallpaperRenderer(mContext, mSurfaceProxy);
+            ImageWallpaperRenderer rendererP3 = new ImageWallpaperRenderer(mContext);
             rendererP3.reportSurfaceSize();
             assertThat(rendererP3.isWcgContent()).isTrue();
 
             mWpmSpy.setBitmap(srgbBitmap);
-            ImageWallpaperRenderer renderer = new ImageWallpaperRenderer(mContext, mSurfaceProxy);
+            ImageWallpaperRenderer renderer = new ImageWallpaperRenderer(mContext);
             assertThat(renderer.isWcgContent()).isFalse();
         } finally {
             srgbBitmap.recycle();

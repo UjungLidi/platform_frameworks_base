@@ -52,7 +52,7 @@ public class RankingBuilder {
     private ArrayList<Notification.Action> mSmartActions = new ArrayList<>();
     private ArrayList<CharSequence> mSmartReplies = new ArrayList<>();
     private boolean mCanBubble = false;
-    private boolean mIsVisuallyInterruptive = false;
+    private boolean mIsTextChanged = false;
     private boolean mIsConversation = false;
     private ShortcutInfo mShortcutInfo = null;
     private int mRankingAdjustment = 0;
@@ -65,7 +65,7 @@ public class RankingBuilder {
         mKey = ranking.getKey();
         mRank = ranking.getRank();
         mMatchesInterruptionFilter = ranking.matchesInterruptionFilter();
-        mVisibilityOverride = ranking.getVisibilityOverride();
+        mVisibilityOverride = ranking.getLockscreenVisibilityOverride();
         mSuppressedVisualEffects = ranking.getSuppressedVisualEffects();
         mImportance = ranking.getImportance();
         mExplanation = ranking.getImportanceExplanation();
@@ -81,9 +81,9 @@ public class RankingBuilder {
         mSmartActions = copyList(ranking.getSmartActions());
         mSmartReplies = copyList(ranking.getSmartReplies());
         mCanBubble = ranking.canBubble();
-        mIsVisuallyInterruptive = ranking.visuallyInterruptive();
+        mIsTextChanged = ranking.isTextChanged();
         mIsConversation = ranking.isConversation();
-        mShortcutInfo = ranking.getShortcutInfo();
+        mShortcutInfo = ranking.getConversationShortcutInfo();
         mRankingAdjustment = ranking.getRankingAdjustment();
         mIsBubble = ranking.isBubble();
     }
@@ -110,7 +110,7 @@ public class RankingBuilder {
                 mSmartActions,
                 mSmartReplies,
                 mCanBubble,
-                mIsVisuallyInterruptive,
+                mIsTextChanged,
                 mIsConversation,
                 mShortcutInfo,
                 mRankingAdjustment,
@@ -189,8 +189,8 @@ public class RankingBuilder {
         return this;
     }
 
-    public RankingBuilder setVisuallyInterruptive(boolean interruptive) {
-        mIsVisuallyInterruptive = interruptive;
+    public RankingBuilder setTextChanged(boolean textChanged) {
+        mIsTextChanged = textChanged;
         return this;
     }
 

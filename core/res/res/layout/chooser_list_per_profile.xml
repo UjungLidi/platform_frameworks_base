@@ -20,10 +20,10 @@
     <com.android.internal.widget.RecyclerView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layoutManager="com.android.internal.widget.GridLayoutManager"
+        android:layoutManager="com.android.internal.app.ChooserGridLayoutManager"
         android:id="@+id/resolver_list"
         android:clipToPadding="false"
-        android:background="?attr/colorBackgroundFloating"
+        android:background="?attr/colorBackground"
         android:scrollbars="none"
         android:elevation="1dp"
         android:nestedScrollingEnabled="true" />

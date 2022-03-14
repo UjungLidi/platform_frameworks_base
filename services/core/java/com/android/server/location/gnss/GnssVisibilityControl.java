@@ -21,14 +21,12 @@ import android.annotation.SuppressLint;
 import android.app.AppOpsManager;
 import android.app.Notification;
 import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
-import android.location.LocationManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -583,15 +581,7 @@ class GnssVisibilityControl {
             mAppOps.finishOp(AppOpsManager.OP_MONITOR_LOCATION, uid, proxyAppPkgName);
             mAppOps.finishOp(AppOpsManager.OP_MONITOR_HIGH_POWER_LOCATION, uid, proxyAppPkgName);
         }
-        sendHighPowerMonitoringBroadcast();
         return true;
-    }
-
-    private void sendHighPowerMonitoringBroadcast() {
-        // Send an intent to notify that a high power request has been added/removed so that
-        // the SystemUi checks the state of AppOps and updates the location icon accordingly.
-        Intent intent = new Intent(LocationManager.HIGH_POWER_REQUEST_CHANGE_ACTION);
-        mContext.sendBroadcastAsUser(intent, UserHandle.ALL);
     }
 
     private void handleEmergencyNfwNotification(NfwNotification nfwNotification) {
@@ -635,7 +625,7 @@ class GnssVisibilityControl {
         final String firstLineText = context.getString(R.string.gpsNotifTitle);
         final String secondLineText = context.getString(R.string.global_action_emergency);
         final String accessibilityServicesText = firstLineText + " (" + secondLineText + ")";
-        return new Notification.Builder(context, SystemNotificationChannels.NETWORK_ALERTS)
+        return new Notification.Builder(context, SystemNotificationChannels.NETWORK_STATUS)
                 .setSmallIcon(com.android.internal.R.drawable.stat_sys_gps_on)
                 .setWhen(0)
                 .setOngoing(false)
@@ -646,7 +636,6 @@ class GnssVisibilityControl {
                 .setTicker(accessibilityServicesText)
                 .setContentTitle(firstLineText)
                 .setContentText(secondLineText)
-                .setContentIntent(PendingIntent.getBroadcast(context, 0, new Intent(), 0))
                 .build();
     }
 

@@ -80,7 +80,7 @@ public final class Bitmap implements Parcelable {
 
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 123769491)
     private byte[] mNinePatchChunk; // may be null
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private NinePatch.InsetStruct mNinePatchInsets; // may be null
     @UnsupportedAppUsage
     private int mWidth;
@@ -176,7 +176,7 @@ public final class Bitmap implements Parcelable {
      * width/height values
      */
     @SuppressWarnings("unused") // called from JNI
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     void reinit(int width, int height, boolean requestPremultiplied) {
         mWidth = width;
         mHeight = height;
@@ -684,15 +684,13 @@ public final class Bitmap implements Parcelable {
         return b;
     }
 
-    // FIXME: The maxTargetSdk should be R, once R is no longer set to
-    // CUR_DEVELOPMENT.
     /**
      * Creates a new immutable bitmap backed by ashmem which can efficiently
      * be passed between processes.
      *
      * @hide
      */
-    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.Q,
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R,
             publicAlternatives = "Use {@link #asShared()} instead")
     public Bitmap createAshmemBitmap() {
         checkRecycled("Can't copy a recycled bitmap");
@@ -2221,20 +2219,6 @@ public final class Bitmap implements Parcelable {
     }
 
     /**
-     * @return {@link GraphicBuffer} which is internally used by hardware bitmap
-     *
-     * Note: the GraphicBuffer does *not* have an associated {@link ColorSpace}.
-     * To render this object the same as its rendered with this Bitmap, you
-     * should also call {@link getColorSpace}.
-     *
-     * @hide
-     */
-    @UnsupportedAppUsage
-    public GraphicBuffer createGraphicBufferHandle() {
-        return GraphicBuffer.createFromHardwareBuffer(getHardwareBuffer());
-    }
-
-    /**
      * @return {@link HardwareBuffer} which is internally used by hardware bitmap
      *
      * Note: the HardwareBuffer does *not* have an associated {@link ColorSpace}.
@@ -2250,7 +2234,7 @@ public final class Bitmap implements Parcelable {
     public @NonNull HardwareBuffer getHardwareBuffer() {
         checkRecycled("Can't getHardwareBuffer from a recycled bitmap");
         HardwareBuffer hardwareBuffer = mHardwareBuffer == null ? null : mHardwareBuffer.get();
-        if (hardwareBuffer == null) {
+        if (hardwareBuffer == null || hardwareBuffer.isClosed()) {
             hardwareBuffer = nativeGetHardwareBuffer(mNativePtr);
             mHardwareBuffer = new WeakReference<HardwareBuffer>(hardwareBuffer);
         }

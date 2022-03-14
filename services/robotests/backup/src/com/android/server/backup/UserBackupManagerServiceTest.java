@@ -30,10 +30,13 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.robolectric.Shadows.shadowOf;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.expectThrows;
 
 import android.app.backup.BackupManager;
@@ -58,7 +61,7 @@ import com.android.server.backup.testing.BackupManagerServiceTestUtils;
 import com.android.server.backup.testing.TransportData;
 import com.android.server.backup.testing.TransportTestUtils.TransportMock;
 import com.android.server.backup.transport.TransportNotRegisteredException;
-import com.android.server.testing.shadows.ShadowAppBackupUtils;
+import com.android.server.testing.shadows.ShadowBackupEligibilityRules;
 import com.android.server.testing.shadows.ShadowApplicationPackageManager;
 import com.android.server.testing.shadows.ShadowBinder;
 import com.android.server.testing.shadows.ShadowKeyValueBackupJob;
@@ -85,6 +88,8 @@ import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -94,7 +99,7 @@ import java.util.List;
 @RunWith(RobolectricTestRunner.class)
 @Config(
         shadows = {
-            ShadowAppBackupUtils.class,
+            ShadowBackupEligibilityRules.class,
             ShadowApplicationPackageManager.class,
             ShadowSystemServiceRegistry.class
         })
@@ -103,6 +108,7 @@ public class UserBackupManagerServiceTest {
     private static final String TAG = "BMSTest";
     private static final String PACKAGE_1 = "some.package.1";
     private static final String PACKAGE_2 = "some.package.2";
+    private static final String USER_FACING_PACKAGE = "user.facing.package";
     private static final int USER_ID = 10;
 
     @Mock private TransportManager mTransportManager;
@@ -153,7 +159,7 @@ public class UserBackupManagerServiceTest {
     @After
     public void tearDown() throws Exception {
         mBackupThread.quit();
-        ShadowAppBackupUtils.reset();
+        ShadowBackupEligibilityRules.reset();
         ShadowApplicationPackageManager.reset();
     }
 
@@ -230,7 +236,7 @@ public class UserBackupManagerServiceTest {
         mShadowContext.grantPermissions(android.Manifest.permission.BACKUP);
         TransportMock transportMock = setUpCurrentTransport(mTransportManager, backupTransport());
         registerPackages(PACKAGE_1);
-        ShadowAppBackupUtils.setAppRunningAndEligibleForBackupWithTransport(PACKAGE_1);
+        ShadowBackupEligibilityRules.setAppRunningAndEligibleForBackupWithTransport(PACKAGE_1);
         UserBackupManagerService backupManagerService = createUserBackupManagerServiceAndRunTasks();
 
         boolean result = backupManagerService.isAppEligibleForBackup(PACKAGE_1);
@@ -249,7 +255,7 @@ public class UserBackupManagerServiceTest {
         mShadowContext.denyPermissions(android.Manifest.permission.BACKUP);
         setUpCurrentTransport(mTransportManager, mTransport);
         registerPackages(PACKAGE_1);
-        ShadowAppBackupUtils.setAppRunningAndEligibleForBackupWithTransport(PACKAGE_1);
+        ShadowBackupEligibilityRules.setAppRunningAndEligibleForBackupWithTransport(PACKAGE_1);
         UserBackupManagerService backupManagerService = createUserBackupManagerServiceAndRunTasks();
 
         expectThrows(
@@ -267,7 +273,7 @@ public class UserBackupManagerServiceTest {
         mShadowContext.grantPermissions(android.Manifest.permission.BACKUP);
         TransportMock transportMock = setUpCurrentTransport(mTransportManager, mTransport);
         registerPackages(PACKAGE_1, PACKAGE_2);
-        ShadowAppBackupUtils.setAppRunningAndEligibleForBackupWithTransport(PACKAGE_1);
+        ShadowBackupEligibilityRules.setAppRunningAndEligibleForBackupWithTransport(PACKAGE_1);
         UserBackupManagerService backupManagerService = createUserBackupManagerServiceAndRunTasks();
 
         String[] filtered =
@@ -517,6 +523,23 @@ public class UserBackupManagerServiceTest {
         UserBackupManagerService backupManagerService = createUserBackupManagerServiceAndRunTasks();
 
         expectThrows(SecurityException.class, backupManagerService::getCurrentTransportComponent);
+    }
+
+    /**
+     * Test verifying that {@link UserBackupManagerService#excludeKeysFromRestore(String, List)}
+     * throws a {@link SecurityException} if the caller does not have backup permission.
+     */
+    @Test
+    public void testExcludeKeysFromRestore_withoutPermission() throws Exception {
+        mShadowContext.denyPermissions(android.Manifest.permission.BACKUP);
+        UserBackupManagerService backupManagerService = createUserBackupManagerServiceAndRunTasks();
+
+        expectThrows(
+                SecurityException.class,
+                () ->
+                        backupManagerService.excludeKeysFromRestore(
+                                PACKAGE_1,
+                                new ArrayList<String>(){}));
     }
 
     /* Tests for updating transport attributes */
@@ -778,7 +801,7 @@ public class UserBackupManagerServiceTest {
         mShadowContext.grantPermissions(android.Manifest.permission.BACKUP);
         for (String packageName : packages) {
             registerPackages(packageName);
-            ShadowAppBackupUtils.setAppRunningAndEligibleForBackupWithTransport(packageName);
+            ShadowBackupEligibilityRules.setAppRunningAndEligibleForBackupWithTransport(packageName);
         }
         setUpCurrentTransport(mTransportManager, mTransport);
     }
@@ -939,7 +962,7 @@ public class UserBackupManagerServiceTest {
     @Config(shadows = ShadowKeyValueBackupTask.class)
     public void testRequestBackup_whenPackageIsFullBackup() throws Exception {
         setUpForRequestBackup(PACKAGE_1);
-        ShadowAppBackupUtils.setAppGetsFullBackup(PACKAGE_1);
+        ShadowBackupEligibilityRules.setAppGetsFullBackup(PACKAGE_1);
         UserBackupManagerService backupManagerService =
                 createBackupManagerServiceForRequestBackup();
 
@@ -1166,6 +1189,47 @@ public class UserBackupManagerServiceTest {
         // One call for package changes and one call for sd card events.
         verify(contextSpy, times(2)).registerReceiverAsUser(
                 eq(packageTrackingReceiver), eq(UserHandle.of(USER_ID)), any(), any(), any());
+    }
+
+    @Test
+    public void testFilterUserFacingPackages_shouldSkipUserFacing_filtersUserFacing() {
+        List<PackageInfo> packages = Arrays.asList(getPackageInfo(USER_FACING_PACKAGE),
+                getPackageInfo(PACKAGE_1));
+        UserBackupManagerService backupManagerService = spy(
+                createUserBackupManagerServiceAndRunTasks());
+        when(backupManagerService.shouldSkipUserFacingData()).thenReturn(true);
+        when(backupManagerService.shouldSkipPackage(eq(USER_FACING_PACKAGE))).thenReturn(true);
+
+        List<PackageInfo> filteredPackages = backupManagerService.filterUserFacingPackages(
+                packages);
+
+        assertFalse(containsPackage(filteredPackages, USER_FACING_PACKAGE));
+        assertTrue(containsPackage(filteredPackages, PACKAGE_1));
+    }
+
+    @Test
+    public void testFilterUserFacingPackages_shouldNotSkipUserFacing_doesNotFilterUserFacing() {
+        List<PackageInfo> packages = Arrays.asList(getPackageInfo(USER_FACING_PACKAGE),
+                getPackageInfo(PACKAGE_1));
+        UserBackupManagerService backupManagerService = spy(
+                createUserBackupManagerServiceAndRunTasks());
+        when(backupManagerService.shouldSkipUserFacingData()).thenReturn(false);
+        when(backupManagerService.shouldSkipPackage(eq(USER_FACING_PACKAGE))).thenReturn(true);
+
+        List<PackageInfo> filteredPackages = backupManagerService.filterUserFacingPackages(
+                packages);
+
+        assertTrue(containsPackage(filteredPackages, USER_FACING_PACKAGE));
+        assertTrue(containsPackage(filteredPackages, PACKAGE_1));
+    }
+
+    private static boolean containsPackage(List<PackageInfo> packages, String targetPackage) {
+        for (PackageInfo packageInfo : packages) {
+            if (targetPackage.equals(packageInfo.packageName)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private UserBackupManagerService createUserBackupManagerServiceAndRunTasks() {

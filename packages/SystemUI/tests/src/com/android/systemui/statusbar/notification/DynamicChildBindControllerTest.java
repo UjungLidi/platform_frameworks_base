@@ -34,6 +34,7 @@ import android.view.View;
 
 import com.android.systemui.R;
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.media.dialog.MediaOutputDialogFactory;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.collection.NotificationEntryBuilder;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
@@ -64,6 +65,7 @@ public class DynamicChildBindControllerTest extends SysuiTestCase {
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
+        mDependency.injectMockDependency(MediaOutputDialogFactory.class);
         allowTestableLooperAsMainThread();
         when(mBindStage.getStageParams(any())).thenReturn(new RowContentBindParams());
         mDynamicChildBindController =
@@ -80,7 +82,7 @@ public class DynamicChildBindControllerTest extends SysuiTestCase {
         when(mBindStage.getStageParams(lastChild)).thenReturn(bindParams);
 
         // WHEN the controller gets the list
-        mDynamicChildBindController.updateChildContentViews(mGroupNotifs);
+        mDynamicChildBindController.updateContentViews(mGroupNotifs);
 
         // THEN we free content views
         verify(bindParams).markContentViewsFreeable(FLAG_CONTENT_VIEW_CONTRACTED);
@@ -101,7 +103,7 @@ public class DynamicChildBindControllerTest extends SysuiTestCase {
         when(mBindStage.getStageParams(lastChild)).thenReturn(bindParams);
 
         // WHEN the controller gets the list
-        mDynamicChildBindController.updateChildContentViews(mGroupNotifs);
+        mDynamicChildBindController.updateContentViews(mGroupNotifs);
 
         // THEN we bind content views
         verify(bindParams).requireContentViews(FLAG_CONTENT_VIEW_CONTRACTED);

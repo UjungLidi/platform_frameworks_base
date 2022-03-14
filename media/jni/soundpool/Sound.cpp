@@ -31,7 +31,7 @@ constexpr size_t   kDefaultHeapSize = 1024 * 1024; // 1MB (compatible with low m
 
 Sound::Sound(int32_t soundID, int fd, int64_t offset, int64_t length)
     : mSoundID(soundID)
-    , mFd(dup(fd))
+    , mFd(fcntl(fd, F_DUPFD_CLOEXEC, (int)0 /* arg */)) // dup(fd) + close on exec to prevent leaks.
     , mOffset(offset)
     , mLength(length)
 {
@@ -47,7 +47,7 @@ Sound::~Sound()
 
 static status_t decode(int fd, int64_t offset, int64_t length,
         uint32_t *rate, int32_t *channelCount, audio_format_t *audioFormat,
-        audio_channel_mask_t *channelMask, sp<MemoryHeapBase> heap,
+        audio_channel_mask_t *channelMask, const sp<MemoryHeapBase>& heap,
         size_t *sizeInBytes) {
     ALOGV("%s(fd=%d, offset=%lld, length=%lld, ...)",
             __func__, fd, (long long)offset, (long long)length);
@@ -81,7 +81,7 @@ static status_t decode(int fd, int64_t offset, int64_t length,
 
             bool sawInputEOS = false;
             bool sawOutputEOS = false;
-            uint8_t* writePos = static_cast<uint8_t*>(heap->getBase());
+            auto writePos = static_cast<uint8_t*>(heap->getBase());
             size_t available = heap->getSize();
             size_t written = 0;
             format.reset(AMediaCodec_getOutputFormat(codec.get())); // update format.
@@ -99,8 +99,8 @@ static status_t decode(int fd, int64_t offset, int64_t length,
                                     __func__);
                             break;
                         }
-                        int sampleSize = AMediaExtractor_readSampleData(ex.get(), buf, bufsize);
-                        ALOGV("%s: read %d", __func__, sampleSize);
+                        ssize_t sampleSize = AMediaExtractor_readSampleData(ex.get(), buf, bufsize);
+                        ALOGV("%s: read %zd", __func__, sampleSize);
                         if (sampleSize < 0) {
                             sampleSize = 0;
                             sawInputEOS = true;
@@ -124,8 +124,8 @@ static status_t decode(int fd, int64_t offset, int64_t length,
                 }
 
                 AMediaCodecBufferInfo info;
-                const int status = AMediaCodec_dequeueOutputBuffer(codec.get(), &info, 1);
-                ALOGV("%s: dequeueoutput returned: %d", __func__, status);
+                const ssize_t status = AMediaCodec_dequeueOutputBuffer(codec.get(), &info, 1);
+                ALOGV("%s: dequeueoutput returned: %zd", __func__, status);
                 if (status >= 0) {
                     if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) {
                         ALOGV("%s: output EOS", __func__);
@@ -167,10 +167,10 @@ static status_t decode(int fd, int64_t offset, int64_t length,
                 } else if (status == AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
                     ALOGV("%s: no output buffer right now", __func__);
                 } else if (status <= AMEDIA_ERROR_BASE) {
-                    ALOGE("%s: decode error: %d", __func__, status);
+                    ALOGE("%s: decode error: %zd", __func__, status);
                     break;
                 } else {
-                    ALOGV("%s: unexpected info code: %d", __func__, status);
+                    ALOGV("%s: unexpected info code: %zd", __func__, status);
                 }
             }
 
@@ -204,7 +204,7 @@ status_t Sound::doLoad()
         int32_t channelCount;
         audio_format_t format;
         audio_channel_mask_t channelMask;
-        status_t status = decode(mFd.get(), mOffset, mLength, &sampleRate, &channelCount, &format,
+        status = decode(mFd.get(), mOffset, mLength, &sampleRate, &channelCount, &format,
                         &channelMask, mHeap, &mSizeInBytes);
         ALOGV("%s: close(%d)", __func__, mFd.get());
         mFd.reset();  // close
@@ -214,7 +214,7 @@ status_t Sound::doLoad()
         } else if (sampleRate > kMaxSampleRate) {
             ALOGE("%s: sample rate (%u) out of range", __func__, sampleRate);
             status = BAD_VALUE;
-        } else if (channelCount < 1 || channelCount > FCC_8) {
+        } else if (channelCount < 1 || channelCount > FCC_LIMIT) {
             ALOGE("%s: sample channel count (%d) out of range", __func__, channelCount);
             status = BAD_VALUE;
         } else {

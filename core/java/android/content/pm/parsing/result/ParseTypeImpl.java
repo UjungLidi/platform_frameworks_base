@@ -18,12 +18,16 @@ package android.content.pm.parsing.result;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.content.Context;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.parsing.ParsingUtils;
+import android.os.ServiceManager;
 import android.util.ArrayMap;
 import android.util.Log;
 import android.util.Slog;
 
+import com.android.internal.compat.IPlatformCompat;
 import com.android.internal.util.CollectionUtils;
 
 /** @hide */
@@ -61,6 +65,43 @@ public class ParseTypeImpl implements ParseInput, ParseResult<Object> {
     private Integer mTargetSdkVersion;
 
     /**
+     * Specifically for {@link PackageManager#getPackageArchiveInfo(String, int)} where
+     * {@link IPlatformCompat} cannot be used because the cross-package READ_COMPAT_CHANGE_CONFIG
+     * permission cannot be obtained.
+     */
+    public static ParseTypeImpl forParsingWithoutPlatformCompat() {
+        return new ParseTypeImpl((changeId, packageName, targetSdkVersion) -> {
+            int gateSdkVersion = DeferredError.getTargetSdkForChange(changeId);
+            if (gateSdkVersion == -1) {
+                return false;
+            }
+            return targetSdkVersion > gateSdkVersion;
+        });
+    }
+
+    /**
+     * Assumes {@link Context#PLATFORM_COMPAT_SERVICE} is available to the caller. For use
+     * with {@link android.content.pm.parsing.ApkLiteParseUtils} or similar where parsing is
+     * done outside of {@link com.android.server.pm.PackageManagerService}.
+     */
+    public static ParseTypeImpl forDefaultParsing() {
+        IPlatformCompat platformCompat = IPlatformCompat.Stub.asInterface(
+                ServiceManager.getService(Context.PLATFORM_COMPAT_SERVICE));
+        return new ParseTypeImpl((changeId, packageName, targetSdkVersion) -> {
+            ApplicationInfo appInfo = new ApplicationInfo();
+            appInfo.packageName = packageName;
+            appInfo.targetSdkVersion = targetSdkVersion;
+            try {
+                return platformCompat.isChangeEnabled(changeId, appInfo);
+            } catch (Exception e) {
+                // This shouldn't happen, but assume enforcement if it does
+                Slog.wtf(TAG, "IPlatformCompat query failed", e);
+                return true;
+            }
+        });
+    }
+
+    /**
      * @param callback if nullable, fallback to manual targetSdk > Q check
      */
     public ParseTypeImpl(@NonNull Callback callback) {
@@ -78,13 +119,15 @@ public class ParseTypeImpl implements ParseInput, ParseResult<Object> {
             // how many APKs they're going through.
             mDeferredErrors.erase();
         }
+        mPackageName = null;
+        mTargetSdkVersion = null;
         return this;
     }
 
     @Override
     public <ResultType> ParseResult<ResultType> success(ResultType result) {
         if (mErrorCode != PackageManager.INSTALL_SUCCEEDED) {
-            Slog.wtf(ParsingUtils.TAG, "Cannot set to success after set to error, was "
+            Slog.wtf(TAG, "Cannot set to success after set to error, was "
                     + mErrorMessage, mException);
         }
         mResult = result;
@@ -144,6 +187,11 @@ public class ParseTypeImpl implements ParseInput, ParseResult<Object> {
         }
 
         return success(null);
+    }
+
+    @Override
+    public <ResultType> ParseResult<ResultType> skip(@NonNull String parseError) {
+        return error(PackageManager.INSTALL_PARSE_FAILED_SKIPPED, parseError);
     }
 
     @Override

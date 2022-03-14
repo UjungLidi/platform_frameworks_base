@@ -61,6 +61,9 @@ struct JMediaCodec : public AHandler {
 
     void registerSelf();
     void release();
+    void releaseAsync();
+
+    status_t enableOnFirstTunnelFrameReadyListener(jboolean enable);
 
     status_t enableOnFrameRenderedListener(jboolean enable);
 
@@ -161,6 +164,18 @@ struct JMediaCodec : public AHandler {
 
     void selectAudioPresentation(const int32_t presentationId, const int32_t programId);
 
+    status_t querySupportedVendorParameters(JNIEnv *env, jobject *names);
+
+    status_t describeParameter(JNIEnv *env, jstring name, jobject *desc);
+
+    status_t subscribeToVendorParameters(JNIEnv *env, jobject names);
+
+    status_t unsubscribeFromVendorParameters(JNIEnv *env, jobject names);
+
+    bool hasCryptoOrDescrambler() { return mHasCryptoOrDescrambler; }
+
+    const sp<ICrypto> &getCrypto() { return mCrypto; }
+
 protected:
     virtual ~JMediaCodec();
 
@@ -170,6 +185,8 @@ private:
     enum {
         kWhatCallbackNotify,
         kWhatFrameRendered,
+        kWhatAsyncReleaseComplete,
+        kWhatFirstTunnelFrameReady,
     };
 
     jclass mClass;
@@ -180,12 +197,17 @@ private:
     sp<MediaCodec> mCodec;
     AString mNameAtCreation;
     bool mGraphicOutput{false};
+    bool mHasCryptoOrDescrambler{false};
     std::once_flag mReleaseFlag;
+    std::once_flag mAsyncReleaseFlag;
 
     sp<AMessage> mCallbackNotification;
+    sp<AMessage> mOnFirstTunnelFrameReadyNotification;
     sp<AMessage> mOnFrameRenderedNotification;
 
     status_t mInitStatus;
+
+    sp<ICrypto> mCrypto;
 
     template <typename T>
     status_t createByteBufferFromABuffer(
@@ -193,6 +215,7 @@ private:
             jobject *buf) const;
 
     void handleCallback(const sp<AMessage> &msg);
+    void handleFirstTunnelFrameReadyNotification(const sp<AMessage> &msg);
     void handleFrameRenderedNotification(const sp<AMessage> &msg);
 
     DISALLOW_EVIL_CONSTRUCTORS(JMediaCodec);

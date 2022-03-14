@@ -38,6 +38,7 @@ import android.app.ActivityManagerInternal;
 import android.app.AppOpsManager;
 import android.app.AppOpsManager.Mode;
 import android.app.admin.DevicePolicyManagerInternal;
+import android.content.ComponentName;
 import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
@@ -46,6 +47,7 @@ import android.content.pm.IPackageManager;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManagerInternal;
+import android.content.pm.PermissionInfo;
 import android.content.pm.ResolveInfo;
 import android.os.Process;
 import android.os.UserHandle;
@@ -91,11 +93,15 @@ public class CrossProfileAppsServiceImplRoboTest {
     private static final int CALLING_PID = 1000;
     private static final String CROSS_PROFILE_APP_PACKAGE_NAME =
             "com.android.server.pm.crossprofileappsserviceimplrobotest.crossprofileapp";
-    private static final int PERSONAL_PROFILE_USER_ID = 0;
+    @UserIdInt private static final int PERSONAL_PROFILE_USER_ID = 0;
     private static final int PERSONAL_PROFILE_UID = 2222;
-    private static final int WORK_PROFILE_USER_ID = 10;
+    @UserIdInt private static final int WORK_PROFILE_USER_ID = 10;
     private static final int WORK_PROFILE_UID = 3333;
     private static final int OTHER_PROFILE_WITHOUT_CROSS_PROFILE_APP_USER_ID = 20;
+    @UserIdInt private static final int OTHER_PROFILE_GROUP_USER_ID = 30;
+    private static final int OTHER_PROFILE_GROUP_UID = 4444;
+    @UserIdInt private static final int OTHER_PROFILE_GROUP_2_USER_ID = 31;
+    private static final int OTHER_PROFILE_GROUP_2_UID = 5555;
 
     private final ContextWrapper mContext = ApplicationProvider.getApplicationContext();
     private final UserManager mUserManager = mContext.getSystemService(UserManager.class);
@@ -106,6 +112,7 @@ public class CrossProfileAppsServiceImplRoboTest {
             new CrossProfileAppsServiceImpl(mContext, mInjector);
     private final Map<UserHandle, Set<Intent>> mSentUserBroadcasts = new HashMap<>();
     private final Map<Integer, List<ApplicationInfo>> installedApplications = new HashMap<>();
+    private final Set<Integer> mKilledUids = new HashSet<>();
 
     @Mock private PackageManagerInternal mPackageManagerInternal;
     @Mock private IPackageManager mIPackageManager;
@@ -133,6 +140,10 @@ public class CrossProfileAppsServiceImplRoboTest {
         mockCrossProfileAppInstalledOnProfile(
                 packageInfo, PERSONAL_PROFILE_USER_ID, PERSONAL_PROFILE_UID);
         mockCrossProfileAppInstalledOnProfile(packageInfo, WORK_PROFILE_USER_ID, WORK_PROFILE_UID);
+        mockCrossProfileAppInstalledOnProfile(
+                packageInfo, OTHER_PROFILE_GROUP_USER_ID, OTHER_PROFILE_GROUP_UID);
+        mockCrossProfileAppInstalledOnProfile(
+                packageInfo, OTHER_PROFILE_GROUP_2_USER_ID, OTHER_PROFILE_GROUP_2_UID);
     }
 
     private void mockCrossProfileAppInstalledOnProfile(
@@ -195,16 +206,22 @@ public class CrossProfileAppsServiceImplRoboTest {
 
     @Before
     public void setUpCrossProfileAppUidsAndPackageNames() {
+        setUpCrossProfileAppUidAndPackageName(
+                PERSONAL_PROFILE_UID, PERSONAL_PROFILE_USER_ID);
+        setUpCrossProfileAppUidAndPackageName(
+                WORK_PROFILE_UID, WORK_PROFILE_USER_ID);
+        setUpCrossProfileAppUidAndPackageName(
+                OTHER_PROFILE_GROUP_UID, OTHER_PROFILE_GROUP_USER_ID);
+        setUpCrossProfileAppUidAndPackageName(
+                OTHER_PROFILE_GROUP_2_UID, OTHER_PROFILE_GROUP_2_USER_ID);
+    }
+
+    private void setUpCrossProfileAppUidAndPackageName(int uid, @UserIdInt int userId) {
         ShadowApplicationPackageManager.setPackageUidAsUser(
-                CROSS_PROFILE_APP_PACKAGE_NAME, PERSONAL_PROFILE_UID, PERSONAL_PROFILE_USER_ID);
-        ShadowApplicationPackageManager.setPackageUidAsUser(
-                CROSS_PROFILE_APP_PACKAGE_NAME, WORK_PROFILE_UID, WORK_PROFILE_USER_ID);
-        when(mPackageManagerInternal.getPackageUidInternal(
-                CROSS_PROFILE_APP_PACKAGE_NAME, /* flags= */ 0, PERSONAL_PROFILE_USER_ID))
-                .thenReturn(PERSONAL_PROFILE_UID);
-        when(mPackageManagerInternal.getPackageUidInternal(
-                CROSS_PROFILE_APP_PACKAGE_NAME, /* flags= */ 0, WORK_PROFILE_USER_ID))
-                .thenReturn(WORK_PROFILE_UID);
+                CROSS_PROFILE_APP_PACKAGE_NAME, uid, userId);
+        when(mPackageManagerInternal
+                .getPackageUid(CROSS_PROFILE_APP_PACKAGE_NAME, /* flags= */ 0, userId))
+                .thenReturn(uid);
     }
 
     @Before
@@ -224,6 +241,9 @@ public class CrossProfileAppsServiceImplRoboTest {
                 PERSONAL_PROFILE_USER_ID,
                 WORK_PROFILE_USER_ID,
                 OTHER_PROFILE_WITHOUT_CROSS_PROFILE_APP_USER_ID);
+        shadowUserManager.addProfileIds(
+                OTHER_PROFILE_GROUP_USER_ID,
+                OTHER_PROFILE_GROUP_2_USER_ID);
     }
 
     @Before
@@ -233,6 +253,8 @@ public class CrossProfileAppsServiceImplRoboTest {
         final int defaultMode = AppOpsManager.opToDefaultMode(OP_INTERACT_ACROSS_PROFILES);
         explicitlySetInteractAcrossProfilesAppOp(PERSONAL_PROFILE_UID, defaultMode);
         explicitlySetInteractAcrossProfilesAppOp(WORK_PROFILE_UID, defaultMode);
+        explicitlySetInteractAcrossProfilesAppOp(OTHER_PROFILE_GROUP_UID, defaultMode);
+        explicitlySetInteractAcrossProfilesAppOp(OTHER_PROFILE_GROUP_2_UID, defaultMode);
     }
 
     @Test
@@ -389,6 +411,54 @@ public class CrossProfileAppsServiceImplRoboTest {
     }
 
     @Test
+    public void setInteractAcrossProfilesAppOp_toAllowed_doesNotKillApp() {
+        mCrossProfileAppsServiceImpl.setInteractAcrossProfilesAppOp(
+                CROSS_PROFILE_APP_PACKAGE_NAME, MODE_ALLOWED);
+        assertThat(mKilledUids).isEmpty();
+    }
+
+    @Test
+    public void setInteractAcrossProfilesAppOp_toDisallowed_killsAppsInBothProfiles() {
+        shadowOf(mPackageManager).addPermissionInfo(createCrossProfilesPermissionInfo());
+        mCrossProfileAppsServiceImpl.setInteractAcrossProfilesAppOp(
+                CROSS_PROFILE_APP_PACKAGE_NAME, MODE_ALLOWED);
+
+        mCrossProfileAppsServiceImpl.setInteractAcrossProfilesAppOp(
+                CROSS_PROFILE_APP_PACKAGE_NAME, MODE_DEFAULT);
+
+        assertThat(mKilledUids).contains(WORK_PROFILE_UID);
+        assertThat(mKilledUids).contains(PERSONAL_PROFILE_UID);
+    }
+
+    private PermissionInfo createCrossProfilesPermissionInfo() {
+        PermissionInfo permissionInfo = new PermissionInfo();
+        permissionInfo.name = Manifest.permission.INTERACT_ACROSS_PROFILES;
+        permissionInfo.protectionLevel = PermissionInfo.PROTECTION_FLAG_APPOP;
+        return permissionInfo;
+    }
+
+    @Test
+    public void setInteractAcrossProfilesAppOp_userToSetInDifferentProfileGroupToCaller_setsAppOp() {
+        mCrossProfileAppsServiceImpl.getLocalService().setInteractAcrossProfilesAppOp(
+                CROSS_PROFILE_APP_PACKAGE_NAME, MODE_ALLOWED, OTHER_PROFILE_GROUP_USER_ID);
+        assertThat(getCrossProfileAppOp(OTHER_PROFILE_GROUP_UID)).isEqualTo(MODE_ALLOWED);
+    }
+
+    @Test
+    public void setInteractAcrossProfilesAppOp_userToSetInDifferentProfileGroupToCaller_setsAppOpOnOtherProfile() {
+        mCrossProfileAppsServiceImpl.getLocalService().setInteractAcrossProfilesAppOp(
+                CROSS_PROFILE_APP_PACKAGE_NAME, MODE_ALLOWED, OTHER_PROFILE_GROUP_USER_ID);
+        assertThat(getCrossProfileAppOp(OTHER_PROFILE_GROUP_2_UID)).isEqualTo(MODE_ALLOWED);
+    }
+
+    @Test
+    public void setInteractAcrossProfilesAppOp_userToSetInDifferentProfileGroupToCaller_doesNotSetCallerAppOp() {
+        mCrossProfileAppsServiceImpl.getLocalService().setInteractAcrossProfilesAppOp(
+                CROSS_PROFILE_APP_PACKAGE_NAME, MODE_ALLOWED, OTHER_PROFILE_GROUP_USER_ID);
+        assertThat(getCrossProfileAppOp()).isEqualTo(MODE_DEFAULT);
+    }
+
+    @Test
     public void canConfigureInteractAcrossProfiles_packageNotInstalledInProfile_returnsFalse() {
         mockUninstallCrossProfileAppFromWorkProfile();
         assertThat(mCrossProfileAppsServiceImpl
@@ -475,6 +545,36 @@ public class CrossProfileAppsServiceImplRoboTest {
     }
 
     @Test
+    public void canUserAttemptToConfigureInteractAcrossProfiles_profileOwnerWorkProfile_returnsFalse() {
+        when(mDevicePolicyManagerInternal.getProfileOwnerAsUser(WORK_PROFILE_USER_ID))
+                .thenReturn(buildCrossProfileComponentName());
+        assertThat(mCrossProfileAppsServiceImpl
+                .canUserAttemptToConfigureInteractAcrossProfiles(CROSS_PROFILE_APP_PACKAGE_NAME))
+                .isFalse();
+    }
+
+    @Test
+    public void canUserAttemptToConfigureInteractAcrossProfiles_profileOwnerOtherProfile_returnsFalse() {
+        // Normally, the DPC would not be a profile owner of the personal profile, but for the
+        // purposes of this test, it is just a profile owner of any profile within the profile
+        // group.
+        when(mDevicePolicyManagerInternal.getProfileOwnerAsUser(PERSONAL_PROFILE_USER_ID))
+                .thenReturn(buildCrossProfileComponentName());
+        assertThat(mCrossProfileAppsServiceImpl
+                .canUserAttemptToConfigureInteractAcrossProfiles(CROSS_PROFILE_APP_PACKAGE_NAME))
+                .isFalse();
+    }
+
+    @Test
+    public void canUserAttemptToConfigureInteractAcrossProfiles_profileOwnerOutsideProfileGroup_returnsTrue() {
+        when(mDevicePolicyManagerInternal.getProfileOwnerAsUser(OTHER_PROFILE_GROUP_USER_ID))
+                .thenReturn(buildCrossProfileComponentName());
+        assertThat(mCrossProfileAppsServiceImpl
+                .canUserAttemptToConfigureInteractAcrossProfiles(CROSS_PROFILE_APP_PACKAGE_NAME))
+                .isTrue();
+    }
+
+    @Test
     public void canUserAttemptToConfigureInteractAcrossProfiles_returnsTrue() {
         assertThat(mCrossProfileAppsServiceImpl
                 .canUserAttemptToConfigureInteractAcrossProfiles(CROSS_PROFILE_APP_PACKAGE_NAME))
@@ -538,8 +638,14 @@ public class CrossProfileAppsServiceImplRoboTest {
     private void mockCrossProfileAndroidPackage(AndroidPackage androidPackage) {
         when(mPackageManagerInternal.getPackage(CROSS_PROFILE_APP_PACKAGE_NAME))
                 .thenReturn(androidPackage);
-        when(mPackageManagerInternal.getPackage(PERSONAL_PROFILE_UID)).thenReturn(androidPackage);
-        when(mPackageManagerInternal.getPackage(WORK_PROFILE_UID)).thenReturn(androidPackage);
+        when(mPackageManagerInternal.getPackage(PERSONAL_PROFILE_UID))
+                .thenReturn(androidPackage);
+        when(mPackageManagerInternal.getPackage(WORK_PROFILE_UID))
+                .thenReturn(androidPackage);
+        when(mPackageManagerInternal.getPackage(OTHER_PROFILE_GROUP_UID))
+                .thenReturn(androidPackage);
+        when(mPackageManagerInternal.getPackage(OTHER_PROFILE_GROUP_2_UID))
+                .thenReturn(androidPackage);
     }
 
     private void mockCrossProfileAppNotWhitelisted() {
@@ -576,6 +682,10 @@ public class CrossProfileAppsServiceImplRoboTest {
                 ((ParsedPackage) PackageImpl.forTesting(CROSS_PROFILE_APP_PACKAGE_NAME)
                         .setCrossProfile(value)
                         .hideAsParsed()).hideAsFinal());
+    }
+
+    private ComponentName buildCrossProfileComponentName() {
+        return new ComponentName(CROSS_PROFILE_APP_PACKAGE_NAME, "testClassName");
     }
 
     private class TestInjector implements CrossProfileAppsServiceImpl.Injector {
@@ -677,6 +787,11 @@ public class CrossProfileAppsServiceImplRoboTest {
             // AppGlobals.getPackageManager()#checkUidPermission, which calls through to
             // ShadowActivityThread with Robolectric. This method is currently not supported there.
             return mContext.checkPermission(permission, Process.myPid(), uid);
+        }
+
+        @Override
+        public void killUid(int uid) {
+            mKilledUids.add(uid);
         }
     }
 }

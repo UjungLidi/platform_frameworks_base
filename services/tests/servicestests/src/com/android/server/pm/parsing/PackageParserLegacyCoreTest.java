@@ -17,10 +17,10 @@
 package com.android.server.pm.parsing;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 import android.apex.ApexInfo;
 import android.content.Context;
@@ -29,12 +29,18 @@ import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageParser;
 import android.content.pm.PermissionInfo;
+import android.content.pm.parsing.PackageInfoWithoutStateUtils;
+import android.content.pm.parsing.ParsingPackage;
+import android.content.pm.parsing.ParsingPackageUtils;
 import android.content.pm.parsing.component.ParsedComponent;
 import android.content.pm.parsing.component.ParsedPermission;
+import android.content.pm.parsing.result.ParseResult;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.FileUtils;
 import android.platform.test.annotations.Presubmit;
+import android.util.Pair;
+import android.util.SparseIntArray;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
@@ -45,11 +51,17 @@ import com.android.internal.util.ArrayUtils;
 import com.android.server.pm.parsing.pkg.AndroidPackage;
 import com.android.server.pm.parsing.pkg.ParsedPackage;
 
+import com.google.common.truth.Expect;
+
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.io.File;
 import java.io.InputStream;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.function.Function;
 
 /**
@@ -82,6 +94,8 @@ public class PackageParserLegacyCoreTest {
     private static final int OLDER_VERSION = 10;
     private static final int PLATFORM_VERSION = 20;
     private static final int NEWER_VERSION = 30;
+
+    @Rule public final Expect expect = Expect.create();
 
     private void verifyComputeMinSdkVersion(int minSdkVersion, String minSdkCodename,
             boolean isPlatformReleased, int expectedMinSdk) {
@@ -517,10 +531,15 @@ public class PackageParserLegacyCoreTest {
         apexInfo.versionCode = 191000070;
         int flags = PackageManager.GET_META_DATA | PackageManager.GET_SIGNING_CERTIFICATES;
 
-        PackageParser pp = new PackageParser();
-        PackageParser.Package p = pp.parsePackage(apexFile, flags, false);
-        PackageParser.collectCertificates(p, false);
-        PackageInfo pi = PackageParser.generatePackageInfo(p, apexInfo, flags);
+        ParseResult<ParsingPackage> result = ParsingPackageUtils.parseDefaultOneTime(apexFile,
+                flags, Collections.emptyList(), false /*collectCertificates*/);
+        if (result.isError()) {
+            throw new IllegalStateException(result.getErrorMessage(), result.getException());
+        }
+
+        ParsingPackage pkg = result.getResult();
+        pkg.setSigningDetails(ParsingPackageUtils.getSigningDetails(pkg, false));
+        PackageInfo pi = PackageInfoWithoutStateUtils.generate(pkg, apexInfo, flags);
 
         assertEquals("com.google.android.tzdata", pi.applicationInfo.packageName);
         assertTrue(pi.applicationInfo.enabled);
@@ -542,31 +561,44 @@ public class PackageParserLegacyCoreTest {
 
     @Test
     public void testUsesSdk() throws Exception {
-        parsePackage("install_uses_sdk.apk_r0", R.raw.install_uses_sdk_r0, x -> x);
-        try {
-            parsePackage("install_uses_sdk.apk_r5", R.raw.install_uses_sdk_r5, x -> x);
-            fail("Expected parsing exception due to incompatible extension SDK version");
-        } catch (PackageParser.PackageParserException expected) {
-            assertEquals(PackageManager.INSTALL_FAILED_OLDER_SDK, expected.error);
-        }
-        try {
-            parsePackage("install_uses_sdk.apk_q0", R.raw.install_uses_sdk_q0, x -> x);
-            fail("Expected parsing exception due to non-existent extension SDK");
-        } catch (PackageParser.PackageParserException expected) {
-            assertEquals(PackageManager.INSTALL_PARSE_FAILED_MANIFEST_MALFORMED, expected.error);
-        }
-        try {
-            parsePackage("install_uses_sdk.apk_r", R.raw.install_uses_sdk_r, x -> x);
-            fail("Expected parsing exception due to unspecified extension SDK version");
-        } catch (PackageParser.PackageParserException expected) {
-            assertEquals(PackageManager.INSTALL_PARSE_FAILED_MANIFEST_MALFORMED, expected.error);
-        }
-        try {
-            parsePackage("install_uses_sdk.apk_0", R.raw.install_uses_sdk_0, x -> x);
-            fail("Expected parsing exception due to unspecified extension SDK");
-        } catch (PackageParser.PackageParserException expected) {
-            assertEquals(PackageManager.INSTALL_PARSE_FAILED_MANIFEST_MALFORMED, expected.error);
-        }
+        ParsedPackage pkg;
+        SparseIntArray minExtVers;
+        pkg = parsePackage("install_uses_sdk.apk_r0", R.raw.install_uses_sdk_r0, x -> x);
+        minExtVers = pkg.getMinExtensionVersions();
+        assertEquals(1, minExtVers.size());
+        assertEquals(0, minExtVers.get(30, -1));
 
+        pkg = parsePackage("install_uses_sdk.apk_r0_s0", R.raw.install_uses_sdk_r0_s0, x -> x);
+        minExtVers = pkg.getMinExtensionVersions();
+        assertEquals(2, minExtVers.size());
+        assertEquals(0, minExtVers.get(30, -1));
+        assertEquals(0, minExtVers.get(31, -1));
+
+        Map<Pair<String, Integer>, Integer> appToError = new HashMap<>();
+        appToError.put(Pair.create("install_uses_sdk.apk_r5", R.raw.install_uses_sdk_r5),
+                       PackageManager.INSTALL_FAILED_OLDER_SDK);
+        appToError.put(Pair.create("install_uses_sdk.apk_r0_s5", R.raw.install_uses_sdk_r0_s5),
+                       PackageManager.INSTALL_FAILED_OLDER_SDK);
+
+        appToError.put(Pair.create("install_uses_sdk.apk_q0", R.raw.install_uses_sdk_q0),
+                       PackageManager.INSTALL_PARSE_FAILED_MANIFEST_MALFORMED);
+        appToError.put(Pair.create("install_uses_sdk.apk_q0_r0", R.raw.install_uses_sdk_q0_r0),
+                       PackageManager.INSTALL_PARSE_FAILED_MANIFEST_MALFORMED);
+        appToError.put(Pair.create("install_uses_sdk.apk_r_none", R.raw.install_uses_sdk_r_none),
+                       PackageManager.INSTALL_PARSE_FAILED_MANIFEST_MALFORMED);
+        appToError.put(Pair.create("install_uses_sdk.apk_0", R.raw.install_uses_sdk_0),
+                       PackageManager.INSTALL_PARSE_FAILED_MANIFEST_MALFORMED);
+
+        for (Map.Entry<Pair<String, Integer>, Integer> entry : appToError.entrySet()) {
+            String filename = entry.getKey().first;
+            int resId = entry.getKey().second;
+            int result = entry.getValue();
+            try {
+                parsePackage(filename, resId, x -> x);
+                expect.withMessage("Expected parsing error %d from %s", result, filename).fail();
+            } catch (PackageParser.PackageParserException expected) {
+                expect.that(expected.error).isEqualTo(result);
+            }
+        }
     }
 }

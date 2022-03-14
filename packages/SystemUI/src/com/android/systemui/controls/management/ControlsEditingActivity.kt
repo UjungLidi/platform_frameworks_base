@@ -16,11 +16,12 @@
 
 package com.android.systemui.controls.management
 
-import android.app.Activity
+import android.app.ActivityOptions
 import android.content.ComponentName
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
+import android.view.ViewGroup
 import android.view.ViewStub
 import android.widget.Button
 import android.widget.TextView
@@ -29,9 +30,13 @@ import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.RecyclerView
 import com.android.systemui.R
 import com.android.systemui.broadcast.BroadcastDispatcher
+import com.android.systemui.controls.CustomIconCache
 import com.android.systemui.controls.controller.ControlsControllerImpl
 import com.android.systemui.controls.controller.StructureInfo
+import com.android.systemui.controls.ui.ControlsActivity
+import com.android.systemui.controls.ui.ControlsUiController
 import com.android.systemui.settings.CurrentUserTracker
+import com.android.systemui.util.LifecycleActivity
 import javax.inject.Inject
 
 /**
@@ -39,8 +44,10 @@ import javax.inject.Inject
  */
 class ControlsEditingActivity @Inject constructor(
     private val controller: ControlsControllerImpl,
-    broadcastDispatcher: BroadcastDispatcher
-) : Activity() {
+    private val broadcastDispatcher: BroadcastDispatcher,
+    private val customIconCache: CustomIconCache,
+    private val uiController: ControlsUiController
+) : LifecycleActivity() {
 
     companion object {
         private const val TAG = "ControlsEditingActivity"
@@ -66,10 +73,6 @@ class ControlsEditingActivity @Inject constructor(
         }
     }
 
-    override fun onBackPressed() {
-        finish()
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -84,46 +87,70 @@ class ControlsEditingActivity @Inject constructor(
         bindViews()
 
         bindButtons()
+    }
 
+    override fun onStart() {
+        super.onStart()
         setUpList()
 
         currentUserTracker.startTracking()
     }
 
+    override fun onStop() {
+        super.onStop()
+        currentUserTracker.stopTracking()
+    }
+
+    override fun onBackPressed() {
+        animateExitAndFinish()
+    }
+
+    private fun animateExitAndFinish() {
+        val rootView = requireViewById<ViewGroup>(R.id.controls_management_root)
+        ControlsAnimations.exitAnimation(
+                rootView,
+                object : Runnable {
+                    override fun run() {
+                        finish()
+                    }
+                }
+        ).start()
+    }
+
     private fun bindViews() {
         setContentView(R.layout.controls_management)
+
+        getLifecycle().addObserver(
+            ControlsAnimations.observerForAnimations(
+                requireViewById<ViewGroup>(R.id.controls_management_root),
+                window,
+                intent
+            )
+        )
+
         requireViewById<ViewStub>(R.id.stub).apply {
             layoutResource = R.layout.controls_management_editing
             inflate()
         }
         requireViewById<TextView>(R.id.title).text = structure
+        setTitle(structure)
         subtitle = requireViewById<TextView>(R.id.subtitle).apply {
             setText(SUBTITLE_ID)
         }
     }
 
     private fun bindButtons() {
-        requireViewById<Button>(R.id.other_apps).apply {
-            visibility = View.VISIBLE
-            setText(R.string.controls_menu_add)
-            setOnClickListener {
-                saveFavorites()
-                val intent = Intent(this@ControlsEditingActivity,
-                        ControlsFavoritingActivity::class.java).apply {
-                    putExtras(this@ControlsEditingActivity.intent)
-                    putExtra(ControlsFavoritingActivity.EXTRA_SINGLE_STRUCTURE, true)
-                }
-                startActivity(intent)
-                finish()
-            }
-        }
-
         saveButton = requireViewById<Button>(R.id.done).apply {
             isEnabled = false
             setText(R.string.save)
             setOnClickListener {
                 saveFavorites()
-                finishAffinity()
+                startActivity(
+                    Intent(applicationContext, ControlsActivity::class.java),
+                    ActivityOptions
+                        .makeSceneTransitionAnimation(this@ControlsEditingActivity).toBundle()
+                )
+                animateExitAndFinish()
             }
         }
     }
@@ -149,24 +176,47 @@ class ControlsEditingActivity @Inject constructor(
 
     private fun setUpList() {
         val controls = controller.getFavoritesForStructure(component, structure)
-        model = FavoritesModel(component, controls, favoritesModelCallback)
+        model = FavoritesModel(customIconCache, component, controls, favoritesModelCallback)
         val elevation = resources.getFloat(R.dimen.control_card_elevation)
-        val adapter = ControlAdapter(elevation)
-        val recycler = requireViewById<RecyclerView>(R.id.list)
+        val recyclerView = requireViewById<RecyclerView>(R.id.list)
+        recyclerView.alpha = 0.0f
+        val adapter = ControlAdapter(elevation).apply {
+            registerAdapterDataObserver(object : RecyclerView.AdapterDataObserver() {
+                var hasAnimated = false
+                override fun onChanged() {
+                    if (!hasAnimated) {
+                        hasAnimated = true
+                        ControlsAnimations.enterAnimation(recyclerView).start()
+                    }
+                }
+            })
+        }
+
         val margin = resources
                 .getDimensionPixelSize(R.dimen.controls_card_margin)
         val itemDecorator = MarginItemDecorator(margin, margin)
 
-        recycler.apply {
+        recyclerView.apply {
             this.adapter = adapter
-            layoutManager = GridLayoutManager(recycler.context, 2).apply {
+            layoutManager = object : GridLayoutManager(recyclerView.context, 2) {
+
+                // This will remove from the announcement the row corresponding to the divider,
+                // as it's not something that should be announced.
+                override fun getRowCountForAccessibility(
+                    recycler: RecyclerView.Recycler,
+                    state: RecyclerView.State
+                ): Int {
+                    val initial = super.getRowCountForAccessibility(recycler, state)
+                    return if (initial > 0) initial - 1 else initial
+                }
+            }.apply {
                 spanSizeLookup = adapter.spanSizeLookup
             }
             addItemDecoration(itemDecorator)
         }
         adapter.changeModel(model)
         model.attachAdapter(adapter)
-        ItemTouchHelper(model.itemTouchHelperCallback).attachToRecyclerView(recycler)
+        ItemTouchHelper(model.itemTouchHelperCallback).attachToRecyclerView(recyclerView)
     }
 
     override fun onDestroy() {

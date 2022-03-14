@@ -20,7 +20,7 @@ option java_multiple_files = true;
 package android.app;
 
 import "frameworks/base/core/proto/android/privacy.proto";
-import "frameworks/base/core/proto/android/app/appexit_enums.proto";
+import "frameworks/proto_logging/stats/enums/app/enums.proto";
 
 /**
  * An android.app.ApplicationExitInfo object.
@@ -41,7 +41,7 @@ message ApplicationExitInfoProto {
     optional int64 pss = 11;
     optional int64 rss = 12;
     optional int64 timestamp = 13;
-    optional string description = 14;
+    optional string description = 14 [(.android.privacy).dest = DEST_EXPLICIT];
     optional bytes state = 15;
     optional string trace_file = 16;
 }

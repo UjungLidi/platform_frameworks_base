@@ -18,6 +18,7 @@ package android.view;
 
 import android.animation.ValueAnimator;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.app.ActivityManager;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentCallbacks2;
@@ -116,16 +117,9 @@ public final class WindowManagerGlobal {
      */
     public static final int RELAYOUT_INSETS_PENDING = 0x1;
 
-    /**
-     * Flag for relayout: the client may be currently using the current surface,
-     * so if it is to be destroyed as a part of the relayout the destroy must
-     * be deferred until later.  The client will call performDeferredDestroy()
-     * when it is okay.
-     */
-    public static final int RELAYOUT_DEFER_SURFACE_DESTROY = 0x2;
-
+    public static final int ADD_FLAG_IN_TOUCH_MODE = 0x1;
     public static final int ADD_FLAG_APP_VISIBLE = 0x2;
-    public static final int ADD_FLAG_IN_TOUCH_MODE = RELAYOUT_RES_IN_TOUCH_MODE;
+    public static final int ADD_FLAG_USE_BLAST = 0x8;
 
     /**
      * Like {@link #RELAYOUT_RES_CONSUME_ALWAYS_SYSTEM_BARS}, but as a "hint" when adding the
@@ -256,7 +250,7 @@ public final class WindowManagerGlobal {
         }
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public ArrayList<ViewRootImpl> getRootViews(IBinder token) {
         ArrayList<ViewRootImpl> views = new ArrayList<>();
         synchronized (mLock) {
@@ -435,7 +429,7 @@ public final class WindowManagerGlobal {
         }
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void removeView(View view, boolean immediate) {
         if (view == null) {
             throw new IllegalArgumentException("view must not be null");
@@ -524,7 +518,7 @@ public final class WindowManagerGlobal {
             }
             allViewsRemoved = mRoots.isEmpty();
         }
-        if (ThreadedRenderer.sTrimForeground && ThreadedRenderer.isAvailable()) {
+        if (ThreadedRenderer.sTrimForeground) {
             doTrimForeground();
         }
 
@@ -558,29 +552,28 @@ public final class WindowManagerGlobal {
 
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P)
     public void trimMemory(int level) {
-        if (ThreadedRenderer.isAvailable()) {
-            if (shouldDestroyEglContext(level)) {
-                // Destroy all hardware surfaces and resources associated to
-                // known windows
-                synchronized (mLock) {
-                    for (int i = mRoots.size() - 1; i >= 0; --i) {
-                        mRoots.get(i).destroyHardwareResources();
-                    }
+
+        if (shouldDestroyEglContext(level)) {
+            // Destroy all hardware surfaces and resources associated to
+            // known windows
+            synchronized (mLock) {
+                for (int i = mRoots.size() - 1; i >= 0; --i) {
+                    mRoots.get(i).destroyHardwareResources();
                 }
-                // Force a full memory flush
-                level = ComponentCallbacks2.TRIM_MEMORY_COMPLETE;
             }
+            // Force a full memory flush
+            level = ComponentCallbacks2.TRIM_MEMORY_COMPLETE;
+        }
 
-            ThreadedRenderer.trimMemory(level);
+        ThreadedRenderer.trimMemory(level);
 
-            if (ThreadedRenderer.sTrimForeground) {
-                doTrimForeground();
-            }
+        if (ThreadedRenderer.sTrimForeground) {
+            doTrimForeground();
         }
     }
 
     public static void trimForeground() {
-        if (ThreadedRenderer.sTrimForeground && ThreadedRenderer.isAvailable()) {
+        if (ThreadedRenderer.sTrimForeground) {
             WindowManagerGlobal wm = WindowManagerGlobal.getInstance();
             wm.doTrimForeground();
         }
@@ -715,6 +708,16 @@ public final class WindowManagerGlobal {
                     return;
                 }
             }
+        }
+    }
+
+    /** @hide */
+    @Nullable
+    public SurfaceControl mirrorWallpaperSurface(int displayId) {
+        try {
+            return getWindowManagerService().mirrorWallpaperSurface(displayId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
         }
     }
 }

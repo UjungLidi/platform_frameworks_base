@@ -18,6 +18,7 @@ package com.android.server.wm;
 
 import static android.app.NotificationManager.IMPORTANCE_MIN;
 import static android.app.PendingIntent.FLAG_CANCEL_CURRENT;
+import static android.app.PendingIntent.FLAG_IMMUTABLE;
 import static android.content.Context.NOTIFICATION_SERVICE;
 import static android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK;
 import static android.content.Intent.FLAG_ACTIVITY_NEW_TASK;
@@ -38,7 +39,7 @@ import android.net.Uri;
 import android.os.Bundle;
 
 import com.android.internal.R;
-import com.android.server.policy.IconUtilities;
+import com.android.internal.util.ImageUtils;
 
 /** Displays an ongoing notification for a process displaying an alert window */
 class AlertWindowNotification {
@@ -53,7 +54,6 @@ class AlertWindowNotification {
     private final NotificationManager mNotificationManager;
     private final String mPackageName;
     private boolean mPosted;
-    private IconUtilities mIconUtilities;
 
     AlertWindowNotification(WindowManagerService service, String packageName) {
         mService = service;
@@ -62,7 +62,6 @@ class AlertWindowNotification {
                 (NotificationManager) mService.mContext.getSystemService(NOTIFICATION_SERVICE);
         mNotificationTag = CHANNEL_PREFIX + mPackageName;
         mRequestCode = sNextRequestCode++;
-        mIconUtilities = new IconUtilities(mService.mContext);
     }
 
     void post() {
@@ -125,8 +124,9 @@ class AlertWindowNotification {
 
         if (aInfo != null) {
             final Drawable drawable = pm.getApplicationIcon(aInfo);
-            if (drawable != null) {
-                final Bitmap bitmap = mIconUtilities.createIconBitmap(drawable);
+            int size = context.getResources().getDimensionPixelSize(android.R.dimen.app_icon_size);
+            final Bitmap bitmap = ImageUtils.buildScaledBitmap(drawable, size, size);
+            if (bitmap != null) {
                 builder.setLargeIcon(bitmap);
             }
         }
@@ -139,7 +139,8 @@ class AlertWindowNotification {
                 Uri.fromParts("package", packageName, null));
         intent.setFlags(FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK);
         // Calls into activity manager...
-        return PendingIntent.getActivity(context, mRequestCode, intent, FLAG_CANCEL_CURRENT);
+        return PendingIntent.getActivity(context, mRequestCode, intent,
+                FLAG_CANCEL_CURRENT | FLAG_IMMUTABLE);
     }
 
     private void createNotificationChannel(Context context, String appName) {

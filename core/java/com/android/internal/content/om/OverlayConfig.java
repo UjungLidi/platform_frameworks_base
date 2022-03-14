@@ -110,7 +110,9 @@ public class OverlayConfig {
         } else {
             // Rebase the system partitions and settings file on the specified root directory.
             partitions = new ArrayList<>(PackagePartitions.getOrderedPartitions(
-                    p -> new OverlayPartition(new File(rootDirectory, p.folder.getPath()), p)));
+                    p -> new OverlayPartition(
+                            new File(rootDirectory, p.getNonConicalFolder().getPath()),
+                            p)));
         }
 
         boolean foundConfigFile = false;
@@ -143,7 +145,7 @@ public class OverlayConfig {
                 // Filter out overlays not present in the partition.
                 partitionOverlayInfos = new ArrayList<>(packageManagerOverlayInfos);
                 for (int j = partitionOverlayInfos.size() - 1; j >= 0; j--) {
-                    if (!partition.containsPath(partitionOverlayInfos.get(j).path.getPath())) {
+                    if (!partition.containsFile(partitionOverlayInfos.get(j).path)) {
                         partitionOverlayInfos.remove(j);
                     }
                 }
@@ -294,7 +296,7 @@ public class OverlayConfig {
             if (p.getOverlayTarget() != null && isSystem) {
                 overlays.add(new ParsedOverlayInfo(p.getPackageName(), p.getOverlayTarget(),
                         p.getTargetSdkVersion(), p.isOverlayIsStatic(), p.getOverlayPriority(),
-                        new File(p.getBaseCodePath())));
+                        new File(p.getBaseApkPath())));
             }
         });
         return overlays;

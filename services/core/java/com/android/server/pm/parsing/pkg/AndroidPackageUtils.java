@@ -21,16 +21,17 @@ import android.annotation.Nullable;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.content.pm.PackageParser;
 import android.content.pm.PackageParser.PackageParserException;
 import android.content.pm.SharedLibraryInfo;
 import android.content.pm.VersionedPackage;
 import android.content.pm.dex.DexMetadataHelper;
 import android.content.pm.parsing.ParsingPackageRead;
+import android.content.pm.parsing.ParsingPackageUtils;
 import android.content.pm.parsing.component.ParsedActivity;
 import android.content.pm.parsing.component.ParsedInstrumentation;
 import android.content.pm.parsing.component.ParsedProvider;
 import android.content.pm.parsing.component.ParsedService;
+import android.os.incremental.IncrementalManager;
 import android.text.TextUtils;
 
 import com.android.internal.content.NativeLibraryHelper;
@@ -57,7 +58,7 @@ public class AndroidPackageUtils {
         PackageImpl pkg = (PackageImpl) aPkg;
         ArrayList<String> paths = new ArrayList<>();
         if (pkg.isHasCode()) {
-            paths.add(pkg.getBaseCodePath());
+            paths.add(pkg.getBaseApkPath());
         }
         String[] splitCodePaths = pkg.getSplitCodePaths();
         if (!ArrayUtils.isEmpty(splitCodePaths)) {
@@ -76,7 +77,7 @@ public class AndroidPackageUtils {
     public static List<String> getAllCodePaths(AndroidPackage aPkg) {
         PackageImpl pkg = (PackageImpl) aPkg;
         ArrayList<String> paths = new ArrayList<>();
-        paths.add(pkg.getBaseCodePath());
+        paths.add(pkg.getBaseApkPath());
 
         String[] splitCodePaths = pkg.getSplitCodePaths();
         if (!ArrayUtils.isEmpty(splitCodePaths)) {
@@ -93,7 +94,7 @@ public class AndroidPackageUtils {
                 SharedLibraryInfo.TYPE_STATIC,
                 new VersionedPackage(pkg.getManifestPackageName(),
                         pkg.getLongVersionCode()),
-                null, null);
+                null, null, false /* isNative */);
     }
 
     public static SharedLibraryInfo createSharedLibraryForDynamic(AndroidPackage pkg, String name) {
@@ -102,7 +103,7 @@ public class AndroidPackageUtils {
                 SharedLibraryInfo.VERSION_UNDEFINED,
                 SharedLibraryInfo.TYPE_DYNAMIC, new VersionedPackage(pkg.getPackageName(),
                 pkg.getLongVersionCode()),
-                null, null);
+                null, null, false /* isNative */);
     }
 
     /**
@@ -124,8 +125,10 @@ public class AndroidPackageUtils {
     public static void validatePackageDexMetadata(AndroidPackage pkg)
             throws PackageParserException {
         Collection<String> apkToDexMetadataList = getPackageDexMetadata(pkg).values();
+        String packageName = pkg.getPackageName();
+        long versionCode = pkg.toAppInfoWithoutState().longVersionCode;
         for (String dexMetadata : apkToDexMetadataList) {
-            DexMetadataHelper.validateDexMetadataFile(dexMetadata);
+            DexMetadataHelper.validateDexMetadataFile(dexMetadata, packageName, versionCode);
         }
     }
 
@@ -141,8 +144,15 @@ public class AndroidPackageUtils {
 
     public static boolean canHaveOatDir(AndroidPackage pkg, boolean isUpdatedSystemApp) {
         // The following app types CANNOT have oat directory
-        // - non-updated system apps
-        return !pkg.isSystem() || isUpdatedSystemApp;
+        // - non-updated system apps,
+        // - incrementally installed apps.
+        if (pkg.isSystem() && !isUpdatedSystemApp) {
+            return false;
+        }
+        if (IncrementalManager.isIncrementalPath(pkg.getPath())) {
+            return false;
+        }
+        return true;
     }
 
     public static boolean hasComponentClassName(AndroidPackage pkg, String className) {
@@ -225,7 +235,7 @@ public class AndroidPackageUtils {
     }
 
     public static int getIcon(ParsingPackageRead pkg) {
-        return (PackageParser.sUseRoundIcon && pkg.getRoundIconRes() != 0)
+        return (ParsingPackageUtils.sUseRoundIcon && pkg.getRoundIconRes() != 0)
                 ? pkg.getRoundIconRes() : pkg.getIconRes();
     }
 
@@ -233,6 +243,10 @@ public class AndroidPackageUtils {
         return PackageInfo.composeLongVersionCode(pkg.getVersionCodeMajor(), pkg.getVersionCode());
     }
 
+    /**
+     * Returns false iff the provided flags include the {@link PackageManager#MATCH_SYSTEM_ONLY}
+     * flag and the provided package is not a system package. Otherwise returns {@code true}.
+     */
     public static boolean isMatchForSystemOnly(AndroidPackage pkg, int flags) {
         if ((flags & PackageManager.MATCH_SYSTEM_ONLY) != 0) {
             return pkg.isSystem();

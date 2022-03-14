@@ -17,6 +17,7 @@ package android.content.pm;
 
 import android.annotation.IntRange;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.os.Parcel;
 import android.os.Parcelable;
 
@@ -60,7 +61,7 @@ public final class VersionedPackage implements Parcelable {
     }
 
     private VersionedPackage(Parcel parcel) {
-        mPackageName = parcel.readString();
+        mPackageName = parcel.readString8();
         mVersionCode = parcel.readLong();
     }
 
@@ -96,7 +97,7 @@ public final class VersionedPackage implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         return o instanceof VersionedPackage
                 && ((VersionedPackage) o).mPackageName.equals(mPackageName)
                 && ((VersionedPackage) o).mVersionCode == mVersionCode;
@@ -116,7 +117,7 @@ public final class VersionedPackage implements Parcelable {
 
     @Override
     public void writeToParcel(Parcel parcel, int flags) {
-        parcel.writeString(mPackageName);
+        parcel.writeString8(mPackageName);
         parcel.writeLong(mVersionCode);
     }
 

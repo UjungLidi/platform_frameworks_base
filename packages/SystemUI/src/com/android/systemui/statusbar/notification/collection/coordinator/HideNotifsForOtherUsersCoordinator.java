@@ -23,6 +23,7 @@ import com.android.systemui.statusbar.NotificationLockscreenUserManager;
 import com.android.systemui.statusbar.NotificationLockscreenUserManager.UserChangedListener;
 import com.android.systemui.statusbar.notification.collection.NotifPipeline;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
+import com.android.systemui.statusbar.notification.collection.coordinator.dagger.CoordinatorScope;
 import com.android.systemui.statusbar.notification.collection.listbuilder.pluggable.NotifFilter;
 
 import javax.inject.Inject;
@@ -37,13 +38,17 @@ import javax.inject.Inject;
  * TODO: The NotificationLockscreenUserManager currently maintains the list of active user profiles.
  *  We should spin that off into a standalone section at some point.
  */
+@CoordinatorScope
 public class HideNotifsForOtherUsersCoordinator implements Coordinator {
     private final NotificationLockscreenUserManager mLockscreenUserManager;
+    private final SharedCoordinatorLogger mLogger;
 
     @Inject
     public HideNotifsForOtherUsersCoordinator(
-            NotificationLockscreenUserManager lockscreenUserManager) {
+            NotificationLockscreenUserManager lockscreenUserManager,
+            SharedCoordinatorLogger logger) {
         mLockscreenUserManager = lockscreenUserManager;
+        mLogger = logger;
     }
 
     @Override
@@ -61,9 +66,27 @@ public class HideNotifsForOtherUsersCoordinator implements Coordinator {
     };
 
     private final UserChangedListener mUserChangedListener = new UserChangedListener() {
+        // This listener is fired both when the list of profiles changes and when the current user
+        // changes
         @Override
         public void onCurrentProfilesChanged(SparseArray<UserInfo> currentProfiles) {
+            mLogger.logUserOrProfileChanged(
+                    mLockscreenUserManager.getCurrentUserId(),
+                    profileIdsToStr(currentProfiles));
             mFilter.invalidateList();
         }
     };
+
+    private String profileIdsToStr(SparseArray<UserInfo> currentProfiles) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{");
+        for (int i = 0; i < currentProfiles.size(); i++) {
+            sb.append(currentProfiles.keyAt(i));
+            if (i < currentProfiles.size() - 1) {
+                sb.append(",");
+            }
+        }
+        sb.append("}");
+        return sb.toString();
+    }
 }

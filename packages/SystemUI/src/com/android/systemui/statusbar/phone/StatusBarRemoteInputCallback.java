@@ -27,15 +27,17 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.IntentSender;
-import android.os.Handler;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.view.View;
 import android.view.ViewParent;
 
 import com.android.systemui.ActivityIntentHelper;
+import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
+import com.android.systemui.statusbar.ActionClickLogger;
 import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.CommandQueue.Callbacks;
 import com.android.systemui.statusbar.NotificationLockscreenUserManager;
@@ -43,16 +45,18 @@ import com.android.systemui.statusbar.NotificationRemoteInputManager;
 import com.android.systemui.statusbar.NotificationRemoteInputManager.Callback;
 import com.android.systemui.statusbar.StatusBarState;
 import com.android.systemui.statusbar.SysuiStatusBarStateController;
+import com.android.systemui.statusbar.notification.collection.render.GroupExpansionManager;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 import com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 
+import java.util.concurrent.Executor;
+
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  */
-@Singleton
+@SysUISingleton
 public class StatusBarRemoteInputCallback implements Callback, Callbacks,
         StatusBarStateController.StateListener {
 
@@ -63,29 +67,36 @@ public class StatusBarRemoteInputCallback implements Callback, Callbacks,
     private final Context mContext;
     private final StatusBarKeyguardViewManager mStatusBarKeyguardViewManager;
     private final ShadeController mShadeController;
+    private Executor mExecutor;
     private final ActivityIntentHelper mActivityIntentHelper;
-    private final NotificationGroupManager mGroupManager;
+    private final GroupExpansionManager mGroupExpansionManager;
     private View mPendingWorkRemoteInputView;
     private View mPendingRemoteInputView;
     private KeyguardManager mKeyguardManager;
     private final CommandQueue mCommandQueue;
+    private final ActionClickLogger mActionClickLogger;
     private int mDisabled2;
     protected BroadcastReceiver mChallengeReceiver = new ChallengeReceiver();
-    private Handler mMainHandler = new Handler();
 
     /**
      */
     @Inject
-    public StatusBarRemoteInputCallback(Context context, NotificationGroupManager groupManager,
+    public StatusBarRemoteInputCallback(
+            Context context,
+            GroupExpansionManager groupExpansionManager,
             NotificationLockscreenUserManager notificationLockscreenUserManager,
             KeyguardStateController keyguardStateController,
             StatusBarStateController statusBarStateController,
             StatusBarKeyguardViewManager statusBarKeyguardViewManager,
-            ActivityStarter activityStarter, ShadeController shadeController,
-            CommandQueue commandQueue) {
+            ActivityStarter activityStarter,
+            ShadeController shadeController,
+            CommandQueue commandQueue,
+            ActionClickLogger clickLogger,
+            @Main Executor executor) {
         mContext = context;
         mStatusBarKeyguardViewManager = statusBarKeyguardViewManager;
         mShadeController = shadeController;
+        mExecutor = executor;
         mContext.registerReceiverAsUser(mChallengeReceiver, UserHandle.ALL,
                 new IntentFilter(ACTION_DEVICE_LOCKED_CHANGED), null, null);
         mLockscreenUserManager = notificationLockscreenUserManager;
@@ -96,8 +107,9 @@ public class StatusBarRemoteInputCallback implements Callback, Callbacks,
         mKeyguardManager = context.getSystemService(KeyguardManager.class);
         mCommandQueue = commandQueue;
         mCommandQueue.addCallback(this);
+        mActionClickLogger = clickLogger;
         mActivityIntentHelper = new ActivityIntentHelper(mContext);
-        mGroupManager = groupManager;
+        mGroupExpansionManager = groupExpansionManager;
     }
 
     @Override
@@ -105,9 +117,10 @@ public class StatusBarRemoteInputCallback implements Callback, Callbacks,
         boolean hasPendingRemoteInput = mPendingRemoteInputView != null;
         if (state == StatusBarState.SHADE
                 && (mStatusBarStateController.leaveOpenOnKeyguardHide() || hasPendingRemoteInput)) {
-            if (!mStatusBarStateController.isKeyguardRequested()) {
+            if (!mStatusBarStateController.isKeyguardRequested()
+                    && mKeyguardStateController.isUnlocked()) {
                 if (hasPendingRemoteInput) {
-                    mMainHandler.post(mPendingRemoteInputView::callOnClick);
+                    mExecutor.execute(mPendingRemoteInputView::callOnClick);
                 }
                 mPendingRemoteInputView = null;
             }
@@ -119,7 +132,7 @@ public class StatusBarRemoteInputCallback implements Callback, Callbacks,
         if (!row.isPinned()) {
             mStatusBarStateController.setLeaveOpenOnKeyguardHide(true);
         }
-        mStatusBarKeyguardViewManager.showBouncer(true /* scrimmed */);
+        mStatusBarKeyguardViewManager.showGenericBouncer(true /* scrimmed */);
         mPendingRemoteInputView = clicked;
     }
 
@@ -172,16 +185,16 @@ public class StatusBarRemoteInputCallback implements Callback, Callbacks,
 
     @Override
     public void onMakeExpandedVisibleForRemoteInput(ExpandableNotificationRow row,
-            View clickedView) {
-        if (mKeyguardStateController.isShowing()) {
+            View clickedView, boolean deferBouncer, Runnable runnable) {
+        if (!deferBouncer && mKeyguardStateController.isShowing()) {
             onLockedRemoteInput(row, clickedView);
         } else {
             if (row.isChildInGroup() && !row.areChildrenExpanded()) {
                 // The group isn't expanded, let's make sure it's visible!
-                mGroupManager.toggleGroupExpansion(row.getEntry().getSbn());
+                mGroupExpansionManager.toggleGroupExpansion(row.getEntry());
             }
             row.setUserExpanded(true);
-            row.getPrivateLayout().setOnExpandedVisibleListener(clickedView::performClick);
+            row.getPrivateLayout().setOnExpandedVisibleListener(runnable);
         }
     }
 
@@ -240,12 +253,16 @@ public class StatusBarRemoteInputCallback implements Callback, Callbacks,
 
     @Override
     public boolean handleRemoteViewClick(View view, PendingIntent pendingIntent,
+            boolean appRequestedAuth,
             NotificationRemoteInputManager.ClickHandler defaultHandler) {
         final boolean isActivity = pendingIntent.isActivity();
-        if (isActivity) {
+        if (isActivity || appRequestedAuth) {
+            mActionClickLogger.logWaitingToCloseKeyguard(pendingIntent);
             final boolean afterKeyguardGone = mActivityIntentHelper.wouldLaunchResolverActivity(
                     pendingIntent.getIntent(), mLockscreenUserManager.getCurrentUserId());
             mActivityStarter.dismissKeyguardThenExecute(() -> {
+                mActionClickLogger.logKeyguardGone(pendingIntent);
+
                 try {
                     ActivityManager.getService().resumeAppSwitches();
                 } catch (RemoteException e) {

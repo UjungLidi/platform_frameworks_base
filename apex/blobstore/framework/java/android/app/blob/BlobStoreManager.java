@@ -67,9 +67,9 @@ import java.util.function.Consumer;
  * <pre class="prettyprint">
  *     final long sessionId = blobStoreManager.createSession(blobHandle);
  *     try (BlobStoreManager.Session session = blobStoreManager.openSession(sessionId)) {
- *         try (ParcelFileDescriptor pfd = new ParcelFileDescriptor.AutoCloseOutputStream(
+ *         try (OutputStream out = new ParcelFileDescriptor.AutoCloseOutputStream(
  *                 session.openWrite(offsetBytes, lengthBytes))) {
- *             writeData(pfd);
+ *             writeData(out);
  *         }
  *     }
  * </pre>
@@ -89,8 +89,8 @@ import java.util.function.Consumer;
  * <p> Before committing the session, apps can indicate which apps are allowed to access the
  * contributed data using one or more of the following access modes:
  * <ul>
- *     <li> {@link Session#allowPackageAccess(String, byte[])} which will allow whitelisting
- *          specific packages to access the blobs.
+ *     <li> {@link Session#allowPackageAccess(String, byte[])} which will allow specific packages
+ *          to access the blobs.
  *     <li> {@link Session#allowSameSignatureAccess()} which will allow only apps which are signed
  *          with the same certificate as the app which contributed the blob to access it.
  *     <li> {@link Session#allowPublicAccess()} which will allow any app on the device to access
@@ -100,9 +100,9 @@ import java.util.function.Consumer;
  * <p> The following code snippet shows how to specify the access mode and commit the session:
  * <pre class="prettyprint">
  *     try (BlobStoreManager.Session session = blobStoreManager.openSession(sessionId)) {
- *         try (ParcelFileDescriptor pfd = new ParcelFileDescriptor.AutoCloseOutputStream(
+ *         try (OutputStream out = new ParcelFileDescriptor.AutoCloseOutputStream(
  *                 session.openWrite(offsetBytes, lengthBytes))) {
- *             writeData(pfd);
+ *             writeData(out);
  *         }
  *         session.allowSameSignatureAccess();
  *         session.allowPackageAccess(packageName, certificate);
@@ -134,9 +134,9 @@ import java.util.function.Consumer;
  *
  * <p> The following code snippet shows how to access the data blob:
  * <pre class="prettyprint">
- *     try (ParcelFileDescriptor pfd = new ParcelFileDescriptor.AutoCloseInputStream(
+ *     try (InputStream in = new ParcelFileDescriptor.AutoCloseInputStream(
  *             blobStoreManager.openBlob(blobHandle)) {
- *         useData(pfd);
+ *         useData(in);
  *     }
  * </pre>
  */
@@ -184,9 +184,8 @@ public class BlobStoreManager {
      * @throws SecurityException when the caller is not allowed to create a session, such
      *                           as when called from an Instant app.
      * @throws IllegalArgumentException when {@code blobHandle} is invalid.
-     * @throws IllegalStateException when a new session could not be created, such as when the
-     *                               caller is trying to create too many sessions or when the
-     *                               device is running low on space.
+     * @throws LimitExceededException when a new session could not be created, such as when the
+     *                                caller is trying to create too many sessions.
      */
     public @IntRange(from = 1) long createSession(@NonNull BlobHandle blobHandle)
             throws IOException {
@@ -194,6 +193,7 @@ public class BlobStoreManager {
             return mService.createSession(blobHandle, mContext.getOpPackageName());
         } catch (ParcelableException e) {
             e.maybeRethrow(IOException.class);
+            e.maybeRethrow(LimitExceededException.class);
             throw new RuntimeException(e);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
@@ -302,13 +302,14 @@ public class BlobStoreManager {
      *                                  if the {@code leaseExpiryTimeMillis} is greater than the
      *                                  {@link BlobHandle#getExpiryTimeMillis()}.
      * @throws LimitExceededException when a lease could not be acquired, such as when the
-     *                                caller is trying to acquire leases on too much data. Apps
-     *                                can avoid this by checking the remaining quota using
+     *                                caller is trying to acquire too many leases or acquire
+     *                                leases on too much data. Apps can avoid this by checking
+     *                                the remaining quota using
      *                                {@link #getRemainingLeaseQuotaBytes()} before trying to
      *                                acquire a lease.
      *
-     * @see {@link #acquireLease(BlobHandle, int)}
-     * @see {@link #acquireLease(BlobHandle, CharSequence)}
+     * @see #acquireLease(BlobHandle, int)
+     * @see #acquireLease(BlobHandle, CharSequence)
      */
     public void acquireLease(@NonNull BlobHandle blobHandle, @IdRes int descriptionResId,
             @CurrentTimeMillisLong long leaseExpiryTimeMillis) throws IOException {
@@ -346,7 +347,9 @@ public class BlobStoreManager {
      * @param blobHandle the {@link BlobHandle} representing the blob that the caller wants to
      *                   acquire a lease for.
      * @param description a short description string that can be surfaced
-     *                    to the user explaining what the blob is used for.
+     *                    to the user explaining what the blob is used for. It is recommended to
+     *                    keep this description brief. This may be truncated and ellipsized
+     *                    if it is too long to be displayed to the user.
      * @param leaseExpiryTimeMillis the time in milliseconds after which the lease can be
      *                              automatically released, in {@link System#currentTimeMillis()}
      *                              timebase. If its value is {@code 0}, then the behavior of this
@@ -362,13 +365,14 @@ public class BlobStoreManager {
      *                                  if the {@code leaseExpiryTimeMillis} is greater than the
      *                                  {@link BlobHandle#getExpiryTimeMillis()}.
      * @throws LimitExceededException when a lease could not be acquired, such as when the
-     *                                caller is trying to acquire leases on too much data. Apps
-     *                                can avoid this by checking the remaining quota using
+     *                                caller is trying to acquire too many leases or acquire
+     *                                leases on too much data. Apps can avoid this by checking
+     *                                the remaining quota using
      *                                {@link #getRemainingLeaseQuotaBytes()} before trying to
      *                                acquire a lease.
      *
-     * @see {@link #acquireLease(BlobHandle, int, long)}
-     * @see {@link #acquireLease(BlobHandle, CharSequence)}
+     * @see #acquireLease(BlobHandle, int, long)
+     * @see #acquireLease(BlobHandle, CharSequence)
      */
     public void acquireLease(@NonNull BlobHandle blobHandle, @NonNull CharSequence description,
             @CurrentTimeMillisLong long leaseExpiryTimeMillis) throws IOException {
@@ -415,13 +419,14 @@ public class BlobStoreManager {
      *                           exist or the caller does not have access to it.
      * @throws IllegalArgumentException when {@code blobHandle} is invalid.
      * @throws LimitExceededException when a lease could not be acquired, such as when the
-     *                                caller is trying to acquire leases on too much data. Apps
-     *                                can avoid this by checking the remaining quota using
+     *                                caller is trying to acquire too many leases or acquire
+     *                                leases on too much data. Apps can avoid this by checking
+     *                                the remaining quota using
      *                                {@link #getRemainingLeaseQuotaBytes()} before trying to
      *                                acquire a lease.
      *
-     * @see {@link #acquireLease(BlobHandle, int, long)}
-     * @see {@link #acquireLease(BlobHandle, CharSequence, long)}
+     * @see #acquireLease(BlobHandle, int, long)
+     * @see #acquireLease(BlobHandle, CharSequence, long)
      */
     public void acquireLease(@NonNull BlobHandle blobHandle, @IdRes int descriptionResId)
             throws IOException {
@@ -455,20 +460,23 @@ public class BlobStoreManager {
      * @param blobHandle the {@link BlobHandle} representing the blob that the caller wants to
      *                   acquire a lease for.
      * @param description a short description string that can be surfaced
-     *                    to the user explaining what the blob is used for.
+     *                    to the user explaining what the blob is used for. It is recommended to
+     *                    keep this description brief. This may be truncated and
+     *                    ellipsized if it is too long to be displayed to the user.
      *
      * @throws IOException when there is an I/O error while acquiring a lease to the blob.
      * @throws SecurityException when the blob represented by the {@code blobHandle} does not
      *                           exist or the caller does not have access to it.
      * @throws IllegalArgumentException when {@code blobHandle} is invalid.
      * @throws LimitExceededException when a lease could not be acquired, such as when the
-     *                                caller is trying to acquire leases on too much data. Apps
-     *                                can avoid this by checking the remaining quota using
+     *                                caller is trying to acquire too many leases or acquire
+     *                                leases on too much data. Apps can avoid this by checking
+     *                                the remaining quota using
      *                                {@link #getRemainingLeaseQuotaBytes()} before trying to
      *                                acquire a lease.
      *
-     * @see {@link #acquireLease(BlobHandle, int)}
-     * @see {@link #acquireLease(BlobHandle, CharSequence, long)}
+     * @see #acquireLease(BlobHandle, int)
+     * @see #acquireLease(BlobHandle, CharSequence, long)
      */
     public void acquireLease(@NonNull BlobHandle blobHandle, @NonNull CharSequence description)
             throws IOException {
@@ -757,6 +765,8 @@ public class BlobStoreManager {
          * @throws SecurityException when the caller is not the owner of the session.
          * @throws IllegalStateException when the caller tries to change access for a blob which is
          *                               already committed.
+         * @throws LimitExceededException when the caller tries to explicitly allow too
+         *                                many packages using this API.
          */
         public void allowPackageAccess(@NonNull String packageName, @NonNull byte[] certificate)
                 throws IOException {
@@ -764,6 +774,7 @@ public class BlobStoreManager {
                 mSession.allowPackageAccess(packageName, certificate);
             } catch (ParcelableException e) {
                 e.maybeRethrow(IOException.class);
+                e.maybeRethrow(LimitExceededException.class);
                 throw new RuntimeException(e);
             } catch (RemoteException e) {
                 throw e.rethrowFromSystemServer();

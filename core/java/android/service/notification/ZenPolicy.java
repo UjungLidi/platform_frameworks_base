@@ -18,12 +18,14 @@ package android.service.notification;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.util.proto.ProtoOutputStream;
 
+import java.io.ByteArrayOutputStream;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
@@ -949,7 +951,7 @@ public final class ZenPolicy implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (!(o instanceof ZenPolicy)) return false;
         if (o == this) return true;
         final ZenPolicy other = (ZenPolicy) o;
@@ -1108,6 +1110,40 @@ public final class ZenPolicy implements Parcelable {
         proto.write(ZenPolicyProto.PRIORITY_MESSAGES, getPriorityMessageSenders());
         proto.write(ZenPolicyProto.PRIORITY_CALLS, getPriorityCallSenders());
         proto.end(token);
+    }
+
+    /**
+     * Converts a policy to a statsd proto.
+     * @hides
+     */
+    public byte[] toProto() {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ProtoOutputStream proto = new ProtoOutputStream(bytes);
+
+        proto.write(DNDPolicyProto.CALLS, getPriorityCategoryCalls());
+        proto.write(DNDPolicyProto.REPEAT_CALLERS, getPriorityCategoryRepeatCallers());
+        proto.write(DNDPolicyProto.MESSAGES, getPriorityCategoryMessages());
+        proto.write(DNDPolicyProto.CONVERSATIONS, getPriorityCategoryConversations());
+        proto.write(DNDPolicyProto.REMINDERS, getPriorityCategoryReminders());
+        proto.write(DNDPolicyProto.EVENTS, getPriorityCategoryEvents());
+        proto.write(DNDPolicyProto.ALARMS, getPriorityCategoryAlarms());
+        proto.write(DNDPolicyProto.MEDIA, getPriorityCategoryMedia());
+        proto.write(DNDPolicyProto.SYSTEM, getPriorityCategorySystem());
+
+        proto.write(DNDPolicyProto.FULLSCREEN, getVisualEffectFullScreenIntent());
+        proto.write(DNDPolicyProto.LIGHTS, getVisualEffectLights());
+        proto.write(DNDPolicyProto.PEEK, getVisualEffectPeek());
+        proto.write(DNDPolicyProto.STATUS_BAR, getVisualEffectStatusBar());
+        proto.write(DNDPolicyProto.BADGE, getVisualEffectBadge());
+        proto.write(DNDPolicyProto.AMBIENT, getVisualEffectAmbient());
+        proto.write(DNDPolicyProto.NOTIFICATION_LIST, getVisualEffectNotificationList());
+
+        proto.write(DNDPolicyProto.ALLOW_CALLS_FROM, getPriorityCallSenders());
+        proto.write(DNDPolicyProto.ALLOW_MESSAGES_FROM, getPriorityMessageSenders());
+        proto.write(DNDPolicyProto.ALLOW_CONVERSATIONS_FROM, getPriorityConversationSenders());
+
+        proto.flush();
+        return bytes.toByteArray();
     }
 
     /**

@@ -29,7 +29,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 /**
- * Sanity test for {@link IconsContentProvider}.
+ * Validity test for {@link IconsContentProvider}.
  */
 @RunWith(AndroidJUnit4.class)
 public final class IconsContentProviderTest {
@@ -50,8 +50,7 @@ public final class IconsContentProviderTest {
 
         final Drawable actual = Icon.createWithContentUri(uri).loadDrawable(context);
         assertThat(actual).isNotNull();
-        assertThat(IconsContentProvider.getBitmapData(actual))
-                .isEqualTo(IconsContentProvider.getBitmapData(expected));
+        assertThat(IconsContentProvider.sameIcon(actual, expected)).isTrue();
     }
 
     @Test

@@ -19,6 +19,7 @@ package com.android.externalstorage;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.usage.StorageStatsManager;
+import android.content.AttributionSource;
 import android.content.ContentResolver;
 import android.content.UriPermission;
 import android.database.Cursor;
@@ -28,10 +29,10 @@ import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.Environment;
-import android.os.IBinder;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.os.storage.DiskInfo;
+import android.os.storage.StorageEventListener;
 import android.os.storage.StorageManager;
 import android.os.storage.VolumeInfo;
 import android.provider.DocumentsContract;
@@ -94,7 +95,8 @@ public class ExternalStorageProvider extends FileSystemProvider {
         public String docId;
         public File visiblePath;
         public File path;
-        public boolean reportAvailableBytes = true;
+        // TODO (b/157033915): Make getFreeBytes() faster
+        public boolean reportAvailableBytes = false;
     }
 
     private static final String ROOT_ID_PRIMARY_EMULATED =
@@ -119,6 +121,14 @@ public class ExternalStorageProvider extends FileSystemProvider {
         mUserManager = getContext().getSystemService(UserManager.class);
 
         updateVolumes();
+
+        mStorageManager.registerListener(new StorageEventListener() {
+                @Override
+                public void onVolumeStateChanged(VolumeInfo vol, int oldState, int newState) {
+                    updateVolumes();
+                }
+            });
+
         return true;
     }
 
@@ -131,17 +141,17 @@ public class ExternalStorageProvider extends FileSystemProvider {
     }
 
     @Override
-    protected int enforceReadPermissionInner(Uri uri, String callingPkg,
-            @Nullable String featureId, IBinder callerToken) throws SecurityException {
+    protected int enforceReadPermissionInner(Uri uri,
+            @NonNull AttributionSource attributionSource) throws SecurityException {
         enforceShellRestrictions();
-        return super.enforceReadPermissionInner(uri, callingPkg, featureId, callerToken);
+        return super.enforceReadPermissionInner(uri, attributionSource);
     }
 
     @Override
-    protected int enforceWritePermissionInner(Uri uri, String callingPkg,
-            @Nullable String featureId, IBinder callerToken) throws SecurityException {
+    protected int enforceWritePermissionInner(Uri uri,
+            @NonNull AttributionSource attributionSource) throws SecurityException {
         enforceShellRestrictions();
-        return super.enforceWritePermissionInner(uri, callingPkg, featureId, callerToken);
+        return super.enforceWritePermissionInner(uri, attributionSource);
     }
 
     public void updateVolumes() {
@@ -266,6 +276,13 @@ public class ExternalStorageProvider extends FileSystemProvider {
         return projection != null ? projection : DEFAULT_ROOT_PROJECTION;
     }
 
+    @Override
+    public Cursor queryChildDocumentsForManage(
+            String parentDocId, String[] projection, String sortOrder)
+            throws FileNotFoundException {
+        return queryChildDocumentsShowAll(parentDocId, projection, sortOrder);
+    }
+
     /**
      * Check that the directory is the root of storage or blocked file from tree.
      *
@@ -301,6 +318,11 @@ public class ExternalStorageProvider extends FileSystemProvider {
 
             // Block Download folder from tree
             if (TextUtils.equals(Environment.DIRECTORY_DOWNLOADS.toLowerCase(),
+                    path.toLowerCase())) {
+                return true;
+            }
+
+            if (TextUtils.equals(Environment.DIRECTORY_ANDROID.toLowerCase(),
                     path.toLowerCase())) {
                 return true;
             }
@@ -433,7 +455,7 @@ public class ExternalStorageProvider extends FileSystemProvider {
         final int splitIndex = docId.indexOf(':', 1);
         final String path = docId.substring(splitIndex + 1);
 
-        File target = visible ? root.visiblePath : root.path;
+        File target = root.visiblePath != null ? root.visiblePath : root.path;
         if (target == null) {
             return null;
         }
@@ -464,6 +486,13 @@ public class ExternalStorageProvider extends FileSystemProvider {
         } catch (FileNotFoundException | ErrnoException ignored) {
         }
     }
+
+    @Override
+    protected void onDocIdDeleted(String docId) {
+        Uri uri = DocumentsContract.buildDocumentUri(AUTHORITY, docId);
+        getContext().revokeUriPermission(uri, ~0);
+    }
+
 
     @Override
     public Cursor queryRoots(String[] projection) throws FileNotFoundException {
@@ -504,9 +533,11 @@ public class ExternalStorageProvider extends FileSystemProvider {
         final RootInfo root = resolvedDocId.first;
         File child = resolvedDocId.second;
 
+        final File rootFile = root.visiblePath != null ? root.visiblePath
+                : root.path;
         final File parent = TextUtils.isEmpty(parentDocId)
-                        ? root.path
-                        : getFileForDocId(parentDocId);
+                ? rootFile
+                : getFileForDocId(parentDocId);
 
         return new Path(parentDocId == null ? root.rootId : null, findDocumentPath(parent, child));
     }
@@ -577,8 +608,11 @@ public class ExternalStorageProvider extends FileSystemProvider {
     public Cursor querySearchDocuments(String rootId, String[] projection, Bundle queryArgs)
             throws FileNotFoundException {
         final File parent;
+
         synchronized (mRootsLock) {
-            parent = mRoots.get(rootId).path;
+            RootInfo root = mRoots.get(rootId);
+            parent = root.visiblePath != null ? root.visiblePath
+                : root.path;
         }
 
         return querySearchDocuments(parent, projection, Collections.emptySet(), queryArgs);

@@ -40,15 +40,12 @@ import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Arrays;
 import java.util.Calendar;
 import java.util.GregorianCalendar;
 import java.util.Iterator;
 import java.util.LinkedList;
-import java.util.concurrent.TimeUnit;
+import java.util.Set;
 
 /**
  * Provides an interface to write and query for notification history data for a user from a Protocol
@@ -65,6 +62,7 @@ public class NotificationHistoryDatabase {
     private static final int HISTORY_RETENTION_DAYS = 1;
     private static final int HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000;
     private static final long WRITE_BUFFER_INTERVAL_MS = 1000 * 60 * 20;
+    private static final long INVALID_FILE_TIME_MS = -1;
 
     private static final String ACTION_HISTORY_DELETION =
             NotificationHistoryDatabase.class.getSimpleName() + ".CLEANUP";
@@ -102,13 +100,15 @@ public class NotificationHistoryDatabase {
 
         IntentFilter deletionFilter = new IntentFilter(ACTION_HISTORY_DELETION);
         deletionFilter.addDataScheme(SCHEME_DELETION);
-        mContext.registerReceiver(mFileCleaupReceiver, deletionFilter);
+        mContext.registerReceiver(mFileCleanupReceiver, deletionFilter);
     }
 
     public void init() {
         synchronized (mLock) {
             try {
-                mHistoryDir.mkdir();
+                if (!mHistoryDir.exists() && !mHistoryDir.mkdir()) {
+                    throw new IllegalStateException("could not create history directory");
+                }
                 mVersionFile.createNewFile();
             } catch (Exception e) {
                 Slog.e(TAG, "could not create needed files", e);
@@ -128,8 +128,8 @@ public class NotificationHistoryDatabase {
         }
 
         // Sort with newest files first
-        Arrays.sort(files, (lhs, rhs) -> Long.compare(Long.parseLong(rhs.getName()),
-                Long.parseLong(lhs.getName())));
+        Arrays.sort(files, (lhs, rhs) -> Long.compare(safeParseLong(rhs.getName()),
+                safeParseLong(lhs.getName())));
 
         for (File file : files) {
             mHistoryFiles.addLast(new AtomicFile(file));
@@ -170,8 +170,13 @@ public class NotificationHistoryDatabase {
         mFileWriteHandler.post(rnr);
     }
 
-    public void deleteConversation(String pkg, String conversationId) {
-        RemoveConversationRunnable rcr = new RemoveConversationRunnable(pkg, conversationId);
+    public void deleteConversations(String pkg, Set<String> conversationIds) {
+        RemoveConversationRunnable rcr = new RemoveConversationRunnable(pkg, conversationIds);
+        mFileWriteHandler.post(rcr);
+    }
+
+    public void deleteNotificationChannel(String pkg, String channelId) {
+        RemoveChannelRunnable rcr = new RemoveChannelRunnable(pkg, channelId);
         mFileWriteHandler.post(rcr);
     }
 
@@ -195,7 +200,7 @@ public class NotificationHistoryDatabase {
                     readLocked(
                             file, notifications, new NotificationHistoryFilter.Builder().build());
                 } catch (Exception e) {
-                    Slog.e(TAG, "error reading " + file.getBaseFile().getName(), e);
+                    Slog.e(TAG, "error reading " + file.getBaseFile().getAbsolutePath(), e);
                 }
             }
 
@@ -221,7 +226,7 @@ public class NotificationHistoryDatabase {
                         break;
                     }
                 } catch (Exception e) {
-                    Slog.e(TAG, "error reading " + file.getBaseFile().getName(), e);
+                    Slog.e(TAG, "error reading " + file.getBaseFile().getAbsolutePath(), e);
                 }
             }
 
@@ -250,23 +255,43 @@ public class NotificationHistoryDatabase {
 
             for (int i = mHistoryFiles.size() - 1; i >= 0; i--) {
                 final AtomicFile currentOldestFile = mHistoryFiles.get(i);
-                try {
-                    final long creationTime = Long.parseLong(
-                            currentOldestFile.getBaseFile().getName());
-                    if (DEBUG) {
-                        Slog.d(TAG, "File " + currentOldestFile.getBaseFile().getName()
-                                + " created on " + creationTime);
-                    }
-                    if (creationTime <= retentionBoundary.getTimeInMillis()) {
-                        deleteFile(currentOldestFile);
-                    } else {
-                        // all remaining files are newer than the cut off; schedule jobs to delete
-                        scheduleDeletion(
-                                currentOldestFile.getBaseFile(), creationTime, retentionDays);
-                    }
-                } catch (NumberFormatException e) {
-                    deleteFile(currentOldestFile);
+                final long creationTime = safeParseLong(
+                        currentOldestFile.getBaseFile().getName());
+                if (DEBUG) {
+                    Slog.d(TAG, "File " + currentOldestFile.getBaseFile().getName()
+                            + " created on " + creationTime);
                 }
+
+                if (creationTime <= retentionBoundary.getTimeInMillis()) {
+                    deleteFile(currentOldestFile);
+                } else {
+                    // all remaining files are newer than the cut off; schedule jobs to delete
+                    scheduleDeletion(
+                            currentOldestFile.getBaseFile(), creationTime, retentionDays);
+                }
+            }
+        }
+    }
+
+    /**
+     * Remove the first entry from the list of history files whose file matches the given file path.
+     *
+     * This method is necessary for anything that only has an absolute file path rather than an
+     * AtomicFile object from the list of history files.
+     *
+     * filePath should be an absolute path.
+     */
+    void removeFilePathFromHistory(String filePath) {
+        if (filePath == null) {
+            return;
+        }
+
+        Iterator<AtomicFile> historyFileItr = mHistoryFiles.iterator();
+        while (historyFileItr.hasNext()) {
+            final AtomicFile af = historyFileItr.next();
+            if (af != null && filePath.equals(af.getBaseFile().getAbsolutePath())) {
+                historyFileItr.remove();
+                return;
             }
         }
     }
@@ -277,7 +302,7 @@ public class NotificationHistoryDatabase {
         }
         file.delete();
         // TODO: delete all relevant bitmaps, once they exist
-        mHistoryFiles.removeLast();
+        removeFilePathFromHistory(file.getBaseFile().getAbsolutePath());
     }
 
     private void scheduleDeletion(File file, long creationTime, int retentionDays) {
@@ -296,7 +321,7 @@ public class NotificationHistoryDatabase {
                                 .appendPath(file.getAbsolutePath()).build())
                         .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
                         .putExtra(EXTRA_KEY, file.getAbsolutePath()),
-                PendingIntent.FLAG_UPDATE_CURRENT);
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         mAlarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, deletionTime, pi);
     }
 
@@ -315,15 +340,32 @@ public class NotificationHistoryDatabase {
 
     private static void readLocked(AtomicFile file, NotificationHistory notificationsOut,
             NotificationHistoryFilter filter) throws IOException {
-        try (FileInputStream in = file.openRead()) {
+        FileInputStream in = null;
+        try {
+            in = file.openRead();
             NotificationHistoryProtoHelper.read(in, notificationsOut, filter);
         } catch (FileNotFoundException e) {
-            Slog.e(TAG, "Cannot file " + file.getBaseFile().getName(), e);
+            Slog.e(TAG, "Cannot open " + file.getBaseFile().getAbsolutePath(), e);
             throw e;
+        } finally {
+            if (in != null) {
+                in.close();
+            }
         }
     }
 
-    private final BroadcastReceiver mFileCleaupReceiver = new BroadcastReceiver() {
+    private static long safeParseLong(String fileName) {
+        // AtomicFile will create copies of the numeric files with ".new" and ".bak"
+        // over the course of its processing. If these files still exist on boot we need to clean
+        // them up
+        try {
+            return Long.parseLong(fileName);
+        } catch (NumberFormatException e) {
+            return INVALID_FILE_TIME_MS;
+        }
+    }
+
+    private final BroadcastReceiver mFileCleanupReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             String action = intent.getAction();
@@ -332,9 +374,15 @@ public class NotificationHistoryDatabase {
             }
             if (ACTION_HISTORY_DELETION.equals(action)) {
                 try {
-                    final String filePath = intent.getStringExtra(EXTRA_KEY);
-                    AtomicFile fileToDelete = new AtomicFile(new File(filePath));
-                    fileToDelete.delete();
+                    synchronized (mLock) {
+                        final String filePath = intent.getStringExtra(EXTRA_KEY);
+                        AtomicFile fileToDelete = new AtomicFile(new File(filePath));
+                        if (DEBUG) {
+                            Slog.d(TAG, "Removed " + fileToDelete.getBaseFile().getName());
+                        }
+                        fileToDelete.delete();
+                        removeFilePathFromHistory(filePath);
+                    }
                 } catch (Exception e) {
                     Slog.e(TAG, "Failed to delete notification history file", e);
                 }
@@ -343,27 +391,23 @@ public class NotificationHistoryDatabase {
     };
 
     final class WriteBufferRunnable implements Runnable {
-        long currentTime = 0;
-        AtomicFile latestNotificationsFile;
 
         @Override
         public void run() {
-            if (DEBUG) Slog.d(TAG, "WriteBufferRunnable");
+            long time = System.currentTimeMillis();
+            run(time, new AtomicFile(new File(mHistoryDir, String.valueOf(time))));
+        }
+
+        void run(long time, AtomicFile file) {
             synchronized (mLock) {
-                if (currentTime == 0) {
-                    currentTime = System.currentTimeMillis();
-                }
-                if (latestNotificationsFile == null) {
-                    latestNotificationsFile = new AtomicFile(
-                            new File(mHistoryDir, String.valueOf(currentTime)));
-                }
+                if (DEBUG) Slog.d(TAG, "WriteBufferRunnable "
+                        + file.getBaseFile().getAbsolutePath());
                 try {
-                    writeLocked(latestNotificationsFile, mBuffer);
-                    mHistoryFiles.addFirst(latestNotificationsFile);
+                    writeLocked(file, mBuffer);
+                    mHistoryFiles.addFirst(file);
                     mBuffer = new NotificationHistory();
 
-                    scheduleDeletion(latestNotificationsFile.getBaseFile(), currentTime,
-                            HISTORY_RETENTION_DAYS);
+                    scheduleDeletion(file.getBaseFile(), time, HISTORY_RETENTION_DAYS);
                 } catch (IOException e) {
                     Slog.e(TAG, "Failed to write buffer to disk. not flushing buffer", e);
                 }
@@ -380,7 +424,7 @@ public class NotificationHistoryDatabase {
 
         @Override
         public void run() {
-            if (DEBUG) Slog.d(TAG, "RemovePackageRunnable");
+            if (DEBUG) Slog.d(TAG, "RemovePackageRunnable " + mPkg);
             synchronized (mLock) {
                 // Remove packageName entries from pending history
                 mBuffer.removeNotificationsFromWrite(mPkg);
@@ -396,7 +440,7 @@ public class NotificationHistoryDatabase {
                         writeLocked(af, notifications);
                     } catch (Exception e) {
                         Slog.e(TAG, "Cannot clean up file on pkg removal "
-                                + af.getBaseFile().getName(), e);
+                                + af.getBaseFile().getAbsolutePath(), e);
                     }
                 }
             }
@@ -448,12 +492,12 @@ public class NotificationHistoryDatabase {
 
     final class RemoveConversationRunnable implements Runnable {
         private String mPkg;
-        private String mConversationId;
+        private Set<String> mConversationIds;
         private NotificationHistory mNotificationHistory;
 
-        public RemoveConversationRunnable(String pkg, String conversationId) {
+        public RemoveConversationRunnable(String pkg, Set<String> conversationIds) {
             mPkg = pkg;
-            mConversationId = conversationId;
+            mConversationIds = conversationIds;
         }
 
         @VisibleForTesting
@@ -463,10 +507,10 @@ public class NotificationHistoryDatabase {
 
         @Override
         public void run() {
-            if (DEBUG) Slog.d(TAG, "RemoveConversationRunnable " + mPkg + " "  + mConversationId);
+            if (DEBUG) Slog.d(TAG, "RemoveConversationRunnable " + mPkg + " "  + mConversationIds);
             synchronized (mLock) {
                 // Remove from pending history
-                mBuffer.removeConversationFromWrite(mPkg, mConversationId);
+                mBuffer.removeConversationsFromWrite(mPkg, mConversationIds);
 
                 Iterator<AtomicFile> historyFileItr = mHistoryFiles.iterator();
                 while (historyFileItr.hasNext()) {
@@ -477,11 +521,55 @@ public class NotificationHistoryDatabase {
                                 : new NotificationHistory();
                         readLocked(af, notificationHistory,
                                 new NotificationHistoryFilter.Builder().build());
-                        if(notificationHistory.removeConversationFromWrite(mPkg, mConversationId)) {
+                        if (notificationHistory.removeConversationsFromWrite(
+                                mPkg, mConversationIds)) {
                             writeLocked(af, notificationHistory);
                         }
                     } catch (Exception e) {
                         Slog.e(TAG, "Cannot clean up file on conversation removal "
+                                + af.getBaseFile().getName(), e);
+                    }
+                }
+            }
+        }
+    }
+
+    final class RemoveChannelRunnable implements Runnable {
+        private String mPkg;
+        private String mChannelId;
+        private NotificationHistory mNotificationHistory;
+
+        RemoveChannelRunnable(String pkg, String channelId) {
+            mPkg = pkg;
+            mChannelId = channelId;
+        }
+
+        @VisibleForTesting
+        void setNotificationHistory(NotificationHistory nh) {
+            mNotificationHistory = nh;
+        }
+
+        @Override
+        public void run() {
+            if (DEBUG) Slog.d(TAG, "RemoveChannelRunnable");
+            synchronized (mLock) {
+                // Remove from pending history
+                mBuffer.removeChannelFromWrite(mPkg, mChannelId);
+
+                Iterator<AtomicFile> historyFileItr = mHistoryFiles.iterator();
+                while (historyFileItr.hasNext()) {
+                    final AtomicFile af = historyFileItr.next();
+                    try {
+                        NotificationHistory notificationHistory = mNotificationHistory != null
+                                ? mNotificationHistory
+                                : new NotificationHistory();
+                        readLocked(af, notificationHistory,
+                                new NotificationHistoryFilter.Builder().build());
+                        if (notificationHistory.removeChannelFromWrite(mPkg, mChannelId)) {
+                            writeLocked(af, notificationHistory);
+                        }
+                    } catch (Exception e) {
+                        Slog.e(TAG, "Cannot clean up file on channel removal "
                                 + af.getBaseFile().getName(), e);
                     }
                 }

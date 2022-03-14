@@ -19,7 +19,8 @@ package android.service.dreams;
 import android.annotation.Nullable;
 import android.app.Activity;
 import android.os.Bundle;
-import android.view.WindowInsets;
+
+import com.android.internal.R;
 
 /**
  * The Activity used by the {@link DreamService} to draw screensaver content
@@ -56,8 +57,18 @@ public class DreamActivity extends Activity {
         if (callback != null) {
             callback.onActivityCreated(this);
         }
+    }
 
-        // Hide all insets (nav bar, status bar, etc) when the dream is showing
-        getWindow().getInsetsController().hide(WindowInsets.Type.systemBars());
+    @Override
+    public void onResume() {
+        super.onResume();
+        overridePendingTransition(R.anim.dream_activity_open_enter,
+                                  R.anim.dream_activity_open_exit);
+    }
+
+    @Override
+    public void finishAndRemoveTask() {
+        super.finishAndRemoveTask();
+        overridePendingTransition(0, R.anim.dream_activity_close_exit);
     }
 }

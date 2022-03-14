@@ -25,6 +25,7 @@ import static android.view.PointerIcon.TYPE_VERTICAL_DOUBLE_ARROW;
 import android.graphics.Rect;
 import android.graphics.Region;
 import android.hardware.input.InputManager;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.WindowManagerPolicyConstants.PointerEventListener;
 
@@ -48,12 +49,29 @@ public class TaskTapPointerEventListener implements PointerEventListener {
         mDisplayContent = displayContent;
     }
 
+    private void restorePointerIcon(int x, int y) {
+        if (mPointerIconType != TYPE_NOT_SPECIFIED) {
+            mPointerIconType = TYPE_NOT_SPECIFIED;
+            // Find the underlying window and ask it to restore the pointer icon.
+            mService.mH.removeMessages(H.RESTORE_POINTER_ICON);
+            mService.mH.obtainMessage(H.RESTORE_POINTER_ICON,
+                    x, y, mDisplayContent).sendToTarget();
+        }
+    }
+
     @Override
     public void onPointerEvent(MotionEvent motionEvent) {
         switch (motionEvent.getActionMasked()) {
             case MotionEvent.ACTION_DOWN: {
-                final int x = (int) motionEvent.getX();
-                final int y = (int) motionEvent.getY();
+                final int x;
+                final int y;
+                if (motionEvent.getSource() == InputDevice.SOURCE_MOUSE) {
+                    x = (int) motionEvent.getXCursorPosition();
+                    y = (int) motionEvent.getYCursorPosition();
+                } else {
+                    x = (int) motionEvent.getX();
+                    y = (int) motionEvent.getY();
+                }
 
                 synchronized (this) {
                     if (!mTouchExcludeRegion.contains(x, y)) {
@@ -67,6 +85,10 @@ public class TaskTapPointerEventListener implements PointerEventListener {
             case MotionEvent.ACTION_HOVER_MOVE: {
                 final int x = (int) motionEvent.getX();
                 final int y = (int) motionEvent.getY();
+                if (mTouchExcludeRegion.contains(x, y)) {
+                    restorePointerIcon(x, y);
+                    break;
+                }
                 final Task task = mDisplayContent.findTaskForResizePoint(x, y);
                 int iconType = TYPE_NOT_SPECIFIED;
                 if (task != null) {
@@ -103,13 +125,7 @@ public class TaskTapPointerEventListener implements PointerEventListener {
             case MotionEvent.ACTION_HOVER_EXIT: {
                 final int x = (int) motionEvent.getX();
                 final int y = (int) motionEvent.getY();
-                if (mPointerIconType != TYPE_NOT_SPECIFIED) {
-                    mPointerIconType = TYPE_NOT_SPECIFIED;
-                    // Find the underlying window and ask it to restore the pointer icon.
-                    mService.mH.removeMessages(H.RESTORE_POINTER_ICON);
-                    mService.mH.obtainMessage(H.RESTORE_POINTER_ICON,
-                            x, y, mDisplayContent).sendToTarget();
-                }
+                restorePointerIcon(x, y);
             }
             break;
         }

@@ -35,9 +35,6 @@ import java.io.StringWriter;
  * Helper class for seamless rotation.
  *
  * Works by transforming the {@link WindowState} back into the old display rotation.
- *
- * Uses {@link Transaction#deferTransactionUntil(SurfaceControl, IBinder, long)} instead of
- * latching on the buffer size to allow for seamless 180 degree rotations.
  */
 public class SeamlessRotator {
 
@@ -45,11 +42,22 @@ public class SeamlessRotator {
     private final float[] mFloat9 = new float[9];
     private final int mOldRotation;
     private final int mNewRotation;
+    /* If the seamless rotator is used to rotate part of the hierarchy, then provide a transform
+     * hint based on the display orientation if the entire display was rotated. When the display
+     * orientation matches the hierarchy orientation, the fixed transform hint will be removed.
+     * This will prevent allocating different buffer sizes by the graphic producers when the
+     * orientation of a layer changes.
+     */
+    private final boolean mApplyFixedTransformHint;
+    private final int mFixedTransformHint;
 
-    public SeamlessRotator(@Rotation int oldRotation, @Rotation int newRotation, DisplayInfo info) {
+
+    public SeamlessRotator(@Rotation int oldRotation, @Rotation int newRotation, DisplayInfo info,
+            boolean applyFixedTransformationHint) {
         mOldRotation = oldRotation;
         mNewRotation = newRotation;
-
+        mApplyFixedTransformHint = applyFixedTransformationHint;
+        mFixedTransformHint = oldRotation;
         final boolean flipped = info.rotation == ROTATION_90 || info.rotation == ROTATION_270;
         final int pH = flipped ? info.logicalWidth : info.logicalHeight;
         final int pW = flipped ? info.logicalHeight : info.logicalWidth;
@@ -70,6 +78,9 @@ public class SeamlessRotator {
         final float[] winSurfacePos = {win.mLastSurfacePosition.x, win.mLastSurfacePosition.y};
         mTransform.mapPoints(winSurfacePos);
         transaction.setPosition(win.getSurfaceControl(), winSurfacePos[0], winSurfacePos[1]);
+        if (mApplyFixedTransformHint) {
+            transaction.setFixedTransformHint(win.mSurfaceControl, mFixedTransformHint);
+        }
     }
 
     /**
@@ -89,26 +100,18 @@ public class SeamlessRotator {
      * Removing the transform and the result of the {@link WindowState} layout are both tied to the
      * {@link WindowState} next frame, such that they apply at the same time the client draws the
      * window in the new orientation.
-     *
-     * In the case of a rotation timeout, we want to remove the transform immediately and not defer
-     * it.
      */
-    public void finish(WindowState win, boolean timeout) {
-        final Transaction t = win.getPendingTransaction();
-        finish(t, win);
-        if (win.mWinAnimator.mSurfaceController != null && !timeout) {
-            t.deferTransactionUntil(win.mSurfaceControl,
-                    win.getClientViewRootSurface(), win.getFrameNumber());
-            t.deferTransactionUntil(win.mWinAnimator.mSurfaceController.mSurfaceControl,
-                    win.getClientViewRootSurface(), win.getFrameNumber());
-        }
-    }
-
-    /** Removes the transform and restore to the original last position. */
     void finish(Transaction t, WindowContainer win) {
+        if (win.mSurfaceControl == null || !win.mSurfaceControl.isValid()) {
+            return;
+        }
+
         mTransform.reset();
         t.setMatrix(win.mSurfaceControl, mTransform, mFloat9);
         t.setPosition(win.mSurfaceControl, win.mLastSurfacePosition.x, win.mLastSurfacePosition.y);
+        if (mApplyFixedTransformHint) {
+            t.unsetFixedTransformHint(win.mSurfaceControl);
+        }
     }
 
     public void dump(PrintWriter pw) {

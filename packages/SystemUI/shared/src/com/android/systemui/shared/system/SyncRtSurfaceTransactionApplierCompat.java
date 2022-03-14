@@ -23,8 +23,8 @@ import android.os.Handler;
 import android.os.Handler.Callback;
 import android.os.Message;
 import android.os.Trace;
-import android.view.Surface;
 import android.view.SurfaceControl;
+import android.view.SurfaceControl.Transaction;
 import android.view.View;
 import android.view.ViewRootImpl;
 
@@ -46,6 +46,8 @@ public class SyncRtSurfaceTransactionApplierCompat {
     public static final int FLAG_CORNER_RADIUS = 1 << 4;
     public static final int FLAG_BACKGROUND_BLUR_RADIUS = 1 << 5;
     public static final int FLAG_VISIBILITY = 1 << 6;
+    public static final int FLAG_RELATIVE_LAYER = 1 << 7;
+    public static final int FLAG_SHADOW_RADIUS = 1 << 8;
 
     private static final int MSG_UPDATE_SEQUENCE_NUMBER = 0;
 
@@ -63,7 +65,7 @@ public class SyncRtSurfaceTransactionApplierCompat {
     public SyncRtSurfaceTransactionApplierCompat(View targetView) {
         mTargetViewRootImpl = targetView != null ? targetView.getViewRootImpl() : null;
         mBarrierSurfaceControl = mTargetViewRootImpl != null
-            ? mTargetViewRootImpl.getRenderSurfaceControl() : null;
+            ? mTargetViewRootImpl.getSurfaceControl() : null;
 
         mApplyHandler = new Handler(new Callback() {
             @Override
@@ -108,16 +110,17 @@ public class SyncRtSurfaceTransactionApplierCompat {
                     return;
                 }
                 Trace.traceBegin(Trace.TRACE_TAG_VIEW, "Sync transaction frameNumber=" + frame);
-                TransactionCompat t = new TransactionCompat();
+                Transaction t = new Transaction();
                 for (int i = params.length - 1; i >= 0; i--) {
                     SyncRtSurfaceTransactionApplierCompat.SurfaceParams surfaceParams =
                             params[i];
-                    SurfaceControlCompat surface = surfaceParams.surface;
-                    t.deferTransactionUntil(surface, mBarrierSurfaceControl, frame);
-                    applyParams(t, surfaceParams);
+                    surfaceParams.applyTo(t);
                 }
-                t.setEarlyWakeup();
-                t.apply();
+                if (mTargetViewRootImpl != null) {
+                    mTargetViewRootImpl.mergeWithNextTransaction(t, frame);
+                } else {
+                    t.apply();
+                }
                 Trace.traceEnd(Trace.TRACE_TAG_VIEW);
                 Message.obtain(mApplyHandler, MSG_UPDATE_SEQUENCE_NUMBER, toApplySeqNo, 0)
                         .sendToTarget();
@@ -152,31 +155,7 @@ public class SyncRtSurfaceTransactionApplierCompat {
 
     public static void applyParams(TransactionCompat t,
             SyncRtSurfaceTransactionApplierCompat.SurfaceParams params) {
-        if ((params.flags & FLAG_MATRIX) != 0) {
-            t.setMatrix(params.surface, params.matrix);
-        }
-        if ((params.flags & FLAG_WINDOW_CROP) != 0) {
-            t.setWindowCrop(params.surface, params.windowCrop);
-        }
-        if ((params.flags & FLAG_ALPHA) != 0) {
-            t.setAlpha(params.surface, params.alpha);
-        }
-        if ((params.flags & FLAG_LAYER) != 0) {
-            t.setLayer(params.surface, params.layer);
-        }
-        if ((params.flags & FLAG_CORNER_RADIUS) != 0) {
-            t.setCornerRadius(params.surface, params.cornerRadius);
-        }
-        if ((params.flags & FLAG_BACKGROUND_BLUR_RADIUS) != 0) {
-            t.setBackgroundBlurRadius(params.surface, params.backgroundBlurRadius);
-        }
-        if ((params.flags & FLAG_VISIBILITY) != 0) {
-            if (params.visible) {
-                t.show(params.surface);
-            } else {
-                t.hide(params.surface);
-            }
-        }
+        params.applyTo(t.mTransaction);
     }
 
     /**
@@ -210,7 +189,7 @@ public class SyncRtSurfaceTransactionApplierCompat {
 
     public static class SurfaceParams {
         public static class Builder {
-            final SurfaceControlCompat surface;
+            final SurfaceControl surface;
             int flags;
             float alpha;
             float cornerRadius;
@@ -218,12 +197,22 @@ public class SyncRtSurfaceTransactionApplierCompat {
             Matrix matrix;
             Rect windowCrop;
             int layer;
+            SurfaceControl relativeTo;
+            int relativeLayer;
             boolean visible;
+            float shadowRadius;
 
             /**
              * @param surface The surface to modify.
              */
             public Builder(SurfaceControlCompat surface) {
+                this(surface.mSurfaceControl);
+            }
+
+            /**
+             * @param surface The surface to modify.
+             */
+            public Builder(SurfaceControl surface) {
                 this.surface = surface;
             }
 
@@ -242,7 +231,7 @@ public class SyncRtSurfaceTransactionApplierCompat {
              * @return this Builder
              */
             public Builder withMatrix(Matrix matrix) {
-                this.matrix = matrix;
+                this.matrix = new Matrix(matrix);
                 flags |= FLAG_MATRIX;
                 return this;
             }
@@ -252,7 +241,7 @@ public class SyncRtSurfaceTransactionApplierCompat {
              * @return this Builder
              */
             public Builder withWindowCrop(Rect windowCrop) {
-                this.windowCrop = windowCrop;
+                this.windowCrop = new Rect(windowCrop);
                 flags |= FLAG_WINDOW_CROP;
                 return this;
             }
@@ -268,12 +257,34 @@ public class SyncRtSurfaceTransactionApplierCompat {
             }
 
             /**
+             * @param relativeTo The surface that's set relative layer to.
+             * @param relativeLayer The relative layer.
+             * @return this Builder
+             */
+            public Builder withRelativeLayerTo(SurfaceControl relativeTo, int relativeLayer) {
+                this.relativeTo = relativeTo;
+                this.relativeLayer = relativeLayer;
+                flags |= FLAG_RELATIVE_LAYER;
+                return this;
+            }
+
+            /**
              * @param radius the Radius for rounded corners to apply to the surface.
              * @return this Builder
              */
             public Builder withCornerRadius(float radius) {
                 this.cornerRadius = radius;
                 flags |= FLAG_CORNER_RADIUS;
+                return this;
+            }
+
+            /**
+             * @param radius the Radius for the shadows to apply to the surface.
+             * @return this Builder
+             */
+            public Builder withShadowRadius(float radius) {
+                this.shadowRadius = radius;
+                flags |= FLAG_SHADOW_RADIUS;
                 return this;
             }
 
@@ -302,48 +313,75 @@ public class SyncRtSurfaceTransactionApplierCompat {
              */
             public SurfaceParams build() {
                 return new SurfaceParams(surface, flags, alpha, matrix, windowCrop, layer,
-                        cornerRadius, backgroundBlurRadius, visible);
+                        relativeTo, relativeLayer, cornerRadius, backgroundBlurRadius, visible,
+                        shadowRadius);
             }
         }
 
-        /**
-         * Constructs surface parameters to be applied when the current view state gets pushed to
-         * RenderThread.
-         *
-         * @param surface The surface to modify.
-         * @param alpha Alpha to apply.
-         * @param matrix Matrix to apply.
-         * @param windowCrop Crop to apply, only applied if not {@code null}
-         */
-        public SurfaceParams(SurfaceControlCompat surface, float alpha, Matrix matrix,
-                Rect windowCrop, int layer, float cornerRadius) {
-            this(surface, FLAG_ALL & ~(FLAG_VISIBILITY | FLAG_BACKGROUND_BLUR_RADIUS), alpha,
-                    matrix, windowCrop, layer, cornerRadius, 0 /* backgroundBlurRadius */, true);
-        }
-
-        private SurfaceParams(SurfaceControlCompat surface, int flags, float alpha, Matrix matrix,
-                Rect windowCrop, int layer, float cornerRadius, int backgroundBlurRadius,
-                boolean visible) {
+        private SurfaceParams(SurfaceControl surface, int flags, float alpha, Matrix matrix,
+                Rect windowCrop, int layer, SurfaceControl relativeTo, int relativeLayer,
+                float cornerRadius, int backgroundBlurRadius, boolean visible, float shadowRadius) {
             this.flags = flags;
             this.surface = surface;
             this.alpha = alpha;
-            this.matrix = new Matrix(matrix);
-            this.windowCrop = windowCrop != null ? new Rect(windowCrop) : null;
+            this.matrix = matrix;
+            this.windowCrop = windowCrop;
             this.layer = layer;
+            this.relativeTo = relativeTo;
+            this.relativeLayer = relativeLayer;
             this.cornerRadius = cornerRadius;
             this.backgroundBlurRadius = backgroundBlurRadius;
             this.visible = visible;
+            this.shadowRadius = shadowRadius;
         }
 
         private final int flags;
+        private final float[] mTmpValues = new float[9];
 
-        public final SurfaceControlCompat surface;
+        public final SurfaceControl surface;
         public final float alpha;
         public final float cornerRadius;
         public final int backgroundBlurRadius;
         public final Matrix matrix;
         public final Rect windowCrop;
         public final int layer;
+        public final SurfaceControl relativeTo;
+        public final int relativeLayer;
         public final boolean visible;
+        public final float shadowRadius;
+
+        public void applyTo(SurfaceControl.Transaction t) {
+            if ((flags & FLAG_MATRIX) != 0) {
+                t.setMatrix(surface, matrix, mTmpValues);
+            }
+            if ((flags & FLAG_WINDOW_CROP) != 0) {
+                t.setWindowCrop(surface, windowCrop);
+            }
+            if ((flags & FLAG_ALPHA) != 0) {
+                t.setAlpha(surface, alpha);
+            }
+            if ((flags & FLAG_LAYER) != 0) {
+                t.setLayer(surface, layer);
+            }
+            if ((flags & FLAG_CORNER_RADIUS) != 0) {
+                t.setCornerRadius(surface, cornerRadius);
+            }
+            if ((flags & FLAG_BACKGROUND_BLUR_RADIUS) != 0) {
+                t.setBackgroundBlurRadius(surface, backgroundBlurRadius);
+            }
+            if ((flags & FLAG_VISIBILITY) != 0) {
+                if (visible) {
+                    t.show(surface);
+                } else {
+                    t.hide(surface);
+                }
+            }
+            if ((flags & FLAG_RELATIVE_LAYER) != 0) {
+                t.setRelativeLayer(surface, relativeTo, relativeLayer);
+            }
+            if ((flags & FLAG_SHADOW_RADIUS) != 0) {
+                t.setShadowRadius(surface, shadowRadius);
+            }
+        }
     }
 }

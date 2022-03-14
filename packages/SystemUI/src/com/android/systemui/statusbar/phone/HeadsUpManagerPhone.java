@@ -26,13 +26,15 @@ import android.util.Pools;
 import androidx.collection.ArraySet;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.policy.SystemBarUtils;
 import com.android.systemui.Dumpable;
 import com.android.systemui.R;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.plugins.statusbar.StatusBarStateController.StateListener;
 import com.android.systemui.statusbar.StatusBarState;
-import com.android.systemui.statusbar.notification.VisualStabilityManager;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
+import com.android.systemui.statusbar.notification.collection.legacy.VisualStabilityManager;
+import com.android.systemui.statusbar.notification.collection.render.GroupMembershipManager;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 import com.android.systemui.statusbar.policy.ConfigurationController;
 import com.android.systemui.statusbar.policy.HeadsUpManager;
@@ -55,9 +57,10 @@ public class HeadsUpManagerPhone extends HeadsUpManager implements Dumpable,
     @VisibleForTesting
     final int mExtensionTime;
     private final KeyguardBypassController mBypassController;
-    private final NotificationGroupManager mGroupManager;
+    private final GroupMembershipManager mGroupMembershipManager;
     private final List<OnHeadsUpPhoneListenerChange> mHeadsUpPhoneListeners = new ArrayList<>();
     private final int mAutoHeadsUpNotificationDecay;
+    // TODO (b/162832756): remove visual stability manager when migrating to new pipeline
     private VisualStabilityManager mVisualStabilityManager;
     private boolean mReleaseOnExpandFinish;
 
@@ -100,7 +103,7 @@ public class HeadsUpManagerPhone extends HeadsUpManager implements Dumpable,
     public HeadsUpManagerPhone(@NonNull final Context context,
             StatusBarStateController statusBarStateController,
             KeyguardBypassController bypassController,
-            NotificationGroupManager groupManager,
+            GroupMembershipManager groupMembershipManager,
             ConfigurationController configurationController) {
         super(context);
         Resources resources = mContext.getResources();
@@ -109,7 +112,7 @@ public class HeadsUpManagerPhone extends HeadsUpManager implements Dumpable,
                 R.integer.auto_heads_up_notification_decay);
         statusBarStateController.addCallback(mStatusBarStateListener);
         mBypassController = bypassController;
-        mGroupManager = groupManager;
+        mGroupMembershipManager = groupMembershipManager;
 
         updateResources();
         configurationController.addCallback(new ConfigurationController.ConfigurationListener() {
@@ -119,7 +122,7 @@ public class HeadsUpManagerPhone extends HeadsUpManager implements Dumpable,
             }
 
             @Override
-            public void onOverlayChanged() {
+            public void onThemeChanged() {
                 updateResources();
             }
         });
@@ -135,9 +138,8 @@ public class HeadsUpManagerPhone extends HeadsUpManager implements Dumpable,
 
     private void updateResources() {
         Resources resources = mContext.getResources();
-        mHeadsUpInset =
-                resources.getDimensionPixelSize(com.android.internal.R.dimen.status_bar_height)
-                        + resources.getDimensionPixelSize(R.dimen.heads_up_status_bar_padding);
+        mHeadsUpInset = SystemBarUtils.getStatusBarHeight(mContext)
+                + resources.getDimensionPixelSize(R.dimen.heads_up_status_bar_padding);
     }
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
@@ -165,7 +167,7 @@ public class HeadsUpManagerPhone extends HeadsUpManager implements Dumpable,
         } else {
             if (topEntry.isChildInGroup()) {
                 final NotificationEntry groupSummary =
-                        mGroupManager.getGroupSummary(topEntry.getSbn());
+                        mGroupMembershipManager.getGroupSummary(topEntry);
                 if (groupSummary != null) {
                     topEntry = groupSummary;
                 }
@@ -241,7 +243,7 @@ public class HeadsUpManagerPhone extends HeadsUpManager implements Dumpable,
 
     /**
      * Set that we are exiting the headsUp pinned mode, but some notifications might still be
-     * animating out. This is used to keep the touchable regions in a sane state.
+     * animating out. This is used to keep the touchable regions in a reasonable state.
      */
     void setHeadsUpGoingAway(boolean headsUpGoingAway) {
         if (headsUpGoingAway != mHeadsUpGoingAway) {
@@ -299,7 +301,7 @@ public class HeadsUpManagerPhone extends HeadsUpManager implements Dumpable,
     }
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
-    //  HeadsUpManager public methods overrides:
+    //  HeadsUpManager public methods overrides and overloads:
 
     @Override
     public boolean isTrackingHeadsUp() {
@@ -314,6 +316,18 @@ public class HeadsUpManagerPhone extends HeadsUpManager implements Dumpable,
 
     public void addSwipedOutNotification(@NonNull String key) {
         mSwipedOutKeys.add(key);
+    }
+
+    public boolean removeNotification(@NonNull String key, boolean releaseImmediately,
+            boolean animate) {
+        if (animate) {
+            return removeNotification(key, releaseImmediately);
+        } else {
+            mAnimationStateHandler.setHeadsUpGoingAwayAnimationsAllowed(false);
+            boolean removed = removeNotification(key, releaseImmediately);
+            mAnimationStateHandler.setHeadsUpGoingAwayAnimationsAllowed(true);
+            return removed;
+        }
     }
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
@@ -428,7 +442,7 @@ public class HeadsUpManagerPhone extends HeadsUpManager implements Dumpable,
 
 
         @Override
-        protected boolean isSticky() {
+        public boolean isSticky() {
             return super.isSticky() || mMenuShownPinned;
         }
 
@@ -439,7 +453,8 @@ public class HeadsUpManagerPhone extends HeadsUpManager implements Dumpable,
                         // time out anyway
                         && !entry.showingPulsing()) {
                     mEntriesToRemoveWhenReorderingAllowed.add(entry);
-                    mVisualStabilityManager.addReorderingAllowedCallback(HeadsUpManagerPhone.this);
+                    mVisualStabilityManager.addReorderingAllowedCallback(HeadsUpManagerPhone.this,
+                            false  /* persistent */);
                 } else if (mTrackingHeadsUp) {
                     mEntriesToRemoveAfterExpand.add(entry);
                 } else if (mIsAutoHeadsUp && mStatusBarState == StatusBarState.KEYGUARD) {
@@ -566,6 +581,17 @@ public class HeadsUpManagerPhone extends HeadsUpManager implements Dumpable,
                     removeAlertEntry(key);
                 }
                 mKeysToRemoveWhenLeavingKeyguard.clear();
+            }
+            if (wasKeyguard && !isKeyguard && mBypassController.getBypassEnabled()) {
+                ArrayList<String> keysToRemove = new ArrayList<>();
+                for (AlertEntry entry : mAlertEntries.values()) {
+                    if (entry.mEntry != null && entry.mEntry.isBubble() && !entry.isSticky()) {
+                        keysToRemove.add(entry.mEntry.getKey());
+                    }
+                }
+                for (String key : keysToRemove) {
+                    removeAlertEntry(key);
+                }
             }
         }
 
